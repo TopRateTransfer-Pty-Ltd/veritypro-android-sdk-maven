@@ -22,7 +22,7 @@ interface MLApiService {
      *
      * @return COLLECT_BURST (success) or RETRY (failure with hint)
      */
-    @POST("/v1/kyc/doc/predict")
+    @POST("v1/kyc/doc/predict")
     suspend fun predict(
         @Body request: MLPredictRequest
     ): MLPredictResponse
@@ -38,7 +38,7 @@ interface MLApiService {
      *
      * @return PASS (real document) or RETRY (spoof detected with reason)
      */
-    @POST("/v1/kyc/doc/verify-burst")
+    @POST("v1/kyc/doc/verify-burst")
     suspend fun verifyBurst(
         @Body request: MLVerifyBurstRequest
     ): MLVerifyBurstResponse
@@ -47,13 +47,13 @@ interface MLApiService {
     /**
      * Get information about loaded ML models
      */
-    @GET("/v1/kyc/doc/models")
+    @GET("v1/kyc/doc/models")
     suspend fun getModels(): MLModelsResponse
 
 
     /**
      * Health check endpoint
      */
-    @GET("/v1/kyc/doc/health")
+    @GET("v1/kyc/doc/health")
     suspend fun healthCheck(): MLHealthResponse
 }

@@ -58,14 +58,18 @@ object MLRetrofitInstance {
     // Default ML backend URL - auto-detect emulator vs physical device
     private var mlBaseUrl: String = if (isEmulator()) {
         Log.d(TAG, "Running on EMULATOR - using 10.0.2.2:8001")
-        "http://10.0.2.2:8001"
+        //"http://10.0.2.2:8001"
+        "https://api.skylinefare.com/docai/"
+
     } else {
         // Physical device - need actual IP address
         // This should be configured by the app before use
         Log.w(TAG, "Running on PHYSICAL DEVICE - ML backend needs configuration!")
         Log.w(TAG, "Call MLRetrofitInstance.configure('http://YOUR_MACHINE_IP:8001') before using ML features")
-        "http://192.168.4.23:8001" // Your development machine's LAN IP
+        "https://api.skylinefare.com/docai/" // Your development machine's LAN IP
     }
+
+    //https://api.skylinefare.com/docai/v1/kyc/doc/models
 
     // Logging interceptor for debugging
     private val loggingInterceptor = HttpLoggingInterceptor().apply {

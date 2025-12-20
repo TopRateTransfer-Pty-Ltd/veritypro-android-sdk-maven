@@ -54,9 +54,14 @@ android {
         android.buildFeatures.buildConfig = true
     }
 
-    packagingOptions {
+    packaging {
         resources {
-            excludes += '/META-INF/{AL2.0,LGPL2.1}'
+            excludes += [
+                    "META-INF/versions/**",
+                    "META-INF/OSGI-INF/**",
+                    "META-INF/AL2.0",
+                    "META-INF/LGPL2.1"
+            ]
         }
     }
 }

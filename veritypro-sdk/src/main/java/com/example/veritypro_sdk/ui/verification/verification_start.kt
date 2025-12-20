@@ -50,6 +50,8 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import com.example.veritypro_sdk.utils.CameraUtils
 import com.example.veritypro_sdk.utils.LocationHelper
 import com.example.veritypro_sdk.utils.*
+import com.example.veritypro_sdk.services.MLRepository
+import kotlinx.coroutines.launch
 
 @Composable
 fun VerificationScreen(
@@ -176,6 +178,42 @@ fun VerificationScreen(
     }
 
     var allowAdvanceAfterPermission by remember { mutableStateOf(false) }
+
+    // ML Backend Health Check State
+    var showMLServiceDown by remember { mutableStateOf(false) }
+    var mlHealthError by remember { mutableStateOf("ML Backend unreachable - service is not running") }
+    var isCheckingMLHealth by remember { mutableStateOf(false) }
+    val mlRepository = remember { MLRepository() }
+    val coroutineScope = rememberCoroutineScope()
+
+    // Function to check ML backend health
+    fun checkMLBackendHealth(onHealthy: () -> Unit) {
+        isCheckingMLHealth = true
+        coroutineScope.launch {
+            val result = mlRepository.healthCheck()
+            isCheckingMLHealth = false
+            when (result) {
+                is Resource.Success -> {
+                    if (result.data.modelsLoaded) {
+                        showMLServiceDown = false
+                        onHealthy()
+                    } else {
+                        mlHealthError = "ML Backend models not loaded"
+                        showMLServiceDown = true
+                    }
+                }
+                is Resource.Error -> {
+                    mlHealthError = result.message ?: "ML Backend unreachable - service is not running"
+                    showMLServiceDown = true
+                }
+                else -> {
+                    mlHealthError = "ML Backend unreachable - service is not running"
+                    showMLServiceDown = true
+                }
+            }
+        }
+    }
+
     LaunchedEffect(state) {
         if (state is Resource.Success && !askedPermission) {
             if (!hasCameraPermission) {
@@ -272,7 +310,10 @@ fun VerificationScreen(
                                 onBack = { stage = VerificationStage.INTRO },
                                 onContinue = { doc ->
                                     selectedDocumentType = doc
-                                    stage = VerificationStage.DOCUMENT_CAPTURE
+                                    // Check ML backend health before proceeding to document capture
+                                    checkMLBackendHealth {
+                                        stage = VerificationStage.DOCUMENT_CAPTURE
+                                    }
                                 }
                             )
 
@@ -519,6 +560,23 @@ fun VerificationScreen(
                             context.startActivity(intent)
                         },
                         onCancel = onCancel
+                    )
+                }
+
+                // ML Service Down Screen
+                if (showMLServiceDown) {
+                    MLServiceDownScreen(
+                        errorMessage = mlHealthError,
+                        isRetrying = isCheckingMLHealth,
+                        onRetry = {
+                            checkMLBackendHealth {
+                                showMLServiceDown = false
+                                stage = VerificationStage.DOCUMENT_CAPTURE
+                            }
+                        },
+                        onBack = {
+                            showMLServiceDown = false
+                        }
                     )
                 }
             }

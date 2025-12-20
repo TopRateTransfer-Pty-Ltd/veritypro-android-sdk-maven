@@ -16,6 +16,7 @@ import java.io.IOException
 class MLRepository {
 
     companion object {
+
         private const val TAG = "MLRepository"
         private const val JPEG_QUALITY = 85
     }

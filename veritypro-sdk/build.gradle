@@ -3,6 +3,7 @@ plugins {
     id 'org.jetbrains.kotlin.android'
     id 'org.jetbrains.kotlin.plugin.compose'
     id 'kotlin-parcelize'
+    id 'maven-publish'
 }
 
 android {
@@ -137,4 +138,17 @@ configurations.all {
     }
 }
 
+afterEvaluate {
+    publishing {
+        publications {
+            release(MavenPublication) {
+                from components.release
+
+                groupId = "com.example.veritypro"
+                artifactId = "veritypro-sdk"
+                version = "1.0.0"
+            }
+        }
+    }
+}
 
