@@ -26,21 +26,11 @@ import com.example.veritypro_sdk.services.MLDecision
 import com.example.veritypro_sdk.services.MLDocumentType
 import com.example.veritypro_sdk.services.MLRepository
 import com.example.veritypro_sdk.services.Resource
-//import com.example.veritypro_sdk.utils.DocumentDetector
-import com.google.mlkit.vision.common.InputImage
-import com.google.mlkit.vision.text.TextRecognition
-import com.google.mlkit.vision.text.latin.TextRecognizerOptions
-import com.google.mlkit.vision.barcode.BarcodeScanning
-import com.google.mlkit.vision.barcode.BarcodeScannerOptions
-import com.google.mlkit.vision.barcode.common.Barcode
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 
 
-//private var detector: DocumentDetector? = null
 
 /**
  * Preview screen with Anti-Spoofing verification

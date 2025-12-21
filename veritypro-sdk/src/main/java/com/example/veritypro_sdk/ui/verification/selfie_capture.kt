@@ -35,8 +35,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.*
-import androidx.compose.ui.tooling.preview.Preview
-import androidx.lifecycle.compose.LocalLifecycleOwner
 
 import com.amplifyframework.core.Action
 import com.amplifyframework.core.Consumer

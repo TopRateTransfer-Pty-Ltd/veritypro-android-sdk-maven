@@ -8,7 +8,6 @@ import java.io.File
 import java.util.concurrent.Executors
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.resume
-import kotlin.coroutines.resumeWithException
 
 /**
  * Burst Capture Utilities for Anti-Spoofing Verification
