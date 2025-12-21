@@ -1,9 +1,15 @@
 package com.example.veritypro_sdk.ui.verification
 
+import android.Manifest
 import android.graphics.Bitmap
 import android.util.Log
+import android.util.Size
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageCapture
+import androidx.camera.core.resolutionselector.ResolutionSelector
+import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.view.PreviewView
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
@@ -14,6 +20,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -51,7 +58,24 @@ fun DocumentCaptureScreen(
     val context = LocalContext.current
     val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
 
-    val imageCapture = remember { ImageCapture.Builder().build() }
+    // Industry-standard resolution for document capture
+    // Minimum: 1280x720 (HD) - Recommended: 1920x1080 (Full HD)
+    // This ensures face on ID card is detectable (~60-80 pixels instead of ~15 pixels)
+    val imageCapture = remember {
+        val resolutionSelector = ResolutionSelector.Builder()
+            .setResolutionStrategy(
+                ResolutionStrategy(
+                    Size(1280, 720),  // HD resolution - 6.25x more pixels than 320x240
+                    ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER
+                )
+            )
+            .build()
+
+        ImageCapture.Builder()
+            .setResolutionSelector(resolutionSelector)
+            .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
+            .build()
+    }
 
     val capturedFiles = remember { mutableStateListOf<File>() }
 
@@ -191,10 +215,28 @@ fun DocumentCaptureScreen(
             try {
                 isAnalyzing = true
 
-                // Capture bitmap from preview
-                val bitmap = previewView.bitmap
-                if (bitmap != null) {
+                // Capture bitmap from preview and scale up if needed
+                // Preview bitmap can be low resolution (320x240), we need minimum 800x600 for ML detection
+                val rawBitmap = previewView.bitmap
+                if (rawBitmap != null) {
                     consecutiveNullBitmaps = 0 // Reset counter on successful bitmap
+
+                    // Scale up preview bitmap to meet industry minimum (800x600) for face detection
+                    // This ensures face on ID card is ~60-80 pixels (detectable) instead of ~15 pixels
+                    val minWidth = 800
+                    val minHeight = 600
+                    val bitmap = if (rawBitmap.width < minWidth || rawBitmap.height < minHeight) {
+                        val scaleX = minWidth.toFloat() / rawBitmap.width
+                        val scaleY = minHeight.toFloat() / rawBitmap.height
+                        val scale = maxOf(scaleX, scaleY)
+                        val newWidth = (rawBitmap.width * scale).toInt()
+                        val newHeight = (rawBitmap.height * scale).toInt()
+                        Log.d("DocumentCapture", "ML Live: Scaling bitmap from ${rawBitmap.width}x${rawBitmap.height} to ${newWidth}x${newHeight}")
+                        Bitmap.createScaledBitmap(rawBitmap, newWidth, newHeight, true)
+                    } else {
+                        rawBitmap
+                    }
+
                     Log.d("DocumentCapture", "ML Live: Got bitmap ${bitmap.width}x${bitmap.height}, calling predict...")
                     withContext(Dispatchers.IO) {
                         val result = mlRepository.predict(

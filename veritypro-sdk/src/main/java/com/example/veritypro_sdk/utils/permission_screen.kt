@@ -1,4 +1,4 @@
-package com.example.veritypro_sdk.ui.verification
+package com.example.veritypro_sdk.utils
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Image
@@ -21,6 +21,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.example.veritypro_sdk.R
 import com.example.veritypro_sdk.ui.theme.customColors
+import com.example.veritypro_sdk.ui.verification.ExitConfirmationDialog
 
 @Composable
 fun PermissionRequiredScreen(

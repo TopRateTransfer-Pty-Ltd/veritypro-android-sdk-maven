@@ -74,9 +74,9 @@ dependencies {
 //    implementation('com.google.mlkit:face-detection:16.1.7') {
 //        exclude group: 'com.google.guava', module: 'listenablefuture'
 //    }
-    implementation('com.google.android.gms:play-services-mlkit-document-scanner:16.0.0') {
-        exclude group: 'com.google.guava', module: 'listenablefuture'
-    }
+//    implementation('com.google.android.gms:play-services-mlkit-document-scanner:16.0.0') {
+//        exclude group: 'com.google.guava', module: 'listenablefuture'
+//    }
 
     // Coroutines
     implementation "org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.10.2"
@@ -110,10 +110,12 @@ dependencies {
     implementation("com.google.android.gms:play-services-location:21.3.0")
 
     // Network (OkHttp + Retrofit - correct versions)
-    implementation("com.squareup.okhttp3:okhttp:5.3.2")
-    implementation("com.squareup.okhttp3:logging-interceptor:5.3.2")
-    implementation 'com.squareup.retrofit2:retrofit:3.0.0'
-    implementation 'com.squareup.retrofit2:converter-gson:3.0.0'
+    // replace retrofit 3 + okhttp5 with these
+    implementation "com.squareup.okhttp3:okhttp:4.12.0"
+    implementation "com.squareup.okhttp3:logging-interceptor:4.12.0"
+    implementation "com.squareup.retrofit2:retrofit:2.9.0"
+    implementation "com.squareup.retrofit2:converter-gson:2.9.0"
+
 
     // Amplify
     implementation "com.amplifyframework:aws-auth-cognito:2.30.4"

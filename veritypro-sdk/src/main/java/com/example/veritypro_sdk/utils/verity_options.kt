@@ -1,7 +1,6 @@
 package com.example.veritypro_sdk.utils
 
 import android.os.Parcelable
-import com.example.veritypro_sdk.ui.theme.ThemeMode
 import kotlinx.parcelize.Parcelize
 
 @Parcelize

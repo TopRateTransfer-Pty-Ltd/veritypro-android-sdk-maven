@@ -36,6 +36,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import com.example.veritypro_sdk.utils.CameraUtils
 import com.example.veritypro_sdk.utils.LocationHelper
 import com.example.veritypro_sdk.services.MLRepository
+import com.example.veritypro_sdk.utils.PermissionRequiredScreen
 import kotlinx.coroutines.launch
 
 @Composable
@@ -538,10 +539,11 @@ fun VerificationScreen(
                         onGoBack = { showPermissionScreen = false },
                         onOpenSettings = {
                             showPermissionScreen = false
-                            val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
-                                data = Uri.fromParts("package", context.packageName, null)
-                                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                            }
+                            val intent =
+                                Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                                    data = Uri.fromParts("package", context.packageName, null)
+                                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                }
                             context.startActivity(intent)
                         },
                         onCancel = onCancel
