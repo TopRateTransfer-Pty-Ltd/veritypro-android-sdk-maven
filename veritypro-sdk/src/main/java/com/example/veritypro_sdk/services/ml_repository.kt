@@ -16,7 +16,6 @@ import java.io.IOException
 class MLRepository {
 
     companion object {
-
         private const val TAG = "MLRepository"
         private const val JPEG_QUALITY = 85
     }
@@ -110,6 +109,50 @@ class MLRepository {
         } catch (e: Exception) {
             Log.e(TAG, "Predict failed: ${e.message}", e)
             Resource.Error("Document verification failed: ${e.message}")
+        }
+    }
+
+    /**
+     * Detect document presence (used for BACK side)
+     *
+     * Simple detection - just checks if a document is present
+     * without classification. Used for BACK side where we don't
+     * need to verify document type/side, just presence.
+     *
+     * @param sessionId Client session ID
+     * @param bitmap Bitmap image to analyze
+     * @return Resource with presence detection result
+     */
+    suspend fun detectPresence(
+        sessionId: String,
+        bitmap: Bitmap
+    ): Resource<MLDetectPresenceResponse> {
+        return try {
+            val base64Image = bitmapToBase64(bitmap)
+
+            val request = MLDetectPresenceRequest(
+                sessionId = sessionId,
+                imageJpegBase64 = base64Image
+            )
+
+            Log.d(TAG, "Detecting document presence: session=$sessionId")
+
+            val response = MLRetrofitInstance.api.detectPresence(request)
+
+            Log.d(TAG, "Presence result: hasDocument=${response.hasDocument}, confidence=${response.confidence}, reason=${response.reason}")
+
+            Resource.Success(response)
+
+        } catch (e: IOException) {
+            Log.e(TAG, "Network error during detectPresence: ${e.message}")
+            Resource.Error("Network error. Please check your connection to the ML backend.")
+        } catch (e: HttpException) {
+            val errorBody = e.response()?.errorBody()?.string()
+            Log.e(TAG, "HTTP ${e.code()} error during detectPresence: $errorBody")
+            Resource.Error("ML backend error: ${e.code()}")
+        } catch (e: Exception) {
+            Log.e(TAG, "Detect presence failed: ${e.message}", e)
+            Resource.Error("Document detection failed: ${e.message}")
         }
     }
 

@@ -29,6 +29,21 @@ interface MLApiService {
 
 
     /**
+     * Document presence detection (used for BACK side)
+     *
+     * Simple detection - just checks if a document is present
+     * without classification. Used for BACK side where we don't
+     * need to verify document type/side, just presence.
+     *
+     * @return hasDocument (true/false) with confidence
+     */
+    @POST("v1/kyc/doc/detect-presence")
+    suspend fun detectPresence(
+        @Body request: MLDetectPresenceRequest
+    ): MLDetectPresenceResponse
+
+
+    /**
      * Multi-frame anti-spoof verification
      *
      * Analyzes burst of frames to detect:

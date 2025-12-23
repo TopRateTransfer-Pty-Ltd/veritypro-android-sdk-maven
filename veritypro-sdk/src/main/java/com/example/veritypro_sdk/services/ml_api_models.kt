@@ -89,6 +89,43 @@ data class MLPredictResponse(
 
 
 // ============================================================================
+// DETECT-PRESENCE ENDPOINT MODELS (BACK side document detection)
+// ============================================================================
+
+/**
+ * Request for document presence detection (used for BACK side)
+ * Simpler than predict - just detects if document is present
+ */
+data class MLDetectPresenceRequest(
+    @SerializedName("sessionId")
+    val sessionId: String,
+
+    @SerializedName("imageJpegBase64")
+    val imageJpegBase64: String
+)
+
+/**
+ * Response for document presence detection
+ */
+data class MLDetectPresenceResponse(
+    @SerializedName("hasDocument")
+    val hasDocument: Boolean,
+
+    @SerializedName("confidence")
+    val confidence: Float,
+
+    @SerializedName("predictedClass")
+    val predictedClass: String,
+
+    @SerializedName("reason")
+    val reason: String,
+
+    @SerializedName("latencyMs")
+    val latencyMs: Float
+)
+
+
+// ============================================================================
 // VERIFY-BURST ENDPOINT MODELS (Anti-Spoofing)
 // ============================================================================
 

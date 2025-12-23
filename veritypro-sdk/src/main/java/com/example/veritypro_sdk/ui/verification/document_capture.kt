@@ -1,11 +1,8 @@
 package com.example.veritypro_sdk.ui.verification
 
-import android.Manifest
 import android.graphics.Bitmap
 import android.util.Log
 import android.util.Size
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.resolutionselector.ResolutionSelector
@@ -20,7 +17,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -48,6 +44,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+
 
 @Composable
 fun DocumentCaptureScreen(
@@ -205,7 +202,7 @@ fun DocumentCaptureScreen(
             delay(1000) // Analyze every 1 second (faster feedback)
 
             // Recalculate side based on current state
-            val currentSideExpected = if (capturedFiles.isNotEmpty()) "BACK" else "FRONT"
+            val isBackSideCapture = capturedFiles.isNotEmpty()
 
             if (previewPath != null) {
                 Log.d("DocumentCapture", "ML Live: Skipping - in preview mode")
@@ -237,30 +234,59 @@ fun DocumentCaptureScreen(
                         rawBitmap
                     }
 
-                    Log.d("DocumentCapture", "ML Live: Got bitmap ${bitmap.width}x${bitmap.height}, calling predict...")
                     withContext(Dispatchers.IO) {
-                        val result = mlRepository.predict(
-                            sessionId = "android-live-${System.currentTimeMillis()}",
-                            bitmap = bitmap,
-                            docTypeExpected = docTypeExpected,
-                            sideExpected = currentSideExpected
-                        )
+                        if (isBackSideCapture) {
+                            // BACK side: Use detect-presence endpoint (simpler, just presence detection)
+                            Log.d("DocumentCapture", "ML Live BACK: Got bitmap ${bitmap.width}x${bitmap.height}, calling detect-presence...")
+                            val result = mlRepository.detectPresence(
+                                sessionId = "android-back-${System.currentTimeMillis()}",
+                                bitmap = bitmap
+                            )
 
-                        withContext(Dispatchers.Main) {
-                            when (result) {
-                                is Resource.Success -> {
-                                    val response = result.data
-                                    mlPassed = response.docOk
-                                    mlConfidence = response.confidence?.detection ?: 0f
-                                    Log.d("DocumentCapture", "ML Live SUCCESS: docOk=${response.docOk}, conf=$mlConfidence, hint=${response.hint}")
+                            withContext(Dispatchers.Main) {
+                                when (result) {
+                                    is Resource.Success -> {
+                                        val response = result.data
+                                        mlPassed = response.hasDocument
+                                        mlConfidence = response.confidence
+                                        Log.d("DocumentCapture", "ML Live BACK SUCCESS: hasDocument=${response.hasDocument}, conf=$mlConfidence, reason=${response.reason}")
+                                    }
+                                    is Resource.Error -> {
+                                        Log.e("DocumentCapture", "ML Live BACK ERROR: ${result.message}")
+                                        // On error, don't block - allow capture but show no green border
+                                        mlPassed = false
+                                    }
+                                    else -> {
+                                        Log.w("DocumentCapture", "ML Live BACK: Unknown result type")
+                                    }
                                 }
-                                is Resource.Error -> {
-                                    Log.e("DocumentCapture", "ML Live ERROR: ${result.message}")
-                                    // Reset mlPassed on network error so user knows something is wrong
-                                    mlPassed = false
-                                }
-                                else -> {
-                                    Log.w("DocumentCapture", "ML Live: Unknown result type")
+                            }
+                        } else {
+                            // FRONT side: Use predict endpoint (full classification)
+                            Log.d("DocumentCapture", "ML Live FRONT: Got bitmap ${bitmap.width}x${bitmap.height}, calling predict...")
+                            val result = mlRepository.predict(
+                                sessionId = "android-live-${System.currentTimeMillis()}",
+                                bitmap = bitmap,
+                                docTypeExpected = docTypeExpected,
+                                sideExpected = "FRONT"
+                            )
+
+                            withContext(Dispatchers.Main) {
+                                when (result) {
+                                    is Resource.Success -> {
+                                        val response = result.data
+                                        mlPassed = response.docOk
+                                        mlConfidence = response.confidence?.detection ?: 0f
+                                        Log.d("DocumentCapture", "ML Live FRONT SUCCESS: docOk=${response.docOk}, conf=$mlConfidence, hint=${response.hint}")
+                                    }
+                                    is Resource.Error -> {
+                                        Log.e("DocumentCapture", "ML Live FRONT ERROR: ${result.message}")
+                                        // Reset mlPassed on network error so user knows something is wrong
+                                        mlPassed = false
+                                    }
+                                    else -> {
+                                        Log.w("DocumentCapture", "ML Live FRONT: Unknown result type")
+                                    }
                                 }
                             }
                         }
