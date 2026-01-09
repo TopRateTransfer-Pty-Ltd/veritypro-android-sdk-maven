@@ -62,6 +62,7 @@ class VerityProViewModel(
             val result = repository.createKyc(options)
             if (result is Resource.Success) {
                 currentSessionId = result.data.sessionId
+                Log.d("apikey", currentSessionId)
             }
             _kycState.value = result
         }

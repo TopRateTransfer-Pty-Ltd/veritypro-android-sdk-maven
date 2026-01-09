@@ -254,6 +254,8 @@ fun DocumentCaptureScreen(
             .fillMaxSize()
             .background(Color(0xFF373D4B))
     ) {
+        // ... inside DocumentCaptureScreen ...
+
         if (previewFile != null && burstFiles.isNotEmpty()) {
             PreviewCapturedImageScreen(
                 file = previewFile,
@@ -261,24 +263,65 @@ fun DocumentCaptureScreen(
                 documentType = documentType ?: 1,
                 isBackSide = isBackSide,
                 onRetake = {
-                    // Cleanup burst files on retake
                     BurstCaptureUtils.cleanupBurstFiles(burstFiles)
                     burstFiles = emptyList()
                     previewPath = null
                 },
                 onContinue = { file ->
+                    // 1. Add the current captured file to our list
                     capturedFiles.add(file)
-                    // Cleanup burst files after successful capture
+
+                    // Cleanup burst files
                     BurstCaptureUtils.cleanupBurstFiles(burstFiles.filter { it != file })
                     burstFiles = emptyList()
                     previewPath = null
-                    if (!needsTwoSides || (capturedFiles.size >= 2)) {
-                        onDocumentCaptured(capturedFiles.toList())
+
+                    // 2. Handle the completion logic
+                    if (!needsTwoSides) {
+                        // PASSPORT CASE: Backend requires two files, so we duplicate the front
+                        // This satisfies the backend without making the user take a second photo
+                        val finalFiles = listOf(file, file)
+                        onDocumentCaptured(finalFiles)
+                    } else {
+                        // ID CARD / DRIVER'S LICENSE CASE
+                        if (capturedFiles.size >= 2) {
+                            // We have both front and back
+                            onDocumentCaptured(capturedFiles.toList())
+                        } else {
+                            // We only have the front, UI will automatically switch
+                            // to "Back" instructions because capturedFiles is no longer empty
+                            Log.d("DocumentCapture", "Front captured, moving to back side...")
+                        }
                     }
                 }
             )
             return@Box
         }
+//        if (previewFile != null && burstFiles.isNotEmpty()) {
+//            PreviewCapturedImageScreen(
+//                file = previewFile,
+//                burstFiles = burstFiles,
+//                documentType = documentType ?: 1,
+//                isBackSide = isBackSide,
+//                onRetake = {
+//                    // Cleanup burst files on retake
+//                    BurstCaptureUtils.cleanupBurstFiles(burstFiles)
+//                    burstFiles = emptyList()
+//                    previewPath = null
+//                },
+//                onContinue = { file ->
+//                    capturedFiles.add(file)
+//                    // Cleanup burst files after successful capture
+//                    BurstCaptureUtils.cleanupBurstFiles(burstFiles.filter { it != file })
+//                    burstFiles = emptyList()
+//                    previewPath = null
+//                    if (!needsTwoSides || (capturedFiles.size >= 2)) {
+//                        onDocumentCaptured(capturedFiles.toList())
+//                    }
+//                }
+//            )
+//            return@Box
+//        }
 
         Column(
             modifier = Modifier
