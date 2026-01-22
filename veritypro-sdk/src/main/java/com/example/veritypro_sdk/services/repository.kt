@@ -52,10 +52,20 @@ class ApiRepository {
         apiKey: String
     ): Resource<String> {
         return try {
+            Log.d("Verity", "Submitting KYC data")
+            Log.d("Verity", "ApiRepository.updateKyc: starting, session=${data.SessionId}")
+
+            if ((data.DocumentFront == null) && (data.DocumentBack == null)) {
+                Log.w("Verity", "No document multipart parts supplied")
+            }
+
+
+
             val response: ApiResponse<String> =
                 RetrofitInstance.api.updateKyc(
                     SessionId = data.SessionId.toRequestBody(),
                     DocumentType = data.DocumentType.toString().toRequestBody(),
+                    //DocumentType = "2".toRequestBody(),
                     PlatformUsed = data.PlatformUsed.toRequestBody(),
                     IpAddress = data.IpAddress.toRequestBody(),
                     IpLocation = data.IpLocation.toRequestBody(),
@@ -75,8 +85,13 @@ class ApiRepository {
                 Resource.Error(response.error?.message ?: "Unable to validate")
             }
         } catch (e: IOException) {
-            Log.e("Verity", "Network error: ${e.message}")
-            Resource.Error("No internet connection. Please check your network.")
+            Log.e("Verity", "IO error during KYC upload", e)
+            val msg = e.message ?: ""
+            return if (msg.contains("ENOENT") || msg.contains("No such file")) {
+                Resource.Error("Required image file is missing. Please retake the document photo.")
+            } else {
+                Resource.Error("Network error. Please check your connection.")
+            }
         } catch (e: HttpException) {
             val errorBody = e.response()?.errorBody()?.string()
             var errorMessage = "HTTP ${e.code()} Error: Unknown error"

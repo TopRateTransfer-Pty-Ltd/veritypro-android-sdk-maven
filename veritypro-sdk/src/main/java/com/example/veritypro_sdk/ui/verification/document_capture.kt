@@ -268,32 +268,61 @@ fun DocumentCaptureScreen(
                     previewPath = null
                 },
                 onContinue = { file ->
-                    // 1. Add the current captured file to our list
-                    capturedFiles.add(file)
-
-                    // Cleanup burst files
-                    BurstCaptureUtils.cleanupBurstFiles(burstFiles.filter { it != file })
-                    burstFiles = emptyList()
-                    previewPath = null
-
-                    // 2. Handle the completion logic
                     if (!needsTwoSides) {
-                        // PASSPORT CASE: Backend requires two files, so we duplicate the front
-                        // This satisfies the backend without making the user take a second photo
-                        val finalFiles = listOf(file, file)
-                        onDocumentCaptured(finalFiles)
-                    } else {
-                        // ID CARD / DRIVER'S LICENSE CASE
-                        if (capturedFiles.size >= 2) {
-                            // We have both front and back
-                            onDocumentCaptured(capturedFiles.toList())
-                        } else {
-                            // We only have the front, UI will automatically switch
-                            // to "Back" instructions because capturedFiles is no longer empty
-                            Log.d("DocumentCapture", "Front captured, moving to back side...")
+                        try {
+                            // copy to a persistent file inside app filesDir so OS/other code won't remove it
+                            val persistent = File(context.filesDir, "document_front_${System.currentTimeMillis()}.jpg")
+                            file.copyTo(persistent, overwrite = true)
+
+                            // create the final list (duplicate for backend)
+                            val finalFiles = listOf(persistent, persistent)
+
+                            // now it's safe to cleanup burst files (we've already copied the file we need)
+                            BurstCaptureUtils.cleanupBurstFiles(burstFiles)
+                            burstFiles = emptyList()
+                            previewPath = null
+                            capturedFiles.clear()
+
+                            // callback with persistent files
+                            onDocumentCaptured(finalFiles)
+                        } catch (t: Throwable) {
+                            Log.e("DocumentCapture", "Failed to persist passport file", t)
+                            // show some UI error or let caller know — keep UX friendly
                         }
+                        return@PreviewCapturedImageScreen
                     }
+
+                    // existing logic for ID/Driver's License...
                 }
+
+
+//                onContinue = { file ->
+//                    // 1. Add the current captured file to our list
+//                    capturedFiles.add(file)
+//
+//                    // Cleanup burst files
+//                    BurstCaptureUtils.cleanupBurstFiles(burstFiles.filter { it != file })
+//                    burstFiles = emptyList()
+//                    previewPath = null
+//
+//                    // 2. Handle the completion logic
+//                    if (!needsTwoSides) {
+//                        // PASSPORT CASE: Backend requires two files, so we duplicate the front
+//                        // This satisfies the backend without making the user take a second photo
+//                        val finalFiles = listOf(file, file)
+//                        onDocumentCaptured(finalFiles)
+//                    } else {
+//                        // ID CARD / DRIVER'S LICENSE CASE
+//                        if (capturedFiles.size >= 2) {
+//                            // We have both front and back
+//                            onDocumentCaptured(capturedFiles.toList())
+//                        } else {
+//                            // We only have the front, UI will automatically switch
+//                            // to "Back" instructions because capturedFiles is no longer empty
+//                            Log.d("DocumentCapture", "Front captured, moving to back side...")
+//                        }
+//                    }
+//                }
             )
             return@Box
         }
