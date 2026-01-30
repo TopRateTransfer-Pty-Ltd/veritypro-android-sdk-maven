@@ -81,7 +81,10 @@ data class MLPredictResponse(
     val hint: String,
 
     @SerializedName("confidence")
-    val confidence: MLConfidence? = null,
+    val confidence: Float? = null,
+
+//    @SerializedName("confidence")
+//    val confidence: MLConfidence? = null,
 
     @SerializedName("latencyMs")
     val latencyMs: Float

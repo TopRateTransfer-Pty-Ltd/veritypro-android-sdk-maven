@@ -167,7 +167,7 @@ class VerityProViewModel(
             when (result) {
                 is Resource.Success -> {
                     val response = result.data
-                    val confidence = response.confidence?.detection ?: 0f
+                    val confidence = response.confidence ?: 0f
                     onResult(response.docOk, response.hint, confidence)
                 }
                 is Resource.Error -> {
@@ -207,7 +207,7 @@ class VerityProViewModel(
             when (result) {
                 is Resource.Success -> {
                     val response = result.data
-                    val confidence = response.confidence?.detection ?: 0f
+                    val confidence = response.confidence ?: 0f
                     onResult(response.docOk, response.hint, confidence)
                 }
                 is Resource.Error -> {
