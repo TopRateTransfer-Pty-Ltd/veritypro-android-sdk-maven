@@ -75,8 +75,10 @@ fun VerityProDemoApp() {
         //integrationId = BuildConfig.INTEGRATION_ID,
         firstName = "Ade",
         lastName = "Oba",
+        dateOfBirth = "1990-01-15T00:00:00.000Z",
         vendorData = "verity",
         isO2Code = "NG",
+        streetAddress = null,
     )
     val sdk = remember { VerityPro(options, themeMode = ThemeMode.LIGHT) }
     Column(
