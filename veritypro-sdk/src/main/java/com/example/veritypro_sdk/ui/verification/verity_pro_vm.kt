@@ -79,6 +79,11 @@ class VerityProViewModel(
         }
     }
 
+    fun resetLivenessState() {
+        _awsSessionId.value = null
+        _beginLivenessState.value = Resource.Loading("idle")
+    }
+
     fun startBeginLiveness(sessionId: String) {
         if (_awsSessionId.value != null && _awsSessionId.value!!.isNotBlank()) return
 

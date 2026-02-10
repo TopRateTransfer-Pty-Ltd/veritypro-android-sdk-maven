@@ -359,7 +359,10 @@ fun VerificationScreen(
                                                 textAlign = TextAlign.Center
                                             )
                                             Spacer(Modifier.height(8.dp))
-                                            Button(onClick = { sessionId?.let { viewModel.startBeginLiveness(it) } }) {
+                                            Button(onClick = {
+                                            viewModel.resetLivenessState()
+                                            sessionId?.let { viewModel.startBeginLiveness(it) }
+                                        }) {
                                                 Text("Retry")
                                             }
                                         }

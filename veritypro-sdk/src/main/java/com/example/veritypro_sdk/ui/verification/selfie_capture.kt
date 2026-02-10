@@ -102,7 +102,10 @@ fun SelfieCaptureScreen(
                         ) {
                         Text("Preparing liveness...", color = Color.White, fontSize = 16.sp)
                         Spacer(Modifier.height(12.dp))
-                        Button(onClick = { sessionIdFromCreateKyc?.let { viewModel.startBeginLiveness(it) } }) {
+                        Button(onClick = {
+                            viewModel.resetLivenessState()
+                            sessionIdFromCreateKyc?.let { viewModel.startBeginLiveness(it) }
+                        }) {
                             Text("Retry")
                         }
                     }
@@ -120,8 +123,10 @@ fun SelfieCaptureScreen(
                         )
                         Spacer(Modifier.height(12.dp))
                         Button(onClick = {
-                            sessionIdFromCreateKyc?.let { viewModel.startBeginLiveness(it) }
                             error = null
+                            started = false
+                            viewModel.resetLivenessState()
+                            sessionIdFromCreateKyc?.let { viewModel.startBeginLiveness(it) }
                         }) { Text("Retry") }
                     }
                 }
