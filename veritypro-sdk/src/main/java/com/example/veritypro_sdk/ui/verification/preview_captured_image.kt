@@ -50,7 +50,39 @@ import kotlinx.coroutines.withContext
  */
 private fun loadBitmapWithRotation(file: File): Bitmap? {
     return try {
-        val bitmap = BitmapFactory.decodeFile(file.path) ?: return null
+        if (!file.exists() || file.length() == 0L) {
+            Log.e("PreviewScreen", "File missing or empty: ${file.path}")
+            return null
+        }
+
+        // First pass: get dimensions without loading into memory
+        val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(file.path, options)
+
+        if (options.outWidth <= 0 || options.outHeight <= 0) {
+            Log.e("PreviewScreen", "Invalid image dimensions: ${options.outWidth}x${options.outHeight}")
+            return null
+        }
+
+        // Calculate downsample factor — target max 1920px on longest side for preview
+        val maxDimension = 1920
+        val longestSide = maxOf(options.outWidth, options.outHeight)
+        var inSampleSize = 1
+        while (longestSide / inSampleSize > maxDimension) {
+            inSampleSize *= 2
+        }
+
+        Log.d("PreviewScreen", "Original: ${options.outWidth}x${options.outHeight}, inSampleSize=$inSampleSize")
+
+        // Second pass: decode with downsampling
+        val decodeOptions = BitmapFactory.Options().apply {
+            this.inSampleSize = inSampleSize
+        }
+        val bitmap = BitmapFactory.decodeFile(file.path, decodeOptions)
+        if (bitmap == null) {
+            Log.e("PreviewScreen", "BitmapFactory.decodeFile returned null (likely OOM)")
+            return null
+        }
 
         // Read EXIF orientation
         val exif = ExifInterface(file.path)
@@ -94,7 +126,7 @@ private fun loadBitmapWithRotation(file: File): Bitmap? {
         }
     } catch (e: Exception) {
         Log.e("PreviewScreen", "Failed to load bitmap with rotation", e)
-        try { BitmapFactory.decodeFile(file.path) } catch (_: Exception) { null }
+        null
     }
 }
 
@@ -232,6 +264,12 @@ fun PreviewCapturedImageScreen(
 
     val bitmap = remember(file.path) {
         loadBitmapWithRotation(file)
+    }
+
+    // If the image can't be loaded, the file is corrupted — override verification state
+    if (bitmap == null && antiSpoofPassed) {
+        antiSpoofPassed = false
+        hint = "Image file is corrupted. Please retake the photo."
     }
 
     Box(

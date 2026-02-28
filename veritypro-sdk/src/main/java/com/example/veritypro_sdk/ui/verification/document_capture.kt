@@ -340,6 +340,12 @@ fun DocumentCaptureScreen(
                             onDocumentCaptured(finalFiles)
                         } catch (t: Throwable) {
                             Log.e("DocumentCapture", "Failed to persist passport file", t)
+                            // Reset to retake - file is corrupted
+                            BurstCaptureUtils.cleanupBurstFiles(burstFiles)
+                            burstFiles = emptyList()
+                            previewPath = null
+                            verificationPassed = false
+                            verificationError = "Failed to save photo. Please retake."
                         }
                         return@PreviewCapturedImageScreen
                     }
@@ -374,6 +380,12 @@ fun DocumentCaptureScreen(
                         }
                     } catch (t: Throwable) {
                         Log.e("DocumentCapture", "Failed to persist document file", t)
+                        // Reset to retake - file is corrupted
+                        BurstCaptureUtils.cleanupBurstFiles(burstFiles)
+                        burstFiles = emptyList()
+                        previewPath = null
+                        verificationPassed = false
+                        verificationError = "Failed to save photo. Please retake."
                     }
                 }
 
