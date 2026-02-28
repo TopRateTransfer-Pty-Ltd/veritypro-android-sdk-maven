@@ -6,6 +6,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.veritypro_sdk.services.ApiRepository
 import com.example.veritypro_sdk.services.BeginLivenessData
+import com.example.veritypro_sdk.services.LivenessResultResponse
+import com.example.veritypro_sdk.services.CountryDocumentItem
 import com.example.veritypro_sdk.services.MLDecision
 import com.example.veritypro_sdk.services.MLDocumentType
 import com.example.veritypro_sdk.services.MLNextAction
@@ -37,9 +39,15 @@ class VerityProViewModel(
     private val _awsSessionId = MutableStateFlow<String?>(null)
     val awsSessionId: StateFlow<String?> = _awsSessionId
 
+    private val _livenessResultState = MutableStateFlow<Resource<LivenessResultResponse>>(Resource.Loading("idle"))
+    val livenessResultState: StateFlow<Resource<LivenessResultResponse>> = _livenessResultState
+
     // ========================================================================
     // ML BACKEND STATE
     // ========================================================================
+
+    private val _countryDocumentsState = MutableStateFlow<Resource<List<CountryDocumentItem>>>(Resource.Loading("Loading documents"))
+    val countryDocumentsState: StateFlow<Resource<List<CountryDocumentItem>>> = _countryDocumentsState
 
     private val _mlPredictState = MutableStateFlow<Resource<MLPredictResponse>?>(null)
     val mlPredictState: StateFlow<Resource<MLPredictResponse>?> = _mlPredictState
@@ -82,6 +90,26 @@ class VerityProViewModel(
     fun resetLivenessState() {
         _awsSessionId.value = null
         _beginLivenessState.value = Resource.Loading("idle")
+        _livenessResultState.value = Resource.Loading("idle")
+    }
+
+    fun checkLivenessResult(awsSessionId: String, onResult: (Boolean) -> Unit) {
+        viewModelScope.launch {
+            _livenessResultState.value = Resource.Loading("Verifying liveness result")
+            val result = repository.getLivenessResult(awsSessionId)
+            _livenessResultState.value = result
+            when (result) {
+                is Resource.Success -> {
+                    Log.d("Verity", "Liveness result: status=${result.data.status}, confidence=${result.data.confidence}")
+                    onResult(true)
+                }
+                is Resource.Error -> {
+                    Log.e("Verity", "Liveness result failed: ${result.message}")
+                    onResult(false)
+                }
+                else -> onResult(false)
+            }
+        }
     }
 
     fun startBeginLiveness(sessionId: String) {
@@ -111,6 +139,15 @@ class VerityProViewModel(
                 _beginLivenessState.value = Resource.Error(t.message ?: "Unexpected error")
                 _awsSessionId.value = null
             }
+        }
+    }
+
+    fun fetchCountryDocuments(apiKey: String, integrationId: String, isO2Code: String) {
+        if (_countryDocumentsState.value is Resource.Success) return
+        viewModelScope.launch {
+            _countryDocumentsState.value = Resource.Loading("Loading documents")
+            val result = repository.getCountryDocuments(apiKey, integrationId, isO2Code)
+            _countryDocumentsState.value = result
         }
     }
 

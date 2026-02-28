@@ -64,7 +64,7 @@ fun VerificationScreen(
 ) {
     val beginState by viewModel.beginLivenessState.collectAsState()
     val awsSessionId by viewModel.awsSessionId.collectAsState()
-
+    val countryDocumentsState by viewModel.countryDocumentsState.collectAsState()
 
     val state by viewModel.kycState.collectAsState()
     val context: Context = LocalContext.current
@@ -306,16 +306,26 @@ fun VerificationScreen(
                                 }
                             )
 
-                            VerificationStage.ID_SELECTION -> IdSelectionScreen(
-                                onBack = { stage = VerificationStage.INTRO },
-                                onContinue = { doc ->
-                                    selectedDocumentType = doc
-                                    // Check ML backend health before proceeding to document capture
-                                    checkMLBackendHealth {
-                                        stage = VerificationStage.DOCUMENT_CAPTURE
-                                    }
+                            VerificationStage.ID_SELECTION -> {
+                                LaunchedEffect(Unit) {
+                                    viewModel.fetchCountryDocuments(options.apiKey, options.integrationId, options.isO2Code)
                                 }
-                            )
+
+                                IdSelectionScreen(
+                                    countryDocumentsState = countryDocumentsState,
+                                    onBack = { stage = VerificationStage.INTRO },
+                                    onContinue = { doc ->
+                                        selectedDocumentType = doc
+                                        // Check ML backend health before proceeding to document capture
+                                        checkMLBackendHealth {
+                                            stage = VerificationStage.DOCUMENT_CAPTURE
+                                        }
+                                    },
+                                    onRetry = {
+                                        viewModel.fetchCountryDocuments(options.apiKey, options.integrationId, options.isO2Code)
+                                    }
+                                )
+                            }
 
                             VerificationStage.DOCUMENT_CAPTURE -> DocumentCaptureScreen(
                                 documentType = selectedDocumentType,
@@ -381,27 +391,33 @@ fun VerificationScreen(
                                                 onBack = { stage = VerificationStage.DOCUMENT_CAPTURE },
                                                 viewModel = viewModel,
                                                 onLivenessComplete = { capturedSelfie ->
-                                                    //livenessId = livenessId
-                                                    viewModel.updateKyc(
-                                                        VerificationRequestMultipart(
-                                                            SessionId = sessionId ?: "",
-                                                            DocumentType = selectedDocumentType ?: 0,
-                                                            PlatformUsed = "android",
-                                                            DeviceAndBrowser = DeviceUtils.getDevicePlatform(),
-                                                            IpAddress = ipAddress ?: "",
-                                                            IpLocation = locationText ?: "",
-                                                            DocumentFront = documentFrontPage?.toMultipartBodyPart("DocumentFront"),
-                                                            DocumentBack = documentBackPage?.toMultipartBodyPart("DocumentBack"),
-                                                            //PortraitPicture = capturedSelfie?.toMultipartBodyPart("PortraitPicture"),
-                                                            LivenessId = livenessId ?: ""
-                                                        ),
-                                                    )
-                                                    lastResult = LivenessResult(
-                                                        success = true,
-                                                        sessionToken = "fake",
-                                                        confidence = 0.95f
-                                                    )
-                                                    stage = VerificationStage.RESULT
+                                                    viewModel.checkLivenessResult(awsSession) { succeeded ->
+                                                        if (succeeded) {
+                                                            viewModel.updateKyc(
+                                                                VerificationRequestMultipart(
+                                                                    SessionId = sessionId ?: "",
+                                                                    DocumentType = selectedDocumentType ?: 0,
+                                                                    PlatformUsed = "android",
+                                                                    DeviceAndBrowser = DeviceUtils.getDevicePlatform(),
+                                                                    IpAddress = ipAddress ?: "",
+                                                                    IpLocation = locationText ?: "",
+                                                                    DocumentFront = documentFrontPage?.toMultipartBodyPart("DocumentFront"),
+                                                                    DocumentBack = documentBackPage?.toMultipartBodyPart("DocumentBack"),
+                                                                    LivenessId = livenessId ?: ""
+                                                                ),
+                                                            )
+                                                            lastResult = LivenessResult(
+                                                                success = true,
+                                                                sessionToken = "fake",
+                                                                confidence = 0.95f
+                                                            )
+                                                            stage = VerificationStage.RESULT
+                                                        } else {
+                                                            // Liveness failed - reset and restart
+                                                            viewModel.resetLivenessState()
+                                                            sessionId?.let { viewModel.startBeginLiveness(it) }
+                                                        }
+                                                    }
                                                 }
                                             )
                                         }
