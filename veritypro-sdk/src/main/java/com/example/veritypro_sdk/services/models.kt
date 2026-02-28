@@ -1,5 +1,7 @@
 package com.example.veritypro_sdk.services
 
+import com.google.gson.annotations.SerializedName
+
 data class ApiResponse<T>(
     val statusCode: Int,
     val statusMessage: String,
@@ -25,3 +27,16 @@ sealed class Resource<out T> {
     data class CompletedSuccess<out T>(val data: T) : Resource<T>()
 
 }
+
+data class CountryDocumentItem(
+    val id: Int,
+    @SerializedName("documentType") val documentType: String
+)
+
+data class CountryData(
+    @SerializedName("countryId") val countryId: Int,
+    @SerializedName("countryName") val countryName: String,
+    @SerializedName("isO2Code") val isO2Code: String,
+    @SerializedName("countryDocuments") val countryDocuments: List<CountryDocumentItem>
+)
+

@@ -5,6 +5,7 @@ import com.example.veritypro_sdk.utils.VerityOption
 import okhttp3.MultipartBody
 import okhttp3.RequestBody
 import retrofit2.http.Body
+import retrofit2.http.GET
 import retrofit2.http.Header
 import retrofit2.http.Multipart
 import retrofit2.http.POST
@@ -39,4 +40,16 @@ interface VerityApiService {
     suspend fun beginLiveness(
         @Query("sessionId") sessionId: String,
     ): BeginLivenessResponse
+
+    @GET("/kycintegration/country/get-country-document")
+    suspend fun getCountryDocuments(
+        @Header("x-api-key") apiKey: String,
+        @Header("Integrationid") integrationId: String
+    ): ApiResponse<List<CountryData>>
+
+    @GET
+    suspend fun getLivenessResult(
+        @retrofit2.http.Url url: String,
+        @Query("sessionId") sessionId: String
+    ): LivenessResultResponse
 }

@@ -21,12 +21,16 @@ import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
+import com.example.veritypro_sdk.services.CountryDocumentItem
+import com.example.veritypro_sdk.services.Resource
 import com.example.veritypro_sdk.ui.theme.customColors
 
 @Composable
 fun IdSelectionScreen(
+    countryDocumentsState: Resource<List<CountryDocumentItem>>,
     onBack: () -> Unit,
-    onContinue: (Int?) -> Unit
+    onContinue: (Int?) -> Unit,
+    onRetry: () -> Unit
 ) {
     var selectedOption by remember { mutableStateOf<Int?>(null) }
 
@@ -90,41 +94,70 @@ fun IdSelectionScreen(
 
         Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(24.dp)))
 
-        DocumentTypeOption(
-            iconRes = R.drawable.document,
-            title = "ID card",
-            isSelected = selectedOption == 1,
-            onSelect = { selectedOption = 1 }
-        )
+        when (countryDocumentsState) {
+            is Resource.Loading -> {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = ScaleUtil.scaleHeight(32.dp)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    CircularProgressIndicator()
+                }
+            }
 
-        Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(12.dp)))
+            is Resource.Error -> {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = ScaleUtil.scaleHeight(16.dp)),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text(
+                        text = countryDocumentsState.message,
+                        color = MaterialTheme.colorScheme.error,
+                        textAlign = TextAlign.Center,
+                        fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(14.dp).toSp() },
+                        modifier = Modifier.padding(bottom = ScaleUtil.scaleHeight(12.dp))
+                    )
+                    Button(
+                        onClick = onRetry,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = Color(0xFF2B7AEF)
+                        ),
+                        shape = MaterialTheme.shapes.small
+                    ) {
+                        Text(
+                            "Retry",
+                            fontWeight = FontWeight.W600,
+                            color = MaterialTheme.customColors.content
+                        )
+                    }
+                }
+            }
 
-        DocumentTypeOption(
-            iconRes = R.drawable.document,
-            title = "Passport",
-            isSelected = selectedOption == 2,
-            onSelect = { selectedOption = 2 }
-        )
+            is Resource.Success -> {
+                val documents = countryDocumentsState.data
 
-        Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(12.dp)))
+                documents.forEach { doc ->
+                    val sdkType = mapDocumentTypeToSdkType(doc.documentType)
+                    DocumentTypeOption(
+                        iconRes = R.drawable.document,
+                        title = doc.documentType,
+                        isSelected = selectedOption == sdkType,
+                        onSelect = { selectedOption = sdkType }
+                    )
+                    Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(12.dp)))
+                }
+            }
 
-        DocumentTypeOption(
-            iconRes = R.drawable.document,
-            title = "Driver's license",
-            isSelected = selectedOption == 3,
-            onSelect = { selectedOption = 3 }
-        )
+            else -> {}
+        }
 
         Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(44.dp)))
 
         Button(
             onClick = {
-//                val docType = when (selectedOption) {
-////                    1 -> "ID card"
-////                    2 -> "Passport"
-////                    3 -> "Driver's license"
-////                    else -> ""
-//                }
                 onContinue(selectedOption)
             },
             colors = ButtonDefaults.buttonColors(
@@ -165,6 +198,19 @@ fun IdSelectionScreen(
                 color = MaterialTheme.customColors.powered
             )
         }
+    }
+}
+
+/**
+ * Map API documentType string to SDK type: 1=ID Card, 2=Passport, 3=Driver's License
+ */
+private fun mapDocumentTypeToSdkType(documentType: String): Int {
+    return when {
+        documentType.contains("passport", ignoreCase = true) -> 2
+        documentType.contains("driver", ignoreCase = true) -> 3
+        documentType.contains("identity", ignoreCase = true) -> 1
+        documentType.contains("id card", ignoreCase = true) -> 1
+        else -> 1
     }
 }
 
