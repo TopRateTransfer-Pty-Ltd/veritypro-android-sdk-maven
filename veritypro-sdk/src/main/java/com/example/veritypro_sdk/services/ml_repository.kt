@@ -207,6 +207,46 @@ class MLRepository {
     }
 
     /**
+     * Detect document presence (lightweight, for back side)
+     *
+     * @param sessionId Client session ID
+     * @param bitmap Bitmap image to check
+     * @return Resource with presence detection result
+     */
+    suspend fun detectPresence(
+        sessionId: String,
+        bitmap: Bitmap
+    ): Resource<MLDetectPresenceResponse> {
+        return try {
+            val base64Image = bitmapToBase64(bitmap)
+
+            val request = MLDetectPresenceRequest(
+                sessionId = sessionId,
+                imageJpegBase64 = base64Image
+            )
+
+            Log.d(TAG, "Detecting document presence: session=$sessionId")
+
+            val response = MLRetrofitInstance.api.detectPresence(request)
+
+            Log.d(TAG, "Presence result: hasDocument=${response.hasDocument}, confidence=${response.confidence}")
+
+            Resource.Success(response)
+
+        } catch (e: IOException) {
+            Log.e(TAG, "Network error during detectPresence: ${e.message}")
+            Resource.Error("Network error during presence detection.")
+        } catch (e: HttpException) {
+            val errorBody = e.response()?.errorBody()?.string()
+            Log.e(TAG, "HTTP ${e.code()} error during detectPresence: $errorBody")
+            Resource.Error("ML backend error: ${e.code()}")
+        } catch (e: Exception) {
+            Log.e(TAG, "Detect presence failed: ${e.message}", e)
+            Resource.Error("Presence detection failed: ${e.message}")
+        }
+    }
+
+    /**
      * Check ML backend health
      */
     suspend fun healthCheck(): Resource<MLHealthResponse> {

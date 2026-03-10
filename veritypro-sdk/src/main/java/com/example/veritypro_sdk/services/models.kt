@@ -12,7 +12,8 @@ data class ApiResponse<T>(
 data class SessionData(
     val sessionId: String,
     val sessionUrl: String,
-    val sessionToEncode: String
+    val sessionToEncode: String,
+    val requiredModules: List<String>? = null
 )
 
 data class ApiError(

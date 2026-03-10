@@ -4,8 +4,11 @@ import android.graphics.Bitmap
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.veritypro_sdk.services.AddressVerificationResponse
 import com.example.veritypro_sdk.services.ApiRepository
+import com.example.veritypro_sdk.services.BeginLivenessCredentials
 import com.example.veritypro_sdk.services.BeginLivenessData
+import com.example.veritypro_sdk.services.EddCaseResponse
 import com.example.veritypro_sdk.services.LivenessResultResponse
 import com.example.veritypro_sdk.services.CountryDocumentItem
 import com.example.veritypro_sdk.services.MLDecision
@@ -17,6 +20,8 @@ import com.example.veritypro_sdk.services.MLRetrofitInstance
 import com.example.veritypro_sdk.services.MLVerifyBurstResponse
 import com.example.veritypro_sdk.services.Resource
 import com.example.veritypro_sdk.services.VerificationRequestMultipart
+import com.example.veritypro_sdk.utils.VerificationFlowRouter
+import com.example.veritypro_sdk.utils.VerificationModule
 import com.example.veritypro_sdk.utils.VerityOption
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -24,9 +29,11 @@ import kotlinx.coroutines.launch
 import java.io.File
 
 class VerityProViewModel(
+    repository: ApiRepository? = null,
+    mlRepository: MLRepository? = null
 ) : ViewModel() {
-    private val repository: ApiRepository = ApiRepository()
-    private val mlRepository: MLRepository = MLRepository()
+    private val repository: ApiRepository = repository ?: ApiRepository()
+    private val mlRepository: MLRepository = mlRepository ?: MLRepository()
     private var apiKey: String = ""
 
     private val _kycState = MutableStateFlow<Resource<Any>>(Resource.Loading("Initializing KYC Verification"))
@@ -39,8 +46,22 @@ class VerityProViewModel(
     private val _awsSessionId = MutableStateFlow<String?>(null)
     val awsSessionId: StateFlow<String?> = _awsSessionId
 
+    private val _livenessRegion = MutableStateFlow("us-east-1")
+    val livenessRegion: StateFlow<String> = _livenessRegion
+
+    private val _livenessCredentials = MutableStateFlow<BeginLivenessCredentials?>(null)
+    val livenessCredentials: StateFlow<BeginLivenessCredentials?> = _livenessCredentials
+
     private val _livenessResultState = MutableStateFlow<Resource<LivenessResultResponse>>(Resource.Loading("idle"))
     val livenessResultState: StateFlow<Resource<LivenessResultResponse>> = _livenessResultState
+
+    /**
+     * Backend verification state for post-liveness polling.
+     * Idle -> Polling -> Succeeded / Failed
+     */
+    enum class LivenessVerificationState { Idle, Polling, Succeeded, Failed }
+    private val _livenessVerificationState = MutableStateFlow(LivenessVerificationState.Idle)
+    val livenessVerificationState: StateFlow<LivenessVerificationState> = _livenessVerificationState
 
     // ========================================================================
     // ML BACKEND STATE
@@ -57,6 +78,66 @@ class VerityProViewModel(
 
     private val _mlBackendAvailable = MutableStateFlow<Boolean?>(null)
     val mlBackendAvailable: StateFlow<Boolean?> = _mlBackendAvailable
+
+    // ========================================================================
+    // VERIFICATION FLOW ROUTER
+    // ========================================================================
+
+    private var _flowRouter: VerificationFlowRouter? = null
+    val flowRouter: VerificationFlowRouter
+        get() = _flowRouter ?: VerificationFlowRouter(
+            setOf(VerificationModule.DOCUMENT, VerificationModule.BIOMETRIC)
+        )
+
+    fun initFlowRouter(modules: List<String>?) {
+        val moduleSet = modules?.mapNotNull { name ->
+            try { VerificationModule.valueOf(name) } catch (_: Exception) { null }
+        }?.toSet() ?: setOf(VerificationModule.DOCUMENT, VerificationModule.BIOMETRIC)
+        _flowRouter = VerificationFlowRouter(moduleSet)
+        Log.d("VerityProVM", "FlowRouter initialized with modules: $moduleSet")
+    }
+
+    // ========================================================================
+    // ADDRESS VERIFICATION STATE
+    // ========================================================================
+
+    private val _addressState = MutableStateFlow<Resource<AddressVerificationResponse>?>(null)
+    val addressState: StateFlow<Resource<AddressVerificationResponse>?> = _addressState
+
+    fun submitAddressDocument(
+        sessionId: String,
+        file: File,
+        documentType: Int,
+        ipAddress: String,
+        ipLocation: String
+    ) {
+        viewModelScope.launch {
+            _addressState.value = Resource.Loading("Submitting address document...")
+            val result = repository.submitAddressDocument(sessionId, file, documentType, ipAddress, ipLocation)
+            _addressState.value = result
+        }
+    }
+
+    // ========================================================================
+    // EDD STATE
+    // ========================================================================
+
+    private val _eddState = MutableStateFlow<Resource<EddCaseResponse>?>(null)
+    val eddState: StateFlow<Resource<EddCaseResponse>?> = _eddState
+
+    fun submitEddDocument(
+        subjectId: String,
+        subjectName: String,
+        file: File,
+        documentType: Int,
+        apiKey: String
+    ) {
+        viewModelScope.launch {
+            _eddState.value = Resource.Loading("Submitting EDD document...")
+            val result = repository.createEddCase(subjectId, subjectName, file, documentType, apiKey)
+            _eddState.value = result
+        }
+    }
 
     // ========================================================================
     // EXISTING API METHODS
@@ -89,56 +170,107 @@ class VerityProViewModel(
 
     fun resetLivenessState() {
         _awsSessionId.value = null
+        _livenessRegion.value = "us-east-1"
+        _livenessCredentials.value = null
         _beginLivenessState.value = Resource.Loading("idle")
         _livenessResultState.value = Resource.Loading("idle")
+        _livenessVerificationState.value = LivenessVerificationState.Idle
     }
 
-    fun checkLivenessResult(awsSessionId: String, onResult: (Boolean) -> Unit) {
+    /**
+     * Polls the backend to verify liveness result after the AWS SDK reports completion.
+     * Uses exponential backoff (3s initial, 1.5x multiplier, 15s cap, 12 max attempts).
+     *
+     * @param livenessId The backend liveness session ID (not the AWS session ID)
+     * @param onResult Callback with true if backend confirms SUCCEEDED, false otherwise
+     */
+    fun verifyLivenessResult(livenessId: String, onResult: (Boolean) -> Unit) {
         viewModelScope.launch {
-            _livenessResultState.value = Resource.Loading("Verifying liveness result")
-            val result = repository.getLivenessResult(awsSessionId)
+            _livenessVerificationState.value = LivenessVerificationState.Polling
+            _livenessResultState.value = Resource.Loading("Verifying liveness result...")
+
+            val result = repository.pollLivenessResult(livenessId)
             _livenessResultState.value = result
+
             when (result) {
                 is Resource.Success -> {
-                    Log.d("Verity", "Liveness result: status=${result.data.status}, confidence=${result.data.confidence}")
+                    Log.d("Verity", "Liveness verified: status=${result.data.status}, confidence=${result.data.confidence}")
+                    _livenessVerificationState.value = LivenessVerificationState.Succeeded
                     onResult(true)
                 }
                 is Resource.Error -> {
-                    Log.e("Verity", "Liveness result failed: ${result.message}")
+                    Log.e("Verity", "Liveness verification failed: ${result.message}")
+                    _livenessVerificationState.value = LivenessVerificationState.Failed
                     onResult(false)
                 }
-                else -> onResult(false)
+                else -> {
+                    _livenessVerificationState.value = LivenessVerificationState.Failed
+                    onResult(false)
+                }
             }
         }
     }
 
-    fun startBeginLiveness(sessionId: String) {
-        if (_awsSessionId.value != null && _awsSessionId.value!!.isNotBlank()) return
+    /**
+     * Starts the liveness session via the backend, with retry logic on failure.
+     *
+     * @param sessionId The KYC session ID from createKyc
+     * @param forceRetry If true, clears any existing awsSessionId and forces a fresh request
+     * @param maxRetries Maximum number of retry attempts (default 3)
+     */
+    fun startBeginLiveness(sessionId: String, forceRetry: Boolean = false, maxRetries: Int = 3) {
+        if (!forceRetry && _awsSessionId.value != null && _awsSessionId.value!!.isNotBlank()) return
 
         viewModelScope.launch {
             _beginLivenessState.value = Resource.Loading("Starting liveness")
-            try {
-                Log.d("BeginLiveness", "Attempting liveness start for $sessionId")
+            _livenessVerificationState.value = LivenessVerificationState.Idle
 
-                val resp = repository.beginLiveness(sessionId)
-                when (resp) {
-                    is Resource.Success -> {
-                        _beginLivenessState.value = Resource.Success(resp.data)
-                        _awsSessionId.value = resp.data.awsSessionId
+            var lastError: String? = null
+            val backoffDelays = longArrayOf(1_000, 2_000, 4_000) // 1s, 2s, 4s
+
+            for (attempt in 0 until maxRetries) {
+                try {
+                    Log.d("BeginLiveness", "Attempt ${attempt + 1}/$maxRetries for session $sessionId")
+
+                    val resp = repository.beginLiveness(sessionId, apiKey)
+                    when (resp) {
+                        is Resource.Success -> {
+                            _beginLivenessState.value = Resource.Success(resp.data)
+                            _awsSessionId.value = resp.data.awsSessionId
+                            _livenessRegion.value = resp.data.region ?: "us-east-1"
+                            _livenessCredentials.value = resp.data.credentials
+
+                            Log.d("BeginLiveness", "Success: awsSession=${resp.data.awsSessionId}, " +
+                                    "region=${_livenessRegion.value}, " +
+                                    "credentials=${resp.data.credentials != null}")
+                            return@launch // Success — exit retry loop
+                        }
+                        is Resource.Error -> {
+                            lastError = resp.message
+                            Log.e("BeginLiveness", "Attempt ${attempt + 1} failed: ${resp.message}")
+                        }
+                        else -> {
+                            lastError = "Unknown beginLiveness response"
+                            Log.e("BeginLiveness", "Attempt ${attempt + 1}: unexpected response type")
+                        }
                     }
-                    is Resource.Error -> {
-                        _beginLivenessState.value = Resource.Error(resp.message)
-                        _awsSessionId.value = null
-                    }
-                    else -> {
-                        _beginLivenessState.value = Resource.Error("Unknown beginLiveness response")
-                        _awsSessionId.value = null
-                    }
+                } catch (t: Throwable) {
+                    lastError = t.message ?: "Unexpected error"
+                    Log.e("BeginLiveness", "Attempt ${attempt + 1} threw: ${t.message}")
                 }
-            } catch (t: Throwable) {
-                _beginLivenessState.value = Resource.Error(t.message ?: "Unexpected error")
-                _awsSessionId.value = null
+
+                // Wait before retrying (except on last attempt)
+                if (attempt < maxRetries - 1) {
+                    val delay = backoffDelays.getOrElse(attempt) { backoffDelays.last() }
+                    Log.d("BeginLiveness", "Retrying in ${delay}ms...")
+                    kotlinx.coroutines.delay(delay)
+                }
             }
+
+            // All retries exhausted
+            _beginLivenessState.value = Resource.Error(lastError ?: "Failed to start liveness after $maxRetries attempts")
+            _awsSessionId.value = null
+            _livenessCredentials.value = null
         }
     }
 

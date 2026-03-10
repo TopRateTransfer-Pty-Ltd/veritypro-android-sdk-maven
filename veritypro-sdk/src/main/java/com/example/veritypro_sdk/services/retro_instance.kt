@@ -2,6 +2,7 @@ package com.example.veritypro_sdk.services
 
 import android.os.Build
 import android.util.Log
+import okhttp3.CertificatePinner
 import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
 import retrofit2.Retrofit
@@ -11,7 +12,14 @@ import java.util.concurrent.TimeUnit
 object RetrofitInstance {
     private const val BASE_URL = "https://api.skylinefare.com"
 
+    // Certificate pinning for api.skylinefare.com (leaf + intermediate CA)
+    private val certificatePinner = CertificatePinner.Builder()
+        .add("api.skylinefare.com", "sha256/b2TlY6Y77KRBmvmbQF7jAbNKQErofrz4KXnXDLn2FeI=")
+        .add("api.skylinefare.com", "sha256/y7xVm0TVJNahMr2sZydE2jQH8SquXV9yLF9seROHHHU=")
+        .build()
+
     val okHttpClient = OkHttpClient.Builder()
+        .certificatePinner(certificatePinner)
         .connectTimeout(60, TimeUnit.SECONDS)
         .readTimeout(60, TimeUnit.SECONDS)
         .writeTimeout(60, TimeUnit.SECONDS)
@@ -40,62 +48,68 @@ object MLRetrofitInstance {
 
     private const val TAG = "MLRetrofitInstance"
 
-    // Detect if running on emulator
-    private fun isEmulator(): Boolean {
-        return (Build.FINGERPRINT.startsWith("generic")
-                || Build.FINGERPRINT.startsWith("unknown")
-                || Build.MODEL.contains("google_sdk")
-                || Build.MODEL.contains("Emulator")
-                || Build.MODEL.contains("Android SDK built for x86")
-                || Build.MANUFACTURER.contains("Genymotion")
-                || Build.BRAND.startsWith("generic")
-                || Build.DEVICE.startsWith("generic")
-                || "google_sdk" == Build.PRODUCT
-                || Build.HARDWARE.contains("goldfish")
-                || Build.HARDWARE.contains("ranchu"))
-    }
+    // Production ML backend URL — locked to prevent tampering
+    private const val ML_BASE_URL = "https://api.skylinefare.com/docai/"
 
-    // Default ML backend URL - auto-detect emulator vs physical device
-    private var mlBaseUrl: String = if (isEmulator()) {
-        Log.d(TAG, "Running on EMULATOR - using 10.0.2.2:8001")
-        //"http://10.0.2.2:8001"
-        "https://api.skylinefare.com/docai/"
+    // Allowed URL prefixes for ML backend (whitelist)
+    private val ALLOWED_URL_PREFIXES = listOf(
+        "https://api.skylinefare.com/",
+        "http://10.0.2.2:",      // Android emulator → host localhost
+        "http://localhost:",
+        "http://127.0.0.1:"
+    )
 
-    } else {
-        // Physical device - need actual IP address
-        // This should be configured by the app before use
-        Log.w(TAG, "Running on PHYSICAL DEVICE - ML backend needs configuration!")
-        Log.w(TAG, "Call MLRetrofitInstance.configure('http://YOUR_MACHINE_IP:8001') before using ML features")
-        "https://api.skylinefare.com/docai/" // Your development machine's LAN IP
-    }
-
-    //https://api.skylinefare.com/docai/v1/kyc/doc/models
+    private var mlBaseUrl: String = ML_BASE_URL
 
     // Logging interceptor for debugging
     private val loggingInterceptor = HttpLoggingInterceptor().apply {
         level = HttpLoggingInterceptor.Level.BODY
     }
 
-    private val mlOkHttpClient = OkHttpClient.Builder()
-        .connectTimeout(30, TimeUnit.SECONDS)
-        .readTimeout(30, TimeUnit.SECONDS)
-        .writeTimeout(30, TimeUnit.SECONDS)
-        .addInterceptor(loggingInterceptor)
+    // Certificate pinning (same pins as main RetrofitInstance)
+    private val certificatePinner = CertificatePinner.Builder()
+        .add("api.skylinefare.com", "sha256/b2TlY6Y77KRBmvmbQF7jAbNKQErofrz4KXnXDLn2FeI=")
+        .add("api.skylinefare.com", "sha256/y7xVm0TVJNahMr2sZydE2jQH8SquXV9yLF9seROHHHU=")
         .build()
+
+    private fun buildOkHttpClient(): OkHttpClient {
+        val builder = OkHttpClient.Builder()
+            .connectTimeout(15, TimeUnit.SECONDS)
+            .readTimeout(15, TimeUnit.SECONDS)
+            .writeTimeout(15, TimeUnit.SECONDS)
+            .addInterceptor(loggingInterceptor)
+
+        // Only apply certificate pinning for production URLs
+        if (mlBaseUrl.startsWith("https://api.skylinefare.com")) {
+            builder.certificatePinner(certificatePinner)
+        }
+
+        return builder.build()
+    }
 
     private var retrofit: Retrofit? = null
     private var mlApiService: MLApiService? = null
 
     /**
-     * Configure the ML backend URL
-     * Call this before using the ML API
+     * Configure the ML backend URL for local development only.
+     * URL must match the allowed whitelist (production domain or localhost variants).
      *
-     * @param baseUrl The ML backend base URL (e.g., "http://192.168.1.100:8001")
+     * @param baseUrl The ML backend base URL
+     * @throws IllegalArgumentException if URL is not in the allowed whitelist
      */
     fun configure(baseUrl: String) {
-        mlBaseUrl = baseUrl.trimEnd('/')
+        val trimmed = baseUrl.trimEnd('/')
+        val isAllowed = ALLOWED_URL_PREFIXES.any { trimmed.startsWith(it) }
+        if (!isAllowed) {
+            Log.e(TAG, "Rejected ML backend URL: $trimmed — not in allowed whitelist")
+            throw IllegalArgumentException(
+                "ML backend URL must start with one of: ${ALLOWED_URL_PREFIXES.joinToString()}"
+            )
+        }
+        mlBaseUrl = trimmed
         retrofit = null
         mlApiService = null
+        Log.d(TAG, "ML backend configured: $trimmed")
     }
 
     /**
@@ -107,7 +121,7 @@ object MLRetrofitInstance {
                 retrofit = Retrofit.Builder()
                     .baseUrl(mlBaseUrl)
                     .addConverterFactory(GsonConverterFactory.create())
-                    .client(mlOkHttpClient)
+                    .client(buildOkHttpClient())
                     .build()
                 mlApiService = retrofit!!.create(MLApiService::class.java)
             }

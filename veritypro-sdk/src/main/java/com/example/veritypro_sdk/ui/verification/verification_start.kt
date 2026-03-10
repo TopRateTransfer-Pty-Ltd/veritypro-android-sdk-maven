@@ -64,6 +64,9 @@ fun VerificationScreen(
 ) {
     val beginState by viewModel.beginLivenessState.collectAsState()
     val awsSessionId by viewModel.awsSessionId.collectAsState()
+    val livenessRegion by viewModel.livenessRegion.collectAsState()
+    val livenessCredentials by viewModel.livenessCredentials.collectAsState()
+    val livenessVerificationState by viewModel.livenessVerificationState.collectAsState()
     val countryDocumentsState by viewModel.countryDocumentsState.collectAsState()
 
     val state by viewModel.kycState.collectAsState()
@@ -81,14 +84,18 @@ fun VerificationScreen(
     var ipAddress: String? by remember { mutableStateOf("") }
     var documentFrontPage: File? by remember { mutableStateOf(null) }
     var documentBackPage: File? by remember { mutableStateOf(null) }
-    //var selfieFile: File? by remember { mutableStateOf(null) }
-    //var livenessId: File? by remember { mutableStateOf(null) }
     var sessionId: String? by remember { mutableStateOf(null) }
     var livenessId: String? by remember { mutableStateOf(null) }
+    var addressDocFile: File? by remember { mutableStateOf(null) }
+    var addressDocType: Int? by rememberSaveable { mutableStateOf(null) }
+    var eddDocFile: File? by remember { mutableStateOf(null) }
+    var eddDocType: Int? by rememberSaveable { mutableStateOf(null) }
 
     LaunchedEffect(state) {
         if (state is Resource.Success) {
-            sessionId = (state as Resource.Success<SessionData>).data.sessionId
+            val sessionData = (state as Resource.Success<SessionData>).data
+            sessionId = sessionData.sessionId
+            viewModel.initFlowRouter(sessionData.requiredModules)
         }
     }
 
@@ -252,7 +259,7 @@ fun VerificationScreen(
             Modifier.fillMaxSize(),
             color = MaterialTheme.colorScheme.background
         ) {
-            var stage by rememberSaveable { mutableStateOf(VerificationStage.INTRO) }
+            var stage by rememberSaveable { mutableStateOf(VerificationStage.HEALTH_CHECK) }
             var lastResult by rememberSaveable { mutableStateOf<LivenessResult?>(null) }
             var selectedDocumentType: Int? by rememberSaveable { mutableStateOf(null) }
             var showExitDialog by rememberSaveable { mutableStateOf(false) }
@@ -264,15 +271,16 @@ fun VerificationScreen(
                     return@BackHandler
                 }
 
-                if (stage == VerificationStage.INTRO) {
+                if (stage == VerificationStage.HEALTH_CHECK || stage == VerificationStage.INTRO) {
                     showExitDialog = true
+                } else if (stage == VerificationStage.RESULT) {
+                    stage = VerificationStage.INTRO
                 } else {
-                    stage = when (stage) {
-                        VerificationStage.ID_SELECTION -> VerificationStage.INTRO
-                        VerificationStage.DOCUMENT_CAPTURE -> VerificationStage.ID_SELECTION
-                        VerificationStage.SELFIE_CAPTURE -> VerificationStage.DOCUMENT_CAPTURE
-                        VerificationStage.RESULT -> VerificationStage.INTRO
-                        else -> VerificationStage.INTRO
+                    val prev = viewModel.flowRouter.previousStage(stage)
+                    if (prev != null) {
+                        stage = prev
+                    } else {
+                        showExitDialog = true
                     }
                 }
             }
@@ -293,12 +301,40 @@ fun VerificationScreen(
 
                         when (stage) {
 
+                            VerificationStage.HEALTH_CHECK -> {
+                                // Run ML health check before showing intro (matches iOS flow)
+                                LaunchedEffect(Unit) {
+                                    checkMLBackendHealth {
+                                        stage = VerificationStage.INTRO
+                                    }
+                                }
+
+                                if (showMLServiceDown) {
+                                    MLServiceDownScreen(
+                                        errorMessage = mlHealthError,
+                                        isRetrying = isCheckingMLHealth,
+                                        onRetry = {
+                                            checkMLBackendHealth {
+                                                showMLServiceDown = false
+                                                stage = VerificationStage.INTRO
+                                            }
+                                        },
+                                        onBack = { onCancel() }
+                                    )
+                                } else {
+                                    LoadingScreen(
+                                        text = "Checking service availability...",
+                                        poweredByText = "Powered by VERITYPRO"
+                                    )
+                                }
+                            }
+
                             VerificationStage.INTRO -> IntroScreen(
                                 onCancel = { showExitDialog = true },
                                 onGetStarted = {
                                     requestNecessaryPermissions {
                                         if (hasCameraPermission && hasLocationPermission) {
-                                            stage = VerificationStage.ID_SELECTION
+                                            stage = viewModel.flowRouter.firstContentStage()
                                         } else {
                                             allowAdvanceAfterPermission = true
                                         }
@@ -313,13 +349,12 @@ fun VerificationScreen(
 
                                 IdSelectionScreen(
                                     countryDocumentsState = countryDocumentsState,
-                                    onBack = { stage = VerificationStage.INTRO },
+                                    onBack = {
+                                        stage = viewModel.flowRouter.previousStage(stage) ?: VerificationStage.INTRO
+                                    },
                                     onContinue = { doc ->
                                         selectedDocumentType = doc
-                                        // Check ML backend health before proceeding to document capture
-                                        checkMLBackendHealth {
-                                            stage = VerificationStage.DOCUMENT_CAPTURE
-                                        }
+                                        stage = viewModel.flowRouter.nextStage(stage) ?: VerificationStage.RESULT
                                     },
                                     onRetry = {
                                         viewModel.fetchCountryDocuments(options.apiKey, options.integrationId, options.isO2Code)
@@ -329,7 +364,9 @@ fun VerificationScreen(
 
                             VerificationStage.DOCUMENT_CAPTURE -> DocumentCaptureScreen(
                                 documentType = selectedDocumentType,
-                                onBack = { stage = VerificationStage.ID_SELECTION },
+                                onBack = {
+                                    stage = viewModel.flowRouter.previousStage(stage) ?: VerificationStage.INTRO
+                                },
                                 onDocumentCaptured = { photoFile ->
                                     documentFrontPage = photoFile[0]
                                     if (photoFile.size > 1) {
@@ -340,7 +377,7 @@ fun VerificationScreen(
                                         sessionToken = "fake",
                                         confidence = 0.95f
                                     )
-                                    stage = VerificationStage.SELFIE_CAPTURE
+                                    stage = viewModel.flowRouter.nextStage(stage) ?: VerificationStage.RESULT
                                 }
                             )
 
@@ -371,7 +408,7 @@ fun VerificationScreen(
                                             Spacer(Modifier.height(8.dp))
                                             Button(onClick = {
                                             viewModel.resetLivenessState()
-                                            sessionId?.let { viewModel.startBeginLiveness(it) }
+                                            sessionId?.let { viewModel.startBeginLiveness(it, forceRetry = true) }
                                         }) {
                                                 Text("Retry")
                                             }
@@ -388,11 +425,19 @@ fun VerificationScreen(
                                                 sessionIdFromCreateKyc = sessionId ?: "",
                                                 awsSessionId = awsSession,
                                                 livenessId = livenessId,
-                                                onBack = { stage = VerificationStage.DOCUMENT_CAPTURE },
+                                                region = livenessRegion,
+                                                credentials = livenessCredentials,
+                                                onBack = {
+                                                    stage = viewModel.flowRouter.previousStage(stage) ?: VerificationStage.INTRO
+                                                },
                                                 viewModel = viewModel,
                                                 onLivenessComplete = { capturedSelfie ->
-                                                    viewModel.checkLivenessResult(awsSession) { succeeded ->
+                                                    // Use polling verification with livenessId (backend session ID)
+                                                    viewModel.verifyLivenessResult(livenessId ?: awsSession) { succeeded ->
                                                         if (succeeded) {
+                                                            // PortraitPicture is intentionally null — the backend
+                                                            // extracts the reference face from the AWS liveness
+                                                            // session via LivenessId, replacing the selfie upload.
                                                             viewModel.updateKyc(
                                                                 VerificationRequestMultipart(
                                                                     SessionId = sessionId ?: "",
@@ -411,11 +456,11 @@ fun VerificationScreen(
                                                                 sessionToken = "fake",
                                                                 confidence = 0.95f
                                                             )
-                                                            stage = VerificationStage.RESULT
+                                                            stage = viewModel.flowRouter.nextStage(stage) ?: VerificationStage.RESULT
                                                         } else {
-                                                            // Liveness failed - reset and restart
+                                                            // Liveness failed - reset and force fresh retry
                                                             viewModel.resetLivenessState()
-                                                            sessionId?.let { viewModel.startBeginLiveness(it) }
+                                                            sessionId?.let { viewModel.startBeginLiveness(it, forceRetry = true) }
                                                         }
                                                     }
                                                 }
@@ -428,63 +473,27 @@ fun VerificationScreen(
                             }
 
 
-//                            VerificationStage.SELFIE_CAPTURE -> {
-//                                LaunchedEffect(stage) {
-//                                    if (stage == VerificationStage.SELFIE_CAPTURE) {
-//                                        sessionId?.let { sid ->
-//                                            viewModel.startBeginLiveness(sid)
-//                                        }
-//                                    }
-//                                }
-//
-//                                if (beginState is Resource.Loading) {
-//                                    //print('loading')
-//                                    // optional small indicator — you can overlay this
-//                                    // but we still show SelfieCaptureScreen so user can position face
-//                                } else if (beginState is Resource.Error) {
-//                                    // show retry - a simple Button or dialog
-//                                    Column {
-//                                        Text(text = "Failed to prepare liveness: ${(beginState as Resource.Error).message}")
-//                                        Button(onClick = { sessionId?.let { viewModel.startBeginLiveness(it) } }) {
-//                                            Text("Retry")
-//                                        }
-//                                    }
-//                                }
-//                                SelfieCaptureScreen(
-//                                    sessionIdFromCreateKyc = result.sessionId,
-//                                    awsSessionId = awsSessionId,
-//                                    onBack = { stage = VerificationStage.DOCUMENT_CAPTURE },
-//                                    onSelfieCaptured = { capturedSelfie ->
-//                                        selfieFile = capturedSelfie
-//                                        viewModel.updateKyc(
-//                                            VerificationRequestMultipart(
-//                                                SessionId = result.sessionId,
-//                                                DocumentType = selectedDocumentType ?: 0,
-//                                                PlatformUsed = "android",
-//                                                DeviceAndBrowser = DeviceUtils.getDevicePlatform(),
-//                                                IpAddress = ipAddress ?: "",
-//                                                IpLocation = locationText ?: "",
-//                                                DocumentFront = documentFrontPage?.toMultipartBodyPart(
-//                                                    "DocumentFront"
-//                                                ),
-//                                                DocumentBack = documentBackPage?.toMultipartBodyPart(
-//                                                    "DocumentBack"
-//                                                ),
-//                                                PortraitPicture = capturedSelfie.toMultipartBodyPart(
-//                                                    "PortraitPicture"
-//                                                ),
-//                                            ),
-//                                        )
-//                                        lastResult = LivenessResult(
-//                                            success = true,
-//                                            sessionToken = "fake",
-//                                            confidence = 0.95f
-//                                        )
-//                                        stage = VerificationStage.RESULT
-//                                    }
-//                                )
-//                            }
+                            VerificationStage.ADDRESS_DOCUMENT -> AddressCaptureScreen(
+                                onBack = {
+                                    stage = viewModel.flowRouter.previousStage(stage) ?: VerificationStage.INTRO
+                                },
+                                onDocumentCaptured = { file, docType ->
+                                    addressDocFile = file
+                                    addressDocType = docType
+                                    stage = viewModel.flowRouter.nextStage(stage) ?: VerificationStage.RESULT
+                                }
+                            )
 
+                            VerificationStage.EDD_DOCUMENT -> EddDocumentScreen(
+                                onBack = {
+                                    stage = viewModel.flowRouter.previousStage(stage) ?: VerificationStage.INTRO
+                                },
+                                onDocumentCaptured = { file, docType ->
+                                    eddDocFile = file
+                                    eddDocType = docType
+                                    stage = viewModel.flowRouter.nextStage(stage) ?: VerificationStage.RESULT
+                                }
+                            )
 
                             VerificationStage.RESULT -> ResultScreen(
                                 result = lastResult ?: LivenessResult(false, error = "unknown"),
@@ -504,23 +513,23 @@ fun VerificationScreen(
                             errorReason = message,
                             onGoBack = {
                                 when (stage) {
-                                    VerificationStage.ID_SELECTION,
-                                    VerificationStage.DOCUMENT_CAPTURE,
-                                    VerificationStage.SELFIE_CAPTURE -> stage = when (stage) {
-                                        VerificationStage.ID_SELECTION -> VerificationStage.INTRO
-                                        VerificationStage.DOCUMENT_CAPTURE -> VerificationStage.ID_SELECTION
-                                        VerificationStage.SELFIE_CAPTURE -> VerificationStage.DOCUMENT_CAPTURE
-                                        else -> VerificationStage.INTRO
-                                    }
                                     VerificationStage.RESULT -> {
                                         stage = VerificationStage.INTRO
                                         documentFrontPage = null
                                         documentBackPage = null
-                                        //selfieFile = null
+                                        addressDocFile = null
+                                        addressDocType = null
+                                        eddDocFile = null
+                                        eddDocType = null
                                         selectedDocumentType = null
                                         viewModel.createKyc(options)
                                     }
-                                    else -> onCancel()
+                                    VerificationStage.HEALTH_CHECK,
+                                    VerificationStage.INTRO -> onCancel()
+                                    else -> {
+                                        val prev = viewModel.flowRouter.previousStage(stage)
+                                        stage = prev ?: VerificationStage.INTRO
+                                    }
                                 }
                             },
                             onRefresh = {
@@ -528,7 +537,7 @@ fun VerificationScreen(
                                     viewModel.updateKyc(
                                         VerificationRequestMultipart(
                                             SessionId = sessionId!!,
-                                            LivenessId = sessionId!!,
+                                            LivenessId = livenessId ?: "",
                                             DocumentType = selectedDocumentType ?: 0,
                                             PlatformUsed = "android",
                                             DeviceAndBrowser = DeviceUtils.getDevicePlatform(),
@@ -582,15 +591,14 @@ fun VerificationScreen(
                     )
                 }
 
-                // ML Service Down Screen
-                if (showMLServiceDown) {
+                // ML Service Down Screen (fallback overlay for any stage)
+                if (showMLServiceDown && stage != VerificationStage.HEALTH_CHECK) {
                     MLServiceDownScreen(
                         errorMessage = mlHealthError,
                         isRetrying = isCheckingMLHealth,
                         onRetry = {
                             checkMLBackendHealth {
                                 showMLServiceDown = false
-                                stage = VerificationStage.DOCUMENT_CAPTURE
                             }
                         },
                         onBack = {

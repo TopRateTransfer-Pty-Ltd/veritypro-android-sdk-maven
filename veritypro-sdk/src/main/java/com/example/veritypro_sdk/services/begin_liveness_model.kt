@@ -4,14 +4,23 @@ package com.example.veritypro_sdk.services
 
 import com.google.gson.annotations.SerializedName
 
-//data class BeginLivenessRequest(
-//    @SerializedName("sessionId") val sessionId: String
-//)
+data class BeginLivenessCredentials(
+    @SerializedName("accessKeyId") val accessKeyId: String,
+    @SerializedName("secretAccessKey") val secretAccessKey: String,
+    @SerializedName("sessionToken") val sessionToken: String,
+    @SerializedName("expiration") val expiration: String? = null
+) {
+    /** Redact secrets to prevent accidental leakage via logcat */
+    override fun toString(): String =
+        "BeginLivenessCredentials(accessKeyId=${accessKeyId.take(4)}***, expiration=$expiration)"
+}
 
 data class BeginLivenessData(
     val id: String?,
     @SerializedName("aws_session_id") val awsSessionId: String?,
-    val status: String?
+    val status: String?,
+    val region: String? = null,
+    val credentials: BeginLivenessCredentials? = null
 )
 
 data class BeginLivenessResponse(
@@ -22,10 +31,12 @@ data class BeginLivenessResponse(
 )
 
 data class LivenessResultResponse(
-    @SerializedName("Confidence") val confidence: Double,
-    @SerializedName("Status") val status: String,
-    @SerializedName("AuditImages") val auditImages: List<LivenessAuditImage>?,
-    @SerializedName("ReferenceImage") val referenceImage: LivenessS3Image?
+    @SerializedName("id") val id: String?,
+    @SerializedName("aws_session_id") val awsSessionId: String?,
+    @SerializedName("status") val status: String,
+    @SerializedName("liveness_passed") val livenessPassed: Boolean?,
+    @SerializedName("confidence") val confidence: Double?,
+    @SerializedName("updated_at") val updatedAt: String?
 )
 
 data class LivenessAuditImage(

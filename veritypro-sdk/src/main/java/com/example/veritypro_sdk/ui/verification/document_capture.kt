@@ -158,11 +158,6 @@ fun DocumentCaptureScreen(
     var consecutiveNullBitmaps by remember { mutableStateOf(0) }
 
     // Animated colors for smooth transitions
-    val frameColor by animateColorAsState(
-        targetValue = if (mlPassed) Color(0xFF4CAF50) else Color.Transparent,
-        animationSpec = tween(durationMillis = 300),
-        label = "frameColor"
-    )
     val buttonBorderColor by animateColorAsState(
         targetValue = if (mlPassed) Color(0xFF4CAF50) else Color(0xFF565B57),
         animationSpec = tween(durationMillis = 300),
@@ -475,15 +470,8 @@ fun DocumentCaptureScreen(
                     )
                 }
 
-                // Camera info (zoom and focus mode)
-                capabilityReport?.let { report ->
-                    Text(
-                        text = "${report.recommendedZoom}x",
-                        color = Color.White.copy(alpha = 0.7f),
-                        fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(12.dp).toSp() },
-                        fontWeight = FontWeight.W500
-                    )
-                }
+                // Spacer for layout balance between close button and torch toggle
+                Spacer(modifier = Modifier.size(40.dp))
 
                 // Torch toggle button
                 if (CameraUtils.isTorchAvailable()) {
@@ -523,17 +511,20 @@ fun DocumentCaptureScreen(
 
             Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(24.dp)))
 
-            // Camera frame with ML-driven green border
+            // Camera frame with corner indicator overlay
+            val detectionState = when {
+                verificationPassed -> DetectionState.SUCCESS
+                verificationError.isNotEmpty() -> DetectionState.FAILED
+                isCapturing || isProcessing -> DetectionState.CAPTURING
+                mlPassed -> DetectionState.DETECTED
+                else -> DetectionState.SEARCHING
+            }
+
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
                     .aspectRatio(327f / 191f)
                     .padding(horizontal = ScaleUtil.scaleWidth(24.dp))
-                    .border(
-                        width = if (mlPassed && !isProcessing) 3.dp else 0.dp,
-                        color = frameColor,
-                        shape = RoundedCornerShape(ScaleUtil.scaleWidth(8.dp))
-                    )
             ) {
                 // Show frozen bitmap during processing, otherwise show live preview
                 if (isProcessing && frozenBitmap != null) {
@@ -613,26 +604,11 @@ fun DocumentCaptureScreen(
                     }
                 }
 
-                // ML status indicator overlay - centered at bottom (only when not processing)
-                if (mlPassed && !isProcessing) {
-                    Box(
-                        modifier = Modifier
-                            .align(Alignment.BottomCenter)
-                            .padding(bottom = 12.dp)
-                            .background(
-                                Color(0xFF4CAF50),
-                                RoundedCornerShape(20.dp)
-                            )
-                            .padding(horizontal = 16.dp, vertical = 8.dp)
-                    ) {
-                        Text(
-                            text = "✓ READY - TAP CAPTURE BUTTON",
-                            color = Color.White,
-                            fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(12.dp).toSp() },
-                            fontWeight = FontWeight.W600
-                        )
-                    }
-                }
+                // Corner indicators + status badge overlay
+                DocumentDetectionOverlay(
+                    state = detectionState,
+                    modifier = Modifier.fillMaxSize()
+                )
             }
 
             Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(16.dp)))
@@ -671,17 +647,6 @@ fun DocumentCaptureScreen(
 
             Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(16.dp)))
 
-            // Distance guidance text from capability report
-            capabilityReport?.let { report ->
-                Text(
-                    text = report.userGuidanceText,
-                    color = Color.White.copy(alpha = 0.7f),
-                    fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(12.dp).toSp() },
-                    fontWeight = FontWeight.W400,
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier.padding(horizontal = ScaleUtil.scaleWidth(32.dp))
-                )
-            }
 
             Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(24.dp)))
 
@@ -800,10 +765,9 @@ fun DocumentCaptureScreen(
                                 // Determine document type and side for verification
                                 val sideExpected = if (capturedFiles.isNotEmpty()) "BACK" else "FRONT"
 
-                                // BACK SIDE: Skip anti-spoofing verification - accept directly
-                                // Anti-spoofing is mainly for front side (photo/details side)
+                                // BACK SIDE: Accept directly (no anti-spoof needed)
                                 if (isBackSide) {
-                                    Log.d("DocumentCapture", "Back side: Skipping anti-spoofing, accepting directly")
+                                    Log.d("DocumentCapture", "Back side: accepting directly")
                                     withContext(Dispatchers.Main) {
                                         verificationPassed = true
                                         burstFiles = frames

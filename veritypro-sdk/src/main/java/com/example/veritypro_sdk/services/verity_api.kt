@@ -11,6 +11,7 @@ import retrofit2.http.Multipart
 import retrofit2.http.POST
 import retrofit2.http.Part
 import retrofit2.http.PartMap
+import retrofit2.http.Path
 import retrofit2.http.Query
 
 interface VerityApiService {
@@ -39,6 +40,7 @@ interface VerityApiService {
     @POST("/kycintegration/kyc-verification/begin-liveness")
     suspend fun beginLiveness(
         @Query("sessionId") sessionId: String,
+        @Header("x-api-key") apiKey: String
     ): BeginLivenessResponse
 
     @GET("/kycintegration/country/get-country-document")
@@ -49,7 +51,49 @@ interface VerityApiService {
 
     @GET
     suspend fun getLivenessResult(
-        @retrofit2.http.Url url: String,
-        @Query("sessionId") sessionId: String
+        @retrofit2.http.Url url: String
     ): LivenessResultResponse
+
+    @POST
+    suspend fun triggerLivenessPoll(
+        @retrofit2.http.Url url: String
+    ): LivenessResultResponse
+
+    // ── Address Verification ──
+
+    @POST("/kycintegration/address-verification/add-verification")
+    suspend fun createAddressVerification(
+        @Body data: AddAddressVerificationRequest,
+        @Header("x-api-key") apiKey: String
+    ): ApiResponse<AddressVerificationResponse>
+
+    @POST("/kycintegration/address-verification/update-address-verification")
+    @Multipart
+    suspend fun updateAddressVerification(
+        @Part("SessionId") sessionId: RequestBody,
+        @Part("DocumentType") documentType: RequestBody,
+        @Part addressDocument: MultipartBody.Part?,
+        @Part("PlatformUsed") platformUsed: RequestBody,
+        @Part("DeviceAndBrowser") deviceAndBrowser: RequestBody,
+        @Part("IpAddress") ipAddress: RequestBody,
+        @Part("IpLocation") ipLocation: RequestBody
+    ): ApiResponse<AddressVerificationResponse>
+
+    // ── EDD ──
+
+    @POST("/kycintegration/edd/cases")
+    @Multipart
+    suspend fun createEddCase(
+        @Part("SubjectId") subjectId: RequestBody,
+        @Part("SubjectName") subjectName: RequestBody,
+        @Part("DocumentType") documentType: RequestBody,
+        @Part file: MultipartBody.Part,
+        @Header("x-api-key") apiKey: String
+    ): EddCaseResponse
+
+    @GET("/kycintegration/edd/cases/{caseId}/status")
+    suspend fun getEddCaseStatus(
+        @Path("caseId") caseId: String,
+        @Header("x-api-key") apiKey: String
+    ): ApiResponse<EddCaseStatusResponse>
 }

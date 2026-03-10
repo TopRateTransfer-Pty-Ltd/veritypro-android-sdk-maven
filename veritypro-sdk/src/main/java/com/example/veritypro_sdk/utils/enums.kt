@@ -1,20 +1,41 @@
 package com.example.veritypro_sdk.utils
 
-/** Represents the various stages of the VerityPro verification workflow.*/
+/** Modules that can be enabled/disabled per integration. */
+enum class VerificationModule {
+    /** ID selection + document capture */
+    DOCUMENT,
+    /** AWS liveness / selfie capture */
+    BIOMETRIC,
+    /** Proof of address document upload (camera or gallery) */
+    ADDRESS,
+    /** Enhanced Due Diligence document upload (camera or gallery) */
+    EDD
+}
+
+/** Represents the various stages of the VerityPro verification workflow. */
 enum class VerificationStage {
 
-    /**[INTRO] : Welcome screen.*/
+    /** [HEALTH_CHECK] : Validates ML backend is reachable before proceeding. */
+    HEALTH_CHECK,
+
+    /** [INTRO] : Welcome screen. */
     INTRO,
 
-    /** [ID_SELECTION] : Selects the type of ID document (e.g., Passport, Driver’s License).*/
+    /** [ID_SELECTION] : Selects the type of ID document — DOCUMENT module. */
     ID_SELECTION,
 
-    /** [DOCUMENT_CAPTURE] : User is guided to capture clear images of the chosen ID document.*/
+    /** [DOCUMENT_CAPTURE] : User captures images of the chosen ID — DOCUMENT module. */
     DOCUMENT_CAPTURE,
 
-    /** [SELFIE_CAPTURE] : User captures a live selfie for face matching against the ID.*/
+    /** [SELFIE_CAPTURE] : User captures a live selfie for face matching — BIOMETRIC module. */
     SELFIE_CAPTURE,
 
-    /** [RESULT] : Final screen showing whether verification succeeded or failed.*/
+    /** [ADDRESS_DOCUMENT] : Upload proof of address via camera or gallery — ADDRESS module. */
+    ADDRESS_DOCUMENT,
+
+    /** [EDD_DOCUMENT] : Upload EDD supporting document via camera or gallery — EDD module. */
+    EDD_DOCUMENT,
+
+    /** [RESULT] : Final screen showing whether verification succeeded or failed. */
     RESULT
 }

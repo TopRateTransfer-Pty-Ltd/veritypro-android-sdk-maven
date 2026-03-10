@@ -29,6 +29,7 @@ import com.example.veritypro_sdk.services.MLDocumentType
 import com.example.veritypro_sdk.services.MLRepository
 import com.example.veritypro_sdk.services.Resource
 //import com.example.veritypro_sdk.utils.DocumentDetector
+import com.example.veritypro_sdk.utils.ImageSharpeningUtils
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
@@ -100,7 +101,7 @@ private fun loadBitmapWithRotation(file: File): Bitmap? {
         }
 
         // Apply rotation if needed
-        if (rotationDegrees != 0f) {
+        val oriented = if (rotationDegrees != 0f) {
             val matrix = Matrix().apply { postRotate(rotationDegrees) }
             val rotated = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
             if (rotated != bitmap) {
@@ -124,6 +125,9 @@ private fun loadBitmapWithRotation(file: File): Bitmap? {
                 bitmap
             }
         }
+
+        // Apply 4-stage sharpening pipeline for crisper document text
+        ImageSharpeningUtils.applySharpeningPipeline(oriented)
     } catch (e: Exception) {
         Log.e("PreviewScreen", "Failed to load bitmap with rotation", e)
         null

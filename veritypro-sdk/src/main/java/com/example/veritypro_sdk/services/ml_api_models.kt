@@ -145,6 +145,42 @@ data class MLVerifyBurstResponse(
 
 
 // ============================================================================
+// DETECT-PRESENCE ENDPOINT MODELS (Lightweight back-side detection)
+// ============================================================================
+
+/**
+ * Request for lightweight document presence detection (used for ID back side)
+ */
+data class MLDetectPresenceRequest(
+    @SerializedName("sessionId")
+    val sessionId: String,
+
+    @SerializedName("imageJpegBase64")
+    val imageJpegBase64: String
+)
+
+/**
+ * Response for document presence detection
+ */
+data class MLDetectPresenceResponse(
+    @SerializedName("hasDocument")
+    val hasDocument: Boolean,
+
+    @SerializedName("confidence")
+    val confidence: Float,
+
+    @SerializedName("predictedClass")
+    val predictedClass: String? = null,
+
+    @SerializedName("reason")
+    val reason: String? = null,
+
+    @SerializedName("latencyMs")
+    val latencyMs: Float
+)
+
+
+// ============================================================================
 // MODELS INFO ENDPOINT
 // ============================================================================
 

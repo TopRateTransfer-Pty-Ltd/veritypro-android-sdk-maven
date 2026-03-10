@@ -45,6 +45,20 @@ interface MLApiService {
 
 
     /**
+     * Lightweight document presence detection (used for ID back side)
+     *
+     * Detects whether a document is present in the frame without
+     * full classification. Faster than predict for simple presence checks.
+     *
+     * @return hasDocument flag with confidence score
+     */
+    @POST("v1/kyc/doc/detect-presence")
+    suspend fun detectPresence(
+        @Body request: MLDetectPresenceRequest
+    ): MLDetectPresenceResponse
+
+
+    /**
      * Get information about loaded ML models
      */
     @GET("v1/kyc/doc/models")

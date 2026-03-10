@@ -69,10 +69,8 @@ fun VerityProDemoApp() {
 
     }
     val options = VerityOption(
-        apiKey = "1MXKwMkTUBtgVdoEDCJDtRLT8ioV7Zha",
-        integrationId = "9c233c40-c3ad-4fb2-913d-9a75dafc4d69",
-        //apiKey = BuildConfig.API_KEY,
-        //integrationId = BuildConfig.INTEGRATION_ID,
+        apiKey = BuildConfig.API_KEY,
+        integrationId = BuildConfig.INTEGRATION_ID,
         firstName = "Ade",
         lastName = "Oba",
         dateOfBirth = "1990-01-15T00:00:00.000Z",
