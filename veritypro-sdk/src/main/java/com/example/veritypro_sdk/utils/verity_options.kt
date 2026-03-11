@@ -13,6 +13,7 @@ data class VerityOption(
     val vendorData: String,
     val isO2Code: String,
     val streetAddress: String? = null,
+    val requiredModules: List<String>? = null,
 ) : Parcelable
 
 
@@ -24,6 +25,7 @@ data class DataPayload(
     val vendorData: String,
     val isO2Code: String,
     val streetAddress: String? = null,
+    val requiredModules: List<String>? = null,
 )
 
 fun VerityOption.toPayload(): DataPayload {
@@ -35,5 +37,6 @@ fun VerityOption.toPayload(): DataPayload {
         vendorData = this.vendorData,
         isO2Code = this.isO2Code,
         streetAddress = this.streetAddress,
+        requiredModules = this.requiredModules,
     )
 }
