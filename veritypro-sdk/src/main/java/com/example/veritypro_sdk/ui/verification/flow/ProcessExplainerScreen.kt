@@ -13,6 +13,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -29,13 +30,11 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -62,8 +61,7 @@ import kotlinx.coroutines.delay
  * Process explainer screen shown before the main verification steps begin.
  *
  * Displays an animated icon and a list of steps that will occur, based on the
- * current [VerityMode]. Matches the dark-themed design of the liveness pre-start
- * screen in selfie_capture.kt.
+ * current [VerityMode]. Aligned with iOS ProcessExplainerView design.
  */
 @Composable
 fun ProcessExplainerScreen(
@@ -72,7 +70,7 @@ fun ProcessExplainerScreen(
     onContinue: () -> Unit
 ) {
     val title = titleForMode(mode)
-    val subtitle = subtitleForMode(mode)
+    val subtitle = "Here's what will happen next."
     val steps = stepsForMode(mode)
     val icon = iconForMode(mode)
 
@@ -81,37 +79,45 @@ fun ProcessExplainerScreen(
             .fillMaxSize()
             .background(Color(0xFF0F1724))
     ) {
-        // Back / close button
-        IconButton(
-            onClick = onBack,
-            modifier = Modifier
-                .padding(16.dp)
-                .align(Alignment.TopStart)
-        ) {
-            Icon(
-                imageVector = Icons.Default.Close,
-                contentDescription = "Back",
-                tint = Color.White
-            )
-        }
-
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
             modifier = Modifier
                 .fillMaxSize()
                 .padding(horizontal = ScaleUtil.scaleWidth(24.dp))
-                .padding(
-                    top = ScaleUtil.scaleHeight(70.dp),
-                    bottom = ScaleUtil.scaleHeight(24.dp)
-                )
         ) {
+            // Back button — matches iOS "< Back" style
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(top = ScaleUtil.scaleHeight(12.dp))
+                    .clickable(onClick = onBack)
+                    .padding(vertical = ScaleUtil.scaleHeight(8.dp))
+            ) {
+                Text(
+                    text = "‹",
+                    color = Color.White.copy(alpha = 0.7f),
+                    fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(20.dp).toSp() },
+                    fontWeight = FontWeight.W400
+                )
+                Spacer(modifier = Modifier.width(ScaleUtil.scaleWidth(4.dp)))
+                Text(
+                    text = "Back",
+                    color = Color.White.copy(alpha = 0.7f),
+                    fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(16.dp).toSp() },
+                    fontWeight = FontWeight.W400
+                )
+            }
+
+            Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(32.dp)))
+
             // Animated icon section (pulsing rings + gradient circle)
             ExplainerAnimation(
                 centerIcon = icon,
                 modifier = Modifier.height(ScaleUtil.scaleHeight(200.dp))
             )
 
-            Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(24.dp)))
+            Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(28.dp)))
 
             // Title
             Text(
@@ -127,24 +133,20 @@ fun ProcessExplainerScreen(
             // Subtitle
             Text(
                 text = subtitle,
-                color = Color(0xFF9CA3AF),
+                color = Color.White.copy(alpha = 0.6f),
                 fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(14.dp).toSp() },
                 fontWeight = FontWeight.W400,
                 textAlign = TextAlign.Center,
-                modifier = Modifier.padding(horizontal = ScaleUtil.scaleWidth(16.dp))
+                modifier = Modifier.padding(horizontal = ScaleUtil.scaleWidth(40.dp))
             )
 
-            Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(28.dp)))
+            Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(32.dp)))
 
             // Step list with staggered animation
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .background(
-                        Color(0xFF1A2744),
-                        RoundedCornerShape(ScaleUtil.scaleWidth(12.dp))
-                    )
-                    .padding(ScaleUtil.scaleWidth(16.dp))
+                    .padding(horizontal = ScaleUtil.scaleWidth(0.dp))
             ) {
                 steps.forEachIndexed { index, step ->
                     ExplainerStep(
@@ -153,13 +155,17 @@ fun ProcessExplainerScreen(
                                 imageVector = step.icon,
                                 contentDescription = null,
                                 tint = step.iconTint,
-                                modifier = Modifier.size(ScaleUtil.scaleWidth(18.dp))
+                                modifier = Modifier.size(ScaleUtil.scaleWidth(16.dp))
                             )
                         },
+                        iconTint = step.iconTint,
                         text = step.text,
                         visible = true,
-                        delayMs = 200 + (index * 300)
+                        delayMs = 300 + (index * 300)
                     )
+                    if (index < steps.size - 1) {
+                        Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(12.dp)))
+                    }
                 }
             }
 
@@ -189,7 +195,7 @@ fun ProcessExplainerScreen(
                     Text(
                         "Continue",
                         color = Color.White,
-                        fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(16.dp).toSp() },
+                        fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(17.dp).toSp() },
                         fontWeight = FontWeight.SemiBold
                     )
                 }
@@ -197,7 +203,7 @@ fun ProcessExplainerScreen(
 
             Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(16.dp)))
 
-            // End-to-end encrypted footer
+            // Footer — "Powered by VERITYPRO" (aligned with iOS)
             Row(
                 horizontalArrangement = Arrangement.Center,
                 verticalAlignment = Alignment.CenterVertically,
@@ -206,19 +212,19 @@ fun ProcessExplainerScreen(
                 Icon(
                     Icons.Default.Lock,
                     contentDescription = null,
-                    tint = Color(0xFF6B7280),
-                    modifier = Modifier.size(ScaleUtil.scaleWidth(14.dp))
+                    tint = Color.White.copy(alpha = 0.4f),
+                    modifier = Modifier.size(ScaleUtil.scaleWidth(11.dp))
                 )
                 Spacer(modifier = Modifier.width(ScaleUtil.scaleWidth(6.dp)))
                 Text(
-                    text = "End-to-end encrypted",
-                    color = Color(0xFF6B7280),
+                    text = "Powered by VERITYPRO",
+                    color = Color.White.copy(alpha = 0.4f),
                     fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(12.dp).toSp() },
                     fontWeight = FontWeight.W400
                 )
             }
 
-            Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(8.dp)))
+            Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(24.dp)))
         }
     }
 }
@@ -310,10 +316,10 @@ private fun ExplainerAnimation(
             )
         }
 
-        // Center icon with gradient circle
+        // Center icon with gradient circle — 90dp to match iOS
         Box(
             modifier = Modifier
-                .size(ScaleUtil.scaleWidth(72.dp))
+                .size(ScaleUtil.scaleWidth(90.dp))
                 .background(
                     brush = Brush.linearGradient(
                         colors = listOf(Color(0xFF3B82F6), Color(0xFF8B5CF6))
@@ -332,11 +338,12 @@ private fun ExplainerAnimation(
     }
 }
 
-// ── Single step row with staggered animation ───────────────────────────
+// ── Single step row — circular icon bg with opacity fill (matches iOS) ──
 
 @Composable
 private fun ExplainerStep(
     icon: @Composable () -> Unit,
+    iconTint: Color,
     text: String,
     visible: Boolean,
     delayMs: Int = 0
@@ -357,20 +364,28 @@ private fun ExplainerStep(
             verticalAlignment = Alignment.CenterVertically,
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(vertical = ScaleUtil.scaleHeight(6.dp))
+                .background(
+                    Color.White.copy(alpha = 0.05f),
+                    RoundedCornerShape(ScaleUtil.scaleWidth(12.dp))
+                )
+                .padding(
+                    horizontal = ScaleUtil.scaleWidth(16.dp),
+                    vertical = ScaleUtil.scaleHeight(12.dp)
+                )
         ) {
+            // Circular icon with tinted background (matches iOS)
             Box(
                 modifier = Modifier
-                    .size(ScaleUtil.scaleWidth(32.dp))
-                    .background(Color(0xFF1E3A5F), RoundedCornerShape(ScaleUtil.scaleWidth(8.dp))),
+                    .size(ScaleUtil.scaleWidth(40.dp))
+                    .background(iconTint.copy(alpha = 0.15f), CircleShape),
                 contentAlignment = Alignment.Center
             ) {
                 icon()
             }
-            Spacer(modifier = Modifier.width(ScaleUtil.scaleWidth(12.dp)))
+            Spacer(modifier = Modifier.width(ScaleUtil.scaleWidth(14.dp)))
             Text(
                 text = text,
-                color = Color(0xFFD1D5DB),
+                color = Color.White.copy(alpha = 0.8f),
                 fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(14.dp).toSp() },
                 fontWeight = FontWeight.W400
             )
@@ -386,24 +401,15 @@ private data class StepInfo(
     val iconTint: Color
 )
 
-// ── Mode-specific content ──────────────────────────────────────────────
+// ── Mode-specific content (aligned with iOS) ───────────────────────────
 
 private fun titleForMode(mode: VerityMode): String = when (mode) {
     VerityMode.DOCUMENT -> "Document Verification"
     VerityMode.BIOMETRIC -> "Identity Verification"
     VerityMode.LIVENESS_ONLY -> "Liveness Verification"
     VerityMode.ADDRESS -> "Address Verification"
-    VerityMode.EDD -> "Compliance Review"
+    VerityMode.EDD -> "Document Submission"
     VerityMode.COMBINED -> "Complete Verification"
-}
-
-private fun subtitleForMode(mode: VerityMode): String = when (mode) {
-    VerityMode.DOCUMENT -> "We'll verify your identity document.\nThis is a quick and secure process."
-    VerityMode.BIOMETRIC -> "We'll verify your identity with your\ndocument and a liveness check."
-    VerityMode.LIVENESS_ONLY -> "We need to verify you're a real person.\nThis is a quick and secure process."
-    VerityMode.ADDRESS -> "We'll verify your address using\na proof of address document."
-    VerityMode.EDD -> "We'll review your compliance documents\nfor regulatory requirements."
-    VerityMode.COMBINED -> "We'll guide you through all required\nverification steps."
 }
 
 private fun iconForMode(mode: VerityMode): ImageVector = when (mode) {
@@ -414,29 +420,29 @@ private fun iconForMode(mode: VerityMode): ImageVector = when (mode) {
 private fun stepsForMode(mode: VerityMode): List<StepInfo> = when (mode) {
     VerityMode.DOCUMENT -> listOf(
         StepInfo("Take photos of your ID document", Icons.Default.Person, Color(0xFF3B82F6)),
-        StepInfo("We'll verify your document", Icons.Default.Check, Color(0xFF10B981))
+        StepInfo("We'll verify your document", Icons.Default.Check, Color(0xFF22C55E))
     )
     VerityMode.BIOMETRIC -> listOf(
         StepInfo("Take photos of your ID document", Icons.Default.Person, Color(0xFF3B82F6)),
-        StepInfo("Complete a quick liveness check", Icons.Default.Check, Color(0xFF10B981)),
-        StepInfo("We'll verify your identity", Icons.Default.Lock, Color(0xFF8B5CF6))
+        StepInfo("Complete a quick liveness check", Icons.Default.Person, Color(0xFF8B5CF6)),
+        StepInfo("We'll verify your identity", Icons.Default.Check, Color(0xFF22C55E))
     )
     VerityMode.LIVENESS_ONLY -> listOf(
         StepInfo("Complete a quick liveness check", Icons.Default.Person, Color(0xFF3B82F6)),
-        StepInfo("We'll verify you're a real person", Icons.Default.Check, Color(0xFF10B981))
+        StepInfo("We'll verify you're a real person", Icons.Default.Check, Color(0xFF22C55E))
     )
     VerityMode.ADDRESS -> listOf(
         StepInfo("Take a photo of your proof of address", Icons.Default.Person, Color(0xFF3B82F6)),
-        StepInfo("We'll verify your address", Icons.Default.Check, Color(0xFF10B981))
+        StepInfo("We'll verify your address", Icons.Default.Check, Color(0xFF22C55E))
     )
     VerityMode.EDD -> listOf(
         StepInfo("Upload your compliance documents", Icons.Default.Person, Color(0xFF3B82F6)),
-        StepInfo("We'll review for regulatory compliance", Icons.Default.Check, Color(0xFF10B981))
+        StepInfo("We'll review for regulatory compliance", Icons.Default.Check, Color(0xFF22C55E))
     )
     VerityMode.COMBINED -> listOf(
         StepInfo("Verify your ID document", Icons.Default.Person, Color(0xFF3B82F6)),
-        StepInfo("Complete liveness check", Icons.Default.Check, Color(0xFF10B981)),
-        StepInfo("Verify your address", Icons.Default.Lock, Color(0xFF8B5CF6)),
-        StepInfo("Submit compliance documents", Icons.Default.Check, Color(0xFFF59E0B))
+        StepInfo("Complete liveness check", Icons.Default.Person, Color(0xFF8B5CF6)),
+        StepInfo("Verify your address", Icons.Default.Lock, Color(0xFFF59E0B)),
+        StepInfo("Submit compliance documents", Icons.Default.Check, Color(0xFF22C55E))
     )
 }
