@@ -52,6 +52,7 @@ enum class EddDocType(
     val displayName: String,
     val subtitle: String,
     val acceptedFormats: String,
+    val acceptedDocuments: List<String>,
     val icon: ImageVector,
     val documentTypeValue: String
 ) {
@@ -59,6 +60,11 @@ enum class EddDocType(
         displayName = "Source of Funds",
         subtitle = "Bank statements, payslips, or tax returns showing income source",
         acceptedFormats = "PDF, JPG, or PNG (max 10MB)",
+        acceptedDocuments = listOf(
+            "Bank statements (last 3 months)",
+            "Payslips or salary certificates",
+            "Tax returns or assessment notices"
+        ),
         icon = Icons.Default.AccountBalanceWallet,
         documentTypeValue = "2"
     ),
@@ -66,6 +72,11 @@ enum class EddDocType(
         displayName = "Employment Proof",
         subtitle = "Employment letter, contract, or business registration",
         acceptedFormats = "PDF, JPG, or PNG (max 10MB)",
+        acceptedDocuments = listOf(
+            "Employment letter or contract",
+            "Business registration certificate",
+            "Recent payslip with employer details"
+        ),
         icon = Icons.Default.Work,
         documentTypeValue = "3"
     ),
@@ -73,6 +84,11 @@ enum class EddDocType(
         displayName = "Purpose of Transaction",
         subtitle = "Invoice, property documents, or purpose declaration",
         acceptedFormats = "PDF, JPG, or PNG (max 10MB)",
+        acceptedDocuments = listOf(
+            "Invoice or purchase agreement",
+            "Property sale/settlement documents",
+            "Tuition or medical payment receipts"
+        ),
         icon = Icons.Default.SwapHorizontalCircle,
         documentTypeValue = "4"
     );
@@ -191,6 +207,22 @@ fun EddDocTypeScreen(
                             fontWeight = FontWeight.W400,
                             color = MaterialTheme.customColors.subTitle
                         )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "Accepted:",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.W600,
+                            color = MaterialTheme.customColors.subTitle
+                        )
+                        docType.acceptedDocuments.forEach { doc ->
+                            Text(
+                                text = "• $doc",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.W400,
+                                color = MaterialTheme.customColors.subTitle
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(2.dp))
                         Text(
                             text = docType.acceptedFormats,
                             fontSize = 11.sp,

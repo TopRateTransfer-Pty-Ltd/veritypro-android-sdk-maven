@@ -53,26 +53,47 @@ import com.example.veritypro_sdk.ui.theme.customColors
 enum class AddressDocType(
     val displayName: String,
     val subtitle: String,
+    val acceptedDocuments: List<String>,
     val icon: ImageVector
 ) {
     UTILITY_BILL(
         displayName = "Utility Bill",
         subtitle = "Electricity, gas, water, or internet bill",
+        acceptedDocuments = listOf(
+            "Electricity or gas bill",
+            "Water or internet bill",
+            "Phone or cable bill"
+        ),
         icon = Icons.Default.ElectricBolt
     ),
     BANK_STATEMENT(
         displayName = "Bank Statement",
         subtitle = "Recent bank or financial statement",
+        acceptedDocuments = listOf(
+            "Bank account statement",
+            "Credit card statement",
+            "Mortgage statement"
+        ),
         icon = Icons.Default.AccountBalance
     ),
     PAYSLIP(
         displayName = "Payslip",
         subtitle = "Employer-issued payslip with address",
+        acceptedDocuments = listOf(
+            "Recent payslip with address",
+            "Employment letter with address",
+            "Superannuation statement"
+        ),
         icon = Icons.Default.AttachMoney
     ),
     GOVERNMENT_LETTER(
         displayName = "Government Letter",
         subtitle = "Tax notice, council letter, or similar",
+        acceptedDocuments = listOf(
+            "Tax assessment notice (ATO)",
+            "Council rates notice",
+            "Centrelink or Medicare letter"
+        ),
         icon = Icons.Default.Mail
     );
 }
@@ -190,6 +211,21 @@ fun AddressDocTypeScreen(
                             fontWeight = FontWeight.W400,
                             color = MaterialTheme.customColors.subTitle
                         )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "Accepted:",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.W600,
+                            color = MaterialTheme.customColors.subTitle
+                        )
+                        docType.acceptedDocuments.forEach { doc ->
+                            Text(
+                                text = "• $doc",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.W400,
+                                color = MaterialTheme.customColors.subTitle
+                            )
+                        }
                     }
                     RadioButton(
                         selected = isSelected,
