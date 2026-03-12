@@ -1,39 +1,38 @@
 package com.example.veritypro_sdk.utils
 
 /**
- * Computes the ordered list of [VerificationStage]s based on which
- * [VerificationModule]s are enabled for the current session.
+ * Computes the ordered list of [VerificationStage]s based on the active
+ * [VerityMode] or the legacy set of [VerificationModule]s.
  *
- * Fixed ordering: HEALTH_CHECK -> INTRO -> [module stages] -> RESULT
+ * When a [VerityMode] is supplied it takes precedence; the stage list is
+ * hard-coded per mode so every flow is deterministic.
  *
- * Module-to-stage mapping:
- *   DOCUMENT  -> [ID_SELECTION, DOCUMENT_CAPTURE]
- *   BIOMETRIC -> [SELFIE_CAPTURE]
- *   ADDRESS   -> [ADDRESS_DOCUMENT]
- *   EDD       -> [EDD_DOCUMENT]
+ * Mode-to-stage mapping:
+ *   DOCUMENT      -> HEALTH_CHECK -> INTRO -> ID_SELECTION -> PROCESS_EXPLAINER -> DOCUMENT_CAPTURE -> THANK_YOU
+ *   BIOMETRIC     -> HEALTH_CHECK -> INTRO -> ID_SELECTION -> PROCESS_EXPLAINER -> DOCUMENT_CAPTURE -> SELFIE_CAPTURE -> RESULT -> THANK_YOU
+ *   LIVENESS_ONLY -> INTRO -> PROCESS_EXPLAINER -> SELFIE_CAPTURE -> RESULT -> THANK_YOU
+ *   ADDRESS       -> INTRO -> PROCESS_EXPLAINER -> ADDRESS_DOCUMENT -> THANK_YOU
+ *   EDD           -> INTRO -> PROCESS_EXPLAINER -> EDD_DOCUMENT -> THANK_YOU
+ *   COMBINED      -> HEALTH_CHECK -> INTRO -> ID_SELECTION -> PROCESS_EXPLAINER -> DOCUMENT_CAPTURE -> SELFIE_CAPTURE -> RESULT -> ADDRESS_DOCUMENT -> EDD_DOCUMENT -> THANK_YOU
+ *
+ * Legacy module-based constructor still works for backward compatibility.
  */
-class VerificationFlowRouter(private val enabledModules: Set<VerificationModule>) {
+class VerificationFlowRouter private constructor(
+    private val orderedStages: List<VerificationStage>,
+    private val enabledModules: Set<VerificationModule>
+) {
 
-    private val orderedStages: List<VerificationStage> = buildList {
-        add(VerificationStage.HEALTH_CHECK)
-        add(VerificationStage.INTRO)
+    /** Legacy constructor — builds stages from enabled modules (no mode). */
+    constructor(enabledModules: Set<VerificationModule>) : this(
+        orderedStages = buildModuleStages(enabledModules),
+        enabledModules = enabledModules
+    )
 
-        if (VerificationModule.DOCUMENT in enabledModules) {
-            add(VerificationStage.ID_SELECTION)
-            add(VerificationStage.DOCUMENT_CAPTURE)
-        }
-        if (VerificationModule.BIOMETRIC in enabledModules) {
-            add(VerificationStage.SELFIE_CAPTURE)
-        }
-        if (VerificationModule.ADDRESS in enabledModules) {
-            add(VerificationStage.ADDRESS_DOCUMENT)
-        }
-        if (VerificationModule.EDD in enabledModules) {
-            add(VerificationStage.EDD_DOCUMENT)
-        }
-
-        add(VerificationStage.RESULT)
-    }
+    /** Mode-aware constructor — builds stages from [VerityMode]. */
+    constructor(mode: VerityMode) : this(
+        orderedStages = buildModeStages(mode),
+        enabledModules = modulesForMode(mode)
+    )
 
     /** Returns the next stage after [current], or null if [current] is the last stage. */
     fun nextStage(current: VerificationStage): VerificationStage? {
@@ -56,4 +55,96 @@ class VerificationFlowRouter(private val enabledModules: Set<VerificationModule>
 
     /** Returns all ordered stages for debugging / logging. */
     fun allStages(): List<VerificationStage> = orderedStages.toList()
+
+    companion object {
+        /** Build stages from legacy module set. */
+        private fun buildModuleStages(enabledModules: Set<VerificationModule>): List<VerificationStage> = buildList {
+            add(VerificationStage.HEALTH_CHECK)
+            add(VerificationStage.INTRO)
+
+            if (VerificationModule.DOCUMENT in enabledModules) {
+                add(VerificationStage.ID_SELECTION)
+                add(VerificationStage.DOCUMENT_CAPTURE)
+            }
+            if (VerificationModule.BIOMETRIC in enabledModules) {
+                add(VerificationStage.SELFIE_CAPTURE)
+            }
+            if (VerificationModule.ADDRESS in enabledModules) {
+                add(VerificationStage.ADDRESS_DOCUMENT)
+            }
+            if (VerificationModule.EDD in enabledModules) {
+                add(VerificationStage.EDD_DOCUMENT)
+            }
+
+            add(VerificationStage.RESULT)
+        }
+
+        /** Build stages from a [VerityMode]. */
+        private fun buildModeStages(mode: VerityMode): List<VerificationStage> = when (mode) {
+            VerityMode.DOCUMENT -> listOf(
+                VerificationStage.HEALTH_CHECK,
+                VerificationStage.INTRO,
+                VerificationStage.ID_SELECTION,
+                VerificationStage.PROCESS_EXPLAINER,
+                VerificationStage.DOCUMENT_CAPTURE,
+                VerificationStage.THANK_YOU
+            )
+            VerityMode.BIOMETRIC -> listOf(
+                VerificationStage.HEALTH_CHECK,
+                VerificationStage.INTRO,
+                VerificationStage.ID_SELECTION,
+                VerificationStage.PROCESS_EXPLAINER,
+                VerificationStage.DOCUMENT_CAPTURE,
+                VerificationStage.SELFIE_CAPTURE,
+                VerificationStage.RESULT,
+                VerificationStage.THANK_YOU
+            )
+            VerityMode.LIVENESS_ONLY -> listOf(
+                VerificationStage.INTRO,
+                VerificationStage.PROCESS_EXPLAINER,
+                VerificationStage.SELFIE_CAPTURE,
+                VerificationStage.RESULT,
+                VerificationStage.THANK_YOU
+            )
+            VerityMode.ADDRESS -> listOf(
+                VerificationStage.INTRO,
+                VerificationStage.PROCESS_EXPLAINER,
+                VerificationStage.ADDRESS_DOCUMENT,
+                VerificationStage.THANK_YOU
+            )
+            VerityMode.EDD -> listOf(
+                VerificationStage.INTRO,
+                VerificationStage.PROCESS_EXPLAINER,
+                VerificationStage.EDD_DOCUMENT,
+                VerificationStage.THANK_YOU
+            )
+            VerityMode.COMBINED -> listOf(
+                VerificationStage.HEALTH_CHECK,
+                VerificationStage.INTRO,
+                VerificationStage.ID_SELECTION,
+                VerificationStage.PROCESS_EXPLAINER,
+                VerificationStage.DOCUMENT_CAPTURE,
+                VerificationStage.SELFIE_CAPTURE,
+                VerificationStage.RESULT,
+                VerificationStage.ADDRESS_DOCUMENT,
+                VerificationStage.EDD_DOCUMENT,
+                VerificationStage.THANK_YOU
+            )
+        }
+
+        /** Derive the set of modules implied by a [VerityMode]. */
+        private fun modulesForMode(mode: VerityMode): Set<VerificationModule> = when (mode) {
+            VerityMode.DOCUMENT -> setOf(VerificationModule.DOCUMENT)
+            VerityMode.BIOMETRIC -> setOf(VerificationModule.DOCUMENT, VerificationModule.BIOMETRIC)
+            VerityMode.LIVENESS_ONLY -> setOf(VerificationModule.BIOMETRIC)
+            VerityMode.ADDRESS -> setOf(VerificationModule.ADDRESS)
+            VerityMode.EDD -> setOf(VerificationModule.EDD)
+            VerityMode.COMBINED -> setOf(
+                VerificationModule.DOCUMENT,
+                VerificationModule.BIOMETRIC,
+                VerificationModule.ADDRESS,
+                VerificationModule.EDD
+            )
+        }
+    }
 }

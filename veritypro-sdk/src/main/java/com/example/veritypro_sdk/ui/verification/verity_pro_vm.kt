@@ -22,6 +22,7 @@ import com.example.veritypro_sdk.services.Resource
 import com.example.veritypro_sdk.services.VerificationRequestMultipart
 import com.example.veritypro_sdk.utils.VerificationFlowRouter
 import com.example.veritypro_sdk.utils.VerificationModule
+import com.example.veritypro_sdk.utils.VerityMode
 import com.example.veritypro_sdk.utils.VerityOption
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -89,12 +90,26 @@ class VerityProViewModel(
             setOf(VerificationModule.DOCUMENT, VerificationModule.BIOMETRIC)
         )
 
+    /** Current verification mode — set via [initFlowRouterForMode]. */
+    private var _currentMode: VerityMode = VerityMode.BIOMETRIC
+    val currentMode: VerityMode get() = _currentMode
+
     fun initFlowRouter(modules: List<String>?) {
         val moduleSet = modules?.mapNotNull { name ->
             try { VerificationModule.valueOf(name) } catch (_: Exception) { null }
         }?.toSet() ?: setOf(VerificationModule.DOCUMENT, VerificationModule.BIOMETRIC)
         _flowRouter = VerificationFlowRouter(moduleSet)
         Log.d("VerityProVM", "FlowRouter initialized with modules: $moduleSet")
+    }
+
+    /**
+     * Initialize the flow router from a [VerityMode].
+     * This takes precedence over module-based initialization when a mode is specified.
+     */
+    fun initFlowRouterForMode(mode: VerityMode) {
+        _currentMode = mode
+        _flowRouter = VerificationFlowRouter(mode)
+        Log.d("VerityProVM", "FlowRouter initialized with mode: $mode, stages: ${_flowRouter?.allStages()}")
     }
 
     // ========================================================================

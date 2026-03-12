@@ -50,6 +50,8 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import com.example.veritypro_sdk.utils.CameraUtils
 import com.example.veritypro_sdk.utils.LocationHelper
 import com.example.veritypro_sdk.utils.*
+import com.example.veritypro_sdk.ui.verification.flow.ProcessExplainerScreen
+import com.example.veritypro_sdk.ui.verification.flow.ThankYouScreen
 import com.example.veritypro_sdk.services.MLRepository
 import kotlinx.coroutines.launch
 
@@ -95,7 +97,8 @@ fun VerificationScreen(
         if (state is Resource.Success) {
             val sessionData = (state as Resource.Success<SessionData>).data
             sessionId = sessionData.sessionId
-            viewModel.initFlowRouter(sessionData.requiredModules)
+            // Initialize flow router from mode (takes precedence) or fallback to modules
+            viewModel.initFlowRouterForMode(options.verityMode)
         }
     }
 
@@ -259,7 +262,13 @@ fun VerificationScreen(
             Modifier.fillMaxSize(),
             color = MaterialTheme.colorScheme.background
         ) {
-            var stage by rememberSaveable { mutableStateOf(VerificationStage.HEALTH_CHECK) }
+            val initialStage = remember(options.verityMode) {
+                when (options.verityMode) {
+                    VerityMode.LIVENESS_ONLY, VerityMode.ADDRESS, VerityMode.EDD -> VerificationStage.INTRO
+                    else -> VerificationStage.HEALTH_CHECK
+                }
+            }
+            var stage by rememberSaveable { mutableStateOf(initialStage) }
             var lastResult by rememberSaveable { mutableStateOf<LivenessResult?>(null) }
             var selectedDocumentType: Int? by rememberSaveable { mutableStateOf(null) }
             var showExitDialog by rememberSaveable { mutableStateOf(false) }
@@ -358,6 +367,18 @@ fun VerificationScreen(
                                     },
                                     onRetry = {
                                         viewModel.fetchCountryDocuments(options.apiKey, options.integrationId, options.isO2Code)
+                                    }
+                                )
+                            }
+
+                            VerificationStage.PROCESS_EXPLAINER -> {
+                                ProcessExplainerScreen(
+                                    mode = options.verityMode,
+                                    onBack = {
+                                        stage = viewModel.flowRouter.previousStage(stage) ?: VerificationStage.INTRO
+                                    },
+                                    onContinue = {
+                                        stage = viewModel.flowRouter.nextStage(stage) ?: VerificationStage.RESULT
                                     }
                                 )
                             }
@@ -498,10 +519,28 @@ fun VerificationScreen(
                             VerificationStage.RESULT -> ResultScreen(
                                 result = lastResult ?: LivenessResult(false, error = "unknown"),
                                 onClose = {
-                                    onFinish(lastResult ?: LivenessResult(false, error = "unknown"))
+                                    val next = viewModel.flowRouter.nextStage(stage)
+                                    if (next != null) {
+                                        stage = next
+                                    } else {
+                                        onFinish(lastResult ?: LivenessResult(false, error = "unknown"))
+                                    }
                                 },
                                 onRetry = { stage = VerificationStage.SELFIE_CAPTURE }
                             )
+
+                            VerificationStage.THANK_YOU -> {
+                                ThankYouScreen(
+                                    onFinish = {
+                                        onFinish(
+                                            lastResult ?: LivenessResult(
+                                                success = true,
+                                                completedModules = listOf(options.verityMode.name)
+                                            )
+                                        )
+                                    }
+                                )
+                            }
                         }
                     }
                     is Resource.Error -> {

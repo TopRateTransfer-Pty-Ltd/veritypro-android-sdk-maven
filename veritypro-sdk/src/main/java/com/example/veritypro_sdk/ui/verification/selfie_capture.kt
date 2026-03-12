@@ -382,7 +382,7 @@ fun SelfieCaptureScreen(
 
                         // Subtitle
                         Text(
-                            text = "Position your face in the guide and follow the on-screen instructions.",
+                            text = "We need to verify you're a real person.\nThis is a quick and secure process.",
                             color = Color(0xFF9CA3AF),
                             fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(14.dp).toSp() },
                             fontWeight = FontWeight.W400,
@@ -449,7 +449,7 @@ fun SelfieCaptureScreen(
                                 containerColor = Color.Transparent
                             ),
                             contentPadding = PaddingValues(),
-                            shape = RoundedCornerShape(ScaleUtil.scaleWidth(12.dp)),
+                            shape = RoundedCornerShape(ScaleUtil.scaleWidth(14.dp)),
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .height(ScaleUtil.scaleHeight(56.dp))
@@ -464,7 +464,7 @@ fun SelfieCaptureScreen(
                                                 Color(0xFF8B5CF6)
                                             )
                                         ),
-                                        shape = RoundedCornerShape(ScaleUtil.scaleWidth(12.dp))
+                                        shape = RoundedCornerShape(ScaleUtil.scaleWidth(14.dp))
                                     ),
                                 contentAlignment = Alignment.Center
                             ) {

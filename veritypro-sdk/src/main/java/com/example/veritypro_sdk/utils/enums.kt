@@ -24,6 +24,9 @@ enum class VerificationStage {
     /** [ID_SELECTION] : Selects the type of ID document — DOCUMENT module. */
     ID_SELECTION,
 
+    /** [PROCESS_EXPLAINER] : Explains what steps will happen based on the current mode. */
+    PROCESS_EXPLAINER,
+
     /** [DOCUMENT_CAPTURE] : User captures images of the chosen ID — DOCUMENT module. */
     DOCUMENT_CAPTURE,
 
@@ -37,5 +40,8 @@ enum class VerificationStage {
     EDD_DOCUMENT,
 
     /** [RESULT] : Final screen showing whether verification succeeded or failed. */
-    RESULT
+    RESULT,
+
+    /** [THANK_YOU] : Universal thank-you screen after successful submission. */
+    THANK_YOU
 }

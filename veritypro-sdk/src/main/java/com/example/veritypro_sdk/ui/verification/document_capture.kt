@@ -765,18 +765,7 @@ fun DocumentCaptureScreen(
                                 // Determine document type and side for verification
                                 val sideExpected = if (capturedFiles.isNotEmpty()) "BACK" else "FRONT"
 
-                                // BACK SIDE: Accept directly (no anti-spoof needed)
-                                if (isBackSide) {
-                                    Log.d("DocumentCapture", "Back side: accepting directly")
-                                    withContext(Dispatchers.Main) {
-                                        verificationPassed = true
-                                        burstFiles = frames
-                                        previewPath = frames.first().path
-                                    }
-                                    return@launch
-                                }
-
-                                // FRONT SIDE: Run full anti-spoofing verification
+                                // Run anti-spoofing verification for BOTH front and back
                                 val mlRepository = MLRepository()
                                 val docTypeExpected = MLDocumentType.fromSdkType(documentType ?: 1)
 
