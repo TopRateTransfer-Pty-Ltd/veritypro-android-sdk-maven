@@ -541,7 +541,7 @@ private fun AllCompleteScreen(
             modifier = Modifier
                 .size(72.dp)
                 .background(
-                    color = Color(0xFF22C55E),
+                    color = Color(0xFF4A93FF),
                     shape = CircleShape
                 )
         ) {
@@ -556,7 +556,7 @@ private fun AllCompleteScreen(
         Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(24.dp)))
 
         Text(
-            text = "All Verifications Complete",
+            text = "Thank you",
             fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(22.dp).toSp() },
             fontWeight = FontWeight.W700,
             color = MaterialTheme.colorScheme.onSurface,
