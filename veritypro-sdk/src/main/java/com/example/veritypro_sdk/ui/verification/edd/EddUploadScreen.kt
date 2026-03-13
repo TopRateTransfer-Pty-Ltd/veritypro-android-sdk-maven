@@ -24,12 +24,12 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -38,70 +38,89 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import com.example.veritypro_sdk.services.ApiRepository
+import com.example.veritypro_sdk.services.Resource
 import com.example.veritypro_sdk.ui.theme.customColors
+import com.example.veritypro_sdk.utils.VerityOption
 import kotlinx.coroutines.delay
-import okhttp3.Call
-import okhttp3.Callback
-import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.MultipartBody
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import okhttp3.RequestBody.Companion.asRequestBody
-import okhttp3.Response
+import kotlinx.coroutines.launch
 import java.io.File
-import java.io.IOException
-import java.util.concurrent.TimeUnit
 
 @Composable
 fun EddUploadScreen(
     file: File,
     fileName: String,
     docType: EddDocType,
-    authToken: String?,
-    apiBaseUrl: String?,
+    options: VerityOption?,
     onComplete: (success: Boolean, error: String?) -> Unit
 ) {
     var uploadProgress by remember { mutableFloatStateOf(0f) }
     var isUploading by remember { mutableStateOf(true) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
-    var activeCall by remember { mutableStateOf<Call?>(null) }
 
-    // Animated progress
-    LaunchedEffect(isUploading) {
-        if (isUploading) {
-            while (uploadProgress < 0.8f) {
-                delay(100)
-                uploadProgress = (uploadProgress + 0.05f).coerceAtMost(0.8f)
+    val repository = remember { ApiRepository() }
+    val coroutineScope = rememberCoroutineScope()
+
+    fun performUpload() {
+        val opts = options
+        if (opts == null) {
+            errorMessage = "Missing verification options. Please restart the flow."
+            isUploading = false
+            return
+        }
+
+        isUploading = true
+        errorMessage = null
+        uploadProgress = 0f
+
+        coroutineScope.launch {
+            // Animate progress while uploading
+            launch {
+                while (uploadProgress < 0.8f) {
+                    delay(100)
+                    uploadProgress = (uploadProgress + 0.05f).coerceAtMost(0.8f)
+                }
+            }
+
+            // File size validation (10MB max)
+            val maxSize = 10 * 1024 * 1024
+            if (file.length() > maxSize) {
+                isUploading = false
+                errorMessage = "File is too large. Maximum file size is 10MB."
+                return@launch
+            }
+
+            val result = repository.createEddCase(
+                subjectId = opts.vendorData,
+                subjectName = "${opts.firstName} ${opts.lastName}",
+                file = file,
+                documentType = docType.id,
+                apiKey = opts.apiKey
+            )
+
+            when (result) {
+                is Resource.Success -> {
+                    uploadProgress = 1f
+                    isUploading = false
+                    Log.d("EddUpload", "EDD case created via KYC Integration API: ${result.data.caseId}")
+                    onComplete(true, null)
+                }
+                is Resource.Error -> {
+                    isUploading = false
+                    errorMessage = result.message ?: "Upload failed. Please try again."
+                    Log.e("EddUpload", "EDD case creation failed: ${result.message}")
+                }
+                else -> {
+                    isUploading = false
+                    errorMessage = "Unexpected response. Please try again."
+                }
             }
         }
     }
 
     // Start upload on appear
     LaunchedEffect(Unit) {
-        performEddUpload(
-            file = file,
-            fileName = fileName,
-            docType = docType,
-            authToken = authToken,
-            apiBaseUrl = apiBaseUrl,
-            onProgress = { uploadProgress = it },
-            onSuccess = {
-                uploadProgress = 1f
-                isUploading = false
-                onComplete(true, null)
-            },
-            onError = { error ->
-                isUploading = false
-                errorMessage = error
-            },
-            onCallCreated = { activeCall = it }
-        )
-    }
-
-    DisposableEffect(Unit) {
-        onDispose {
-            activeCall?.cancel()
-        }
+        performUpload()
     }
 
     Column(
@@ -129,7 +148,6 @@ fun EddUploadScreen(
         Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(40.dp)))
 
         if (isUploading && errorMessage == null) {
-            // Uploading state
             CircularProgressIndicator(
                 modifier = Modifier.size(48.dp),
                 color = Color(0xFF034EBE),
@@ -139,7 +157,7 @@ fun EddUploadScreen(
             Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(16.dp)))
 
             Text(
-                text = "Submitting EDD document...",
+                text = "Uploading document...",
                 fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(18.dp).toSp() },
                 fontWeight = FontWeight.W700,
                 color = MaterialTheme.colorScheme.onSurface
@@ -148,7 +166,7 @@ fun EddUploadScreen(
             Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(8.dp)))
 
             Text(
-                text = "Securely uploading your ${docType.displayName} for compliance review.",
+                text = "Please wait while we securely upload your ${docType.displayName}.",
                 fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(14.dp).toSp() },
                 color = MaterialTheme.customColors.description,
                 textAlign = TextAlign.Center,
@@ -174,7 +192,6 @@ fun EddUploadScreen(
                 color = MaterialTheme.customColors.subTitle
             )
         } else if (errorMessage != null) {
-            // Error state
             Icon(
                 imageVector = Icons.Default.Cancel,
                 contentDescription = "Error",
@@ -204,29 +221,7 @@ fun EddUploadScreen(
             Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(20.dp)))
 
             Button(
-                onClick = {
-                    errorMessage = null
-                    isUploading = true
-                    uploadProgress = 0f
-                    performEddUpload(
-                        file = file,
-                        fileName = fileName,
-                        docType = docType,
-                        authToken = authToken,
-                        apiBaseUrl = apiBaseUrl,
-                        onProgress = { uploadProgress = it },
-                        onSuccess = {
-                            uploadProgress = 1f
-                            isUploading = false
-                            onComplete(true, null)
-                        },
-                        onError = { error ->
-                            isUploading = false
-                            errorMessage = error
-                        },
-                        onCallCreated = { activeCall = it }
-                    )
-                },
+                onClick = { performUpload() },
                 colors = ButtonDefaults.buttonColors(
                     containerColor = Color(0xFF2B7AEF)
                 ),
@@ -265,87 +260,4 @@ fun EddUploadScreen(
 
         EddPoweredByFooter()
     }
-}
-
-private fun performEddUpload(
-    file: File,
-    fileName: String,
-    docType: EddDocType,
-    authToken: String?,
-    apiBaseUrl: String?,
-    onProgress: (Float) -> Unit,
-    onSuccess: () -> Unit,
-    onError: (String) -> Unit,
-    onCallCreated: (Call) -> Unit
-) {
-    if (apiBaseUrl.isNullOrEmpty()) {
-        onError("No API URL configured")
-        return
-    }
-
-    val url = "$apiBaseUrl/identityserver/tier/documents/submit"
-
-    // File size validation (10MB max)
-    val maxSize = 10 * 1024 * 1024
-    if (file.length() > maxSize) {
-        onError("File is too large. Maximum file size is 10MB.")
-        return
-    }
-
-    // Detect MIME type
-    val lowerName = fileName.lowercase()
-    val mimeType = when {
-        lowerName.endsWith(".pdf") -> "application/pdf"
-        lowerName.endsWith(".png") -> "image/png"
-        else -> "image/jpeg"
-    }
-
-    val client = OkHttpClient.Builder()
-        .connectTimeout(30, TimeUnit.SECONDS)
-        .writeTimeout(60, TimeUnit.SECONDS)
-        .readTimeout(30, TimeUnit.SECONDS)
-        .build()
-
-    val requestBody = MultipartBody.Builder()
-        .setType(MultipartBody.FORM)
-        .addFormDataPart("tier", "4")
-        .addFormDataPart("documentType", docType.documentTypeValue)
-        .addFormDataPart(
-            "file",
-            fileName,
-            file.asRequestBody(mimeType.toMediaType())
-        )
-        .build()
-
-    val requestBuilder = Request.Builder()
-        .url(url)
-        .post(requestBody)
-
-    if (!authToken.isNullOrEmpty()) {
-        requestBuilder.addHeader("Authorization", "Bearer $authToken")
-    }
-
-    val call = client.newCall(requestBuilder.build())
-    onCallCreated(call)
-
-    call.enqueue(object : Callback {
-        override fun onFailure(call: Call, e: IOException) {
-            if (call.isCanceled()) return
-            Log.e("EddUpload", "Upload failed", e)
-            android.os.Handler(android.os.Looper.getMainLooper()).post {
-                onError(e.message ?: "Upload failed. Please try again.")
-            }
-        }
-
-        override fun onResponse(call: Call, response: Response) {
-            android.os.Handler(android.os.Looper.getMainLooper()).post {
-                if (response.isSuccessful) {
-                    onProgress(1f)
-                    onSuccess()
-                } else {
-                    onError("Server error (${response.code}). Please try again.")
-                }
-            }
-        }
-    })
 }

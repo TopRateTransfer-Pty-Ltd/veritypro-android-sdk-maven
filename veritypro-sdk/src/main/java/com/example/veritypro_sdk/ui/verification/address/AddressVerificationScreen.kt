@@ -1,12 +1,19 @@
 package com.example.veritypro_sdk.ui.verification.address
 
+import android.util.Log
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import com.example.veritypro_sdk.services.ApiRepository
+import com.example.veritypro_sdk.services.Resource
 import com.example.veritypro_sdk.ui.verification.flow.ProcessExplainerScreen
 import com.example.veritypro_sdk.utils.VerityMode
+import com.example.veritypro_sdk.utils.VerityOption
+import kotlinx.coroutines.launch
 
 /**
  * Address verification flow stages.
@@ -26,15 +33,23 @@ enum class AddressVerificationStage {
  *
  * Manages the flow: Intro -> Doc Type -> Capture -> Preview -> Upload -> Complete.
  *
- * @param authToken Bearer token for the API.
- * @param apiBaseUrl Base URL for the VerityPro API (e.g. "https://api.skylinefare.com").
+ * When [options] is provided, a VerityPro address session is created via the
+ * KYC Integration API. The returned sessionId is used for document submission.
+ *
+ * When launched standalone (ADDRESS mode), the caller must provide [options].
+ * When launched from CombinedFlowScreen, [options] is passed through from the parent.
+ *
+ * @param options VerityOption containing apiKey, integrationId, user info (vendorData links sessions).
+ * @param authToken Bearer token (legacy, only used if options is null).
+ * @param apiBaseUrl Base URL (legacy, only used if options is null).
  * @param onFinish Called when the user finishes the flow. `true` = success, `false` = cancelled/failed.
  * @param onCancel Called when the user cancels out of the flow.
  */
 @Composable
 fun AddressVerificationScreen(
-    authToken: String?,
-    apiBaseUrl: String?,
+    options: VerityOption? = null,
+    authToken: String? = null,
+    apiBaseUrl: String? = null,
     onFinish: (Boolean) -> Unit,
     onCancel: () -> Unit
 ) {
@@ -43,11 +58,49 @@ fun AddressVerificationScreen(
     var capturedFileData by remember { mutableStateOf<ByteArray?>(null) }
     var capturedFileName by remember { mutableStateOf("") }
 
+    // Session state from VerityPro KYC Integration API
+    var addressSessionId by remember { mutableStateOf<String?>(null) }
+    var sessionError by remember { mutableStateOf<String?>(null) }
+    var isCreatingSession by remember { mutableStateOf(false) }
+
+    val repository = remember { ApiRepository() }
+    val coroutineScope = rememberCoroutineScope()
+
+    // Create address verification session when options are available
+    fun createAddressSession() {
+        val opts = options ?: return
+        isCreatingSession = true
+        sessionError = null
+        coroutineScope.launch {
+            val result = repository.createAddressVerification(opts)
+            isCreatingSession = false
+            when (result) {
+                is Resource.Success -> {
+                    addressSessionId = result.data.sessionId
+                    Log.d("AddressVerification", "Session created: ${result.data.sessionId}")
+                }
+                is Resource.Error -> {
+                    sessionError = result.message
+                    Log.e("AddressVerification", "Failed to create session: ${result.message}")
+                }
+                else -> {
+                    sessionError = "Unexpected response"
+                }
+            }
+        }
+    }
+
     when (stage) {
         AddressVerificationStage.INTRO -> {
             AddressIntroScreen(
                 onCancel = onCancel,
-                onGetStarted = { stage = AddressVerificationStage.PROCESS_EXPLAINER }
+                onGetStarted = {
+                    // Create session when user starts the flow
+                    if (options != null && addressSessionId == null && !isCreatingSession) {
+                        createAddressSession()
+                    }
+                    stage = AddressVerificationStage.PROCESS_EXPLAINER
+                }
             )
         }
 
@@ -96,7 +149,6 @@ fun AddressVerificationScreen(
                     onConfirm = { stage = AddressVerificationStage.UPLOAD }
                 )
             } else {
-                // Guard: no data, go back to capture
                 stage = AddressVerificationStage.CAPTURE
             }
         }
@@ -108,13 +160,12 @@ fun AddressVerificationScreen(
                     fileData = data,
                     fileName = capturedFileName,
                     docType = selectedDocType ?: AddressDocType.UTILITY_BILL,
-                    authToken = authToken,
-                    apiBaseUrl = apiBaseUrl,
+                    options = options,
+                    sessionId = addressSessionId,
                     onComplete = { success, error ->
                         if (success) {
                             stage = AddressVerificationStage.COMPLETE
                         } else {
-                            // Upload failed - go back to capture for retry
                             capturedFileData = null
                             capturedFileName = ""
                             stage = AddressVerificationStage.CAPTURE
@@ -122,7 +173,6 @@ fun AddressVerificationScreen(
                     }
                 )
             } else {
-                // Guard: no data, go back to capture
                 stage = AddressVerificationStage.CAPTURE
             }
         }

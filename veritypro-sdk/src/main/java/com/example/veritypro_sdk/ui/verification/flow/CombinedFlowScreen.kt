@@ -64,12 +64,22 @@ enum class CombinedFlowStage {
 /**
  * Combined verification flow orchestrator.
  *
- * Manages a multi-step verification: biometric (existing SDK) -> address -> EDD.
- * Steps are controlled by `requestedSteps` list (e.g. ["biometric", "address", "edd"]).
+ * Manages a multi-step verification: document -> biometric -> address -> EDD.
+ * Steps are controlled by `requestedSteps` list (e.g. ["document", "biometric", "address", "edd"]).
  *
- * @param authToken Bearer token for the API.
- * @param apiBaseUrl Base URL for the VerityPro API.
- * @param requestedSteps List of step identifiers to include: "biometric", "address", "edd".
+ * Session linkage: All steps share the same [VerityOption] which contains `vendorData`
+ * (the external user ID). The backend uses vendorData to link all verification sessions
+ * for the same user — document, biometric, address, and EDD all reference the same user.
+ *
+ * - Document + Biometric: Share a KYC session (created via createKyc with vendorData)
+ * - Address: Creates its own address session (linked via vendorData + integrationId)
+ * - EDD: Creates its own EDD case (linked via vendorData as subjectId)
+ *
+ * @param options VerityOption with apiKey, integrationId, user info. Required for all steps.
+ * @param themeMode Light or dark theme.
+ * @param authToken Legacy bearer token (unused when options is provided).
+ * @param apiBaseUrl Legacy base URL (unused when options is provided).
+ * @param requestedSteps List of step identifiers: "document", "biometric", "address", "edd".
  * @param onFinish Called with result map when all steps complete.
  * @param onCancel Called when the user cancels the flow.
  */
@@ -222,15 +232,14 @@ fun CombinedFlowScreen(
         }
 
         CombinedFlowStage.ADDRESS -> {
+            // Pass options so address creates its own session linked via vendorData
             AddressVerificationScreen(
-                authToken = authToken,
-                apiBaseUrl = apiBaseUrl,
+                options = options,
                 onFinish = { success ->
                     if (success) {
                         completedSteps.add("address")
                         advanceAfterAddress()
                     }
-                    // On failure, stay on address step
                 },
                 onCancel = onCancel
             )
@@ -246,9 +255,9 @@ fun CombinedFlowScreen(
         }
 
         CombinedFlowStage.EDD -> {
+            // Pass options so EDD creates case with vendorData as subjectId
             EddVerificationScreen(
-                authToken = authToken,
-                apiBaseUrl = apiBaseUrl,
+                options = options,
                 onFinish = { success ->
                     if (success) completedSteps.add("edd")
                     stage = CombinedFlowStage.ALL_COMPLETE
@@ -306,7 +315,6 @@ private fun TransitionScreen(
 
         Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(30.dp)))
 
-        // Completed indicator
         Box(
             contentAlignment = Alignment.Center,
             modifier = Modifier
@@ -335,7 +343,6 @@ private fun TransitionScreen(
 
         Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(30.dp)))
 
-        // Timeline
         FlowTimelineView(steps = flowSteps)
 
         Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(30.dp)))
@@ -370,7 +377,6 @@ private fun TransitionScreen(
 
         Spacer(modifier = Modifier.weight(1f))
 
-        // Powered by footer
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.Center,
@@ -423,7 +429,6 @@ private fun AllCompleteScreen(
 
         Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(40.dp)))
 
-        // Success checkmark
         Box(
             contentAlignment = Alignment.Center,
             modifier = Modifier
@@ -466,7 +471,6 @@ private fun AllCompleteScreen(
 
         Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(24.dp)))
 
-        // Timeline showing all completed
         FlowTimelineView(steps = flowSteps)
 
         Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(30.dp)))
@@ -491,7 +495,6 @@ private fun AllCompleteScreen(
 
         Spacer(modifier = Modifier.weight(1f))
 
-        // Powered by footer
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.Center,

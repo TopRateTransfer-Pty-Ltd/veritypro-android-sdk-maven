@@ -7,6 +7,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import com.example.veritypro_sdk.ui.verification.flow.ProcessExplainerScreen
 import com.example.veritypro_sdk.utils.VerityMode
+import com.example.veritypro_sdk.utils.VerityOption
 import java.io.File
 
 /**
@@ -25,18 +26,21 @@ enum class EddVerificationStage {
  * EDD verification orchestrator composable.
  *
  * Manages the flow: Intro -> Doc Type -> Capture -> Upload -> Complete.
- * Note: EDD does not have a preview step (unlike Address) because EDD
- * accepts PDFs and other file types, not just images.
  *
- * @param authToken Bearer token for the API.
- * @param apiBaseUrl Base URL for the VerityPro API (e.g. "https://api.skylinefare.com").
+ * When [options] is provided, the EDD case is created via the KYC Integration API
+ * using vendorData as subjectId to link it to the same user session.
+ *
+ * @param options VerityOption containing apiKey, user info (vendorData links sessions).
+ * @param authToken Bearer token (legacy, only used if options is null).
+ * @param apiBaseUrl Base URL (legacy, only used if options is null).
  * @param onFinish Called when the user finishes the flow. `true` = success, `false` = cancelled/failed.
  * @param onCancel Called when the user cancels out of the flow.
  */
 @Composable
 fun EddVerificationScreen(
-    authToken: String?,
-    apiBaseUrl: String?,
+    options: VerityOption? = null,
+    authToken: String? = null,
+    apiBaseUrl: String? = null,
     onFinish: (Boolean) -> Unit,
     onCancel: () -> Unit
 ) {
@@ -90,13 +94,11 @@ fun EddVerificationScreen(
                     file = file,
                     fileName = capturedFileName,
                     docType = selectedDocType ?: EddDocType.SOURCE_OF_FUNDS,
-                    authToken = authToken,
-                    apiBaseUrl = apiBaseUrl,
+                    options = options,
                     onComplete = { success, error ->
                         if (success) {
                             stage = EddVerificationStage.COMPLETE
                         } else {
-                            // Upload failed - go back to capture for retry
                             capturedFile = null
                             capturedFileName = ""
                             stage = EddVerificationStage.CAPTURE
@@ -104,7 +106,6 @@ fun EddVerificationScreen(
                     }
                 )
             } else {
-                // Guard: no file, go back to capture
                 stage = EddVerificationStage.CAPTURE
             }
         }
