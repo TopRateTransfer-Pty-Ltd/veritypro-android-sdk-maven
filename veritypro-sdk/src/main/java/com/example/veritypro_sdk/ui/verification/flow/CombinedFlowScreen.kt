@@ -37,9 +37,13 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import com.example.veritypro_sdk.ui.theme.ThemeMode
 import com.example.veritypro_sdk.ui.theme.customColors
+import com.example.veritypro_sdk.ui.verification.VerificationScreen
 import com.example.veritypro_sdk.ui.verification.address.AddressVerificationScreen
 import com.example.veritypro_sdk.ui.verification.edd.EddVerificationScreen
+import com.example.veritypro_sdk.utils.VerityMode
+import com.example.veritypro_sdk.utils.VerityOption
 
 /**
  * Combined flow stages.
@@ -71,6 +75,8 @@ enum class CombinedFlowStage {
  */
 @Composable
 fun CombinedFlowScreen(
+    options: VerityOption? = null,
+    themeMode: ThemeMode = ThemeMode.LIGHT,
     authToken: String?,
     apiBaseUrl: String?,
     requestedSteps: List<String>,
@@ -172,10 +178,16 @@ fun CombinedFlowScreen(
         }
 
         CombinedFlowStage.DOCUMENT -> {
-            // Document capture placeholder - integrates with existing VerityPro SDK
-            DocumentPlaceholderScreen(
-                onContinue = { advanceAfterDocument() }
-            )
+            if (options != null) {
+                VerificationScreen(
+                    options = options.copy(mode = VerityMode.DOCUMENT.name),
+                    onFinish = { result ->
+                        advanceAfterDocument()
+                    },
+                    onCancel = onCancel,
+                    themeMode = themeMode
+                )
+            }
         }
 
         CombinedFlowStage.DOCUMENT_TO_BIOMETRIC -> {
@@ -188,10 +200,16 @@ fun CombinedFlowScreen(
         }
 
         CombinedFlowStage.BIOMETRIC -> {
-            // Biometric placeholder - integrates with existing VerityPro SDK
-            BiometricPlaceholderScreen(
-                onContinue = { advanceAfterBiometric() }
-            )
+            if (options != null) {
+                VerificationScreen(
+                    options = options.copy(mode = VerityMode.BIOMETRIC.name),
+                    onFinish = { result ->
+                        advanceAfterBiometric()
+                    },
+                    onCancel = onCancel,
+                    themeMode = themeMode
+                )
+            }
         }
 
         CombinedFlowStage.BIOMETRIC_TO_ADDRESS -> {
@@ -255,136 +273,6 @@ fun CombinedFlowScreen(
     }
 }
 
-// MARK: - Document placeholder screen
-
-@Composable
-private fun DocumentPlaceholderScreen(
-    onContinue: () -> Unit
-) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(MaterialTheme.customColors.background)
-            .padding(
-                horizontal = ScaleUtil.scaleWidth(24.dp),
-                vertical = ScaleUtil.scaleHeight(40.dp)
-            ),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
-    ) {
-        Icon(
-            imageVector = Icons.Default.Check,
-            contentDescription = "Document",
-            modifier = Modifier.size(64.dp),
-            tint = Color(0xFF2B7AEF)
-        )
-
-        Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(20.dp)))
-
-        Text(
-            text = "Document Capture",
-            fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(18.dp).toSp() },
-            fontWeight = FontWeight.W700,
-            color = MaterialTheme.colorScheme.onSurface
-        )
-
-        Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(8.dp)))
-
-        Text(
-            text = "Document capture will launch here.\nThis step requires SDK integration.",
-            fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(14.dp).toSp() },
-            color = MaterialTheme.customColors.description,
-            textAlign = TextAlign.Center,
-            modifier = Modifier.padding(horizontal = ScaleUtil.scaleWidth(16.dp))
-        )
-
-        Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(30.dp)))
-
-        Button(
-            onClick = onContinue,
-            colors = ButtonDefaults.buttonColors(
-                containerColor = Color(0xFF2B7AEF)
-            ),
-            shape = RoundedCornerShape(ScaleUtil.scaleWidth(4.dp)),
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(ScaleUtil.scaleHeight(48.dp))
-        ) {
-            Text(
-                text = "Continue (Demo)",
-                fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(16.dp).toSp() },
-                fontWeight = FontWeight.W600,
-                color = MaterialTheme.customColors.content
-            )
-        }
-    }
-}
-
-// MARK: - Biometric placeholder screen
-
-@Composable
-private fun BiometricPlaceholderScreen(
-    onContinue: () -> Unit
-) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(MaterialTheme.customColors.background)
-            .padding(
-                horizontal = ScaleUtil.scaleWidth(24.dp),
-                vertical = ScaleUtil.scaleHeight(40.dp)
-            ),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
-    ) {
-        Icon(
-            imageVector = Icons.Default.Face,
-            contentDescription = "Biometric",
-            modifier = Modifier.size(64.dp),
-            tint = Color(0xFF2B7AEF)
-        )
-
-        Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(20.dp)))
-
-        Text(
-            text = "Biometric Verification",
-            fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(18.dp).toSp() },
-            fontWeight = FontWeight.W700,
-            color = MaterialTheme.colorScheme.onSurface
-        )
-
-        Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(8.dp)))
-
-        Text(
-            text = "Biometric verification will launch here.\nThis step requires SDK integration.",
-            fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(14.dp).toSp() },
-            color = MaterialTheme.customColors.description,
-            textAlign = TextAlign.Center,
-            modifier = Modifier.padding(horizontal = ScaleUtil.scaleWidth(16.dp))
-        )
-
-        Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(30.dp)))
-
-        Button(
-            onClick = onContinue,
-            colors = ButtonDefaults.buttonColors(
-                containerColor = Color(0xFF2B7AEF)
-            ),
-            shape = RoundedCornerShape(ScaleUtil.scaleWidth(4.dp)),
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(ScaleUtil.scaleHeight(48.dp))
-        ) {
-            Text(
-                text = "Continue (Demo)",
-                fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(16.dp).toSp() },
-                fontWeight = FontWeight.W600,
-                color = MaterialTheme.customColors.content
-            )
-        }
-    }
-}
-
 // MARK: - Transition screen between steps
 
 @Composable
@@ -424,7 +312,7 @@ private fun TransitionScreen(
             modifier = Modifier
                 .size(56.dp)
                 .background(
-                    color = Color(0xFF22C55E),
+                    color = Color(0xFF4A93FF),
                     shape = CircleShape
                 )
         ) {
@@ -442,7 +330,7 @@ private fun TransitionScreen(
             text = completedTitle,
             fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(18.dp).toSp() },
             fontWeight = FontWeight.W700,
-            color = Color(0xFF22C55E)
+            color = Color(0xFF4A93FF)
         )
 
         Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(30.dp)))

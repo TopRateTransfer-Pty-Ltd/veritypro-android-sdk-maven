@@ -8,7 +8,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
@@ -47,15 +46,15 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MultipartBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
-import okhttp3.RequestBody.Companion.asRequestBody
+import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
-import java.io.File
 import java.io.IOException
 import java.util.concurrent.TimeUnit
 
 @Composable
 fun AddressUploadScreen(
-    file: File,
+    fileData: ByteArray,
+    fileName: String,
     docType: AddressDocType,
     authToken: String?,
     apiBaseUrl: String?,
@@ -79,7 +78,8 @@ fun AddressUploadScreen(
     // Start upload on appear
     LaunchedEffect(Unit) {
         performAddressUpload(
-            file = file,
+            fileData = fileData,
+            fileName = fileName,
             authToken = authToken,
             apiBaseUrl = apiBaseUrl,
             onProgress = { uploadProgress = it },
@@ -207,7 +207,8 @@ fun AddressUploadScreen(
                     isUploading = true
                     uploadProgress = 0f
                     performAddressUpload(
-                        file = file,
+                        fileData = fileData,
+                        fileName = fileName,
                         authToken = authToken,
                         apiBaseUrl = apiBaseUrl,
                         onProgress = { uploadProgress = it },
@@ -263,8 +264,19 @@ fun AddressUploadScreen(
     }
 }
 
+private fun getMimeType(fileName: String): String {
+    val ext = fileName.substringAfterLast('.', "").lowercase()
+    return when (ext) {
+        "pdf" -> "application/pdf"
+        "png" -> "image/png"
+        "jpg", "jpeg" -> "image/jpeg"
+        else -> "application/octet-stream"
+    }
+}
+
 private fun performAddressUpload(
-    file: File,
+    fileData: ByteArray,
+    fileName: String,
     authToken: String?,
     apiBaseUrl: String?,
     onProgress: (Float) -> Unit,
@@ -281,16 +293,12 @@ private fun performAddressUpload(
 
     // File size validation (10MB max)
     val maxSize = 10 * 1024 * 1024
-    if (file.length() > maxSize) {
-        onError("Image is too large. Maximum file size is 10MB.")
+    if (fileData.size > maxSize) {
+        onError("File is too large. Maximum file size is 10MB.")
         return
     }
 
-    val mimeType = when {
-        file.name.lowercase().endsWith(".png") -> "image/png"
-        file.name.lowercase().endsWith(".pdf") -> "application/pdf"
-        else -> "image/jpeg"
-    }
+    val mimeType = getMimeType(fileName)
 
     val client = OkHttpClient.Builder()
         .connectTimeout(30, TimeUnit.SECONDS)
@@ -304,8 +312,8 @@ private fun performAddressUpload(
         .addFormDataPart("documentType", "1")
         .addFormDataPart(
             "file",
-            "address_doc.jpg",
-            file.asRequestBody(mimeType.toMediaType())
+            fileName,
+            fileData.toRequestBody(mimeType.toMediaType())
         )
         .build()
 

@@ -45,7 +45,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.core.content.FileProvider
 import com.example.veritypro_sdk.ui.theme.customColors
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -63,7 +62,6 @@ fun EddCaptureScreen(
     val coroutineScope = rememberCoroutineScope()
     var isProcessing by remember { mutableStateOf(false) }
     var fileError by remember { mutableStateOf<String?>(null) }
-    var tempPhotoFile by remember { mutableStateOf<File?>(null) }
 
     val maxSize = 10 * 1024 * 1024 // 10MB
 
@@ -91,28 +89,28 @@ fun EddCaptureScreen(
         }
     }
 
-    // Camera launcher
-    val cameraLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.TakePicture()
-    ) { success ->
-        val file = tempPhotoFile
-        if (success && file != null && file.exists() && file.length() > 0) {
-            if (file.length() > maxSize) {
-                fileError = "Image is too large. Maximum file size is 10MB."
-            } else {
-                onFileCaptured(file, "edd_photo.jpg")
+    // Gallery picker for images
+    val galleryLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            isProcessing = true
+            coroutineScope.launch(Dispatchers.IO) {
+                val result = copyUriToFile(context, uri)
+                withContext(Dispatchers.Main) {
+                    isProcessing = false
+                    if (result != null) {
+                        if (result.length() > maxSize) {
+                            fileError = "Image is too large. Maximum file size is 10MB."
+                        } else {
+                            onFileCaptured(result, result.name)
+                        }
+                    } else {
+                        fileError = "Failed to process the selected image."
+                    }
+                }
             }
         }
-    }
-
-    fun prepareCameraFile(): Uri? {
-        val file = File.createTempFile("edd_doc_", ".jpg", context.cacheDir)
-        tempPhotoFile = file
-        return FileProvider.getUriForFile(
-            context,
-            "${context.packageName}.fileprovider",
-            file
-        )
     }
 
     Column(
@@ -163,7 +161,7 @@ fun EddCaptureScreen(
         Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(8.dp)))
 
         Text(
-            text = "Upload a clear document or take a photo. Accepted formats: PDF, JPG, PNG (max 10MB).",
+            text = "Upload a clear document or choose from gallery. Accepted formats: PDF, JPG, PNG (max 10MB).",
             fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(14.dp).toSp() },
             fontWeight = FontWeight.W400,
             color = MaterialTheme.customColors.description,
@@ -199,7 +197,7 @@ fun EddCaptureScreen(
                 )
                 Spacer(modifier = Modifier.height(12.dp))
                 Text(
-                    text = "Tap to upload or capture",
+                    text = "Tap to upload or select",
                     fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(14.dp).toSp() },
                     color = MaterialTheme.customColors.subTitle
                 )
@@ -261,12 +259,11 @@ fun EddCaptureScreen(
 
             Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(12.dp)))
 
-            // Take Photo button
+            // Choose from Gallery button
             OutlinedButton(
                 onClick = {
                     fileError = null
-                    val uri = prepareCameraFile()
-                    if (uri != null) cameraLauncher.launch(uri)
+                    galleryLauncher.launch("image/*")
                 },
                 shape = RoundedCornerShape(ScaleUtil.scaleWidth(4.dp)),
                 modifier = Modifier
@@ -274,7 +271,7 @@ fun EddCaptureScreen(
                     .height(ScaleUtil.scaleHeight(44.dp))
             ) {
                 Text(
-                    text = "Take Photo",
+                    text = "Choose from Gallery",
                     fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(16.dp).toSp() },
                     fontWeight = FontWeight.W600,
                     color = Color(0xFF2B7AEF)

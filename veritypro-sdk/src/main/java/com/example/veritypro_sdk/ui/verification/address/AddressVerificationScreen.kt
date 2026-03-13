@@ -1,6 +1,5 @@
 package com.example.veritypro_sdk.ui.verification.address
 
-import android.graphics.Bitmap
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -8,7 +7,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import com.example.veritypro_sdk.ui.verification.flow.ProcessExplainerScreen
 import com.example.veritypro_sdk.utils.VerityMode
-import java.io.File
 
 /**
  * Address verification flow stages.
@@ -42,8 +40,8 @@ fun AddressVerificationScreen(
 ) {
     var stage by remember { mutableStateOf(AddressVerificationStage.INTRO) }
     var selectedDocType by remember { mutableStateOf<AddressDocType?>(null) }
-    var capturedBitmap by remember { mutableStateOf<Bitmap?>(null) }
-    var capturedFile by remember { mutableStateOf<File?>(null) }
+    var capturedFileData by remember { mutableStateOf<ByteArray?>(null) }
+    var capturedFileName by remember { mutableStateOf("") }
 
     when (stage) {
         AddressVerificationStage.INTRO -> {
@@ -75,38 +73,40 @@ fun AddressVerificationScreen(
             AddressCaptureScreen(
                 docType = selectedDocType ?: AddressDocType.UTILITY_BILL,
                 onBack = { stage = AddressVerificationStage.DOC_TYPE },
-                onImageCaptured = { bitmap, file ->
-                    capturedBitmap = bitmap
-                    capturedFile = file
+                onFileCaptured = { bytes, filename ->
+                    capturedFileData = bytes
+                    capturedFileName = filename
                     stage = AddressVerificationStage.PREVIEW
                 }
             )
         }
 
         AddressVerificationStage.PREVIEW -> {
-            val bitmap = capturedBitmap
-            if (bitmap != null) {
+            val data = capturedFileData
+            if (data != null) {
                 AddressPreviewScreen(
-                    bitmap = bitmap,
+                    fileData = data,
+                    fileName = capturedFileName,
                     docType = selectedDocType ?: AddressDocType.UTILITY_BILL,
-                    onRetake = {
-                        capturedBitmap = null
-                        capturedFile = null
+                    onReselect = {
+                        capturedFileData = null
+                        capturedFileName = ""
                         stage = AddressVerificationStage.CAPTURE
                     },
                     onConfirm = { stage = AddressVerificationStage.UPLOAD }
                 )
             } else {
-                // Guard: no bitmap, go back to capture
+                // Guard: no data, go back to capture
                 stage = AddressVerificationStage.CAPTURE
             }
         }
 
         AddressVerificationStage.UPLOAD -> {
-            val file = capturedFile
-            if (file != null) {
+            val data = capturedFileData
+            if (data != null) {
                 AddressUploadScreen(
-                    file = file,
+                    fileData = data,
+                    fileName = capturedFileName,
                     docType = selectedDocType ?: AddressDocType.UTILITY_BILL,
                     authToken = authToken,
                     apiBaseUrl = apiBaseUrl,
@@ -115,14 +115,14 @@ fun AddressVerificationScreen(
                             stage = AddressVerificationStage.COMPLETE
                         } else {
                             // Upload failed - go back to capture for retry
-                            capturedBitmap = null
-                            capturedFile = null
+                            capturedFileData = null
+                            capturedFileName = ""
                             stage = AddressVerificationStage.CAPTURE
                         }
                     }
                 )
             } else {
-                // Guard: no file, go back to capture
+                // Guard: no data, go back to capture
                 stage = AddressVerificationStage.CAPTURE
             }
         }

@@ -1,7 +1,7 @@
 package com.example.veritypro_sdk.ui.verification.address
 
 import ScaleUtil
-import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -21,6 +21,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
+import androidx.compose.material.icons.filled.InsertDriveFile
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
@@ -28,6 +29,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -42,11 +44,15 @@ import com.example.veritypro_sdk.ui.theme.customColors
 
 @Composable
 fun AddressPreviewScreen(
-    bitmap: Bitmap,
+    fileData: ByteArray,
+    fileName: String,
     docType: AddressDocType,
-    onRetake: () -> Unit,
+    onReselect: () -> Unit,
     onConfirm: () -> Unit
 ) {
+    val bitmap = remember(fileData) { BitmapFactory.decodeByteArray(fileData, 0, fileData.size) }
+    val isImage = bitmap != null
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -62,7 +68,7 @@ fun AddressPreviewScreen(
         Box(
             modifier = Modifier
                 .align(Alignment.Start)
-                .clickable(onClick = onRetake)
+                .clickable(onClick = onReselect)
                 .padding(ScaleUtil.scaleWidth(4.dp))
         ) {
             Icon(
@@ -95,7 +101,7 @@ fun AddressPreviewScreen(
         Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(8.dp)))
 
         Text(
-            text = "Make sure the image is clear and all details are readable.",
+            text = "Make sure the document is clear and all details are readable.",
             fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(14.dp).toSp() },
             fontWeight = FontWeight.W400,
             color = MaterialTheme.customColors.description,
@@ -107,15 +113,49 @@ fun AddressPreviewScreen(
 
         Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(20.dp)))
 
-        // Image preview
-        Image(
-            bitmap = bitmap.asImageBitmap(),
-            contentDescription = "Captured document",
-            contentScale = ContentScale.Fit,
-            modifier = Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(8.dp))
-        )
+        if (isImage && bitmap != null) {
+            // Image preview
+            Image(
+                bitmap = bitmap.asImageBitmap(),
+                contentDescription = "Document preview",
+                contentScale = ContentScale.Fit,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(8.dp))
+            )
+        } else {
+            // File info card (PDF or non-image)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(MaterialTheme.customColors.background)
+                    .padding(16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Icon(
+                    imageVector = Icons.Default.InsertDriveFile,
+                    contentDescription = "File",
+                    modifier = Modifier.size(32.dp),
+                    tint = Color(0xFF2B7AEF)
+                )
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = fileName,
+                        fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(14.dp).toSp() },
+                        fontWeight = FontWeight.W500,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1
+                    )
+                    Text(
+                        text = formatFileSize(fileData.size.toLong()),
+                        fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(12.dp).toSp() },
+                        color = MaterialTheme.customColors.subTitle
+                    )
+                }
+            }
+        }
 
         Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(8.dp)))
 
@@ -135,7 +175,7 @@ fun AddressPreviewScreen(
             horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             OutlinedButton(
-                onClick = onRetake,
+                onClick = onReselect,
                 shape = RoundedCornerShape(4.dp),
                 colors = ButtonDefaults.outlinedButtonColors(
                     containerColor = Color.White,
@@ -146,7 +186,7 @@ fun AddressPreviewScreen(
                     .height(ScaleUtil.scaleHeight(44.dp))
             ) {
                 Text(
-                    text = "Retake",
+                    text = "Re-select",
                     fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(14.dp).toSp() },
                     fontWeight = FontWeight.W500
                 )
@@ -175,4 +215,10 @@ fun AddressPreviewScreen(
 
         PoweredByFooter()
     }
+}
+
+private fun formatFileSize(bytes: Long): String {
+    if (bytes < 1024) return "$bytes B"
+    if (bytes < 1024 * 1024) return "${bytes / 1024} KB"
+    return "${"%.1f".format(bytes / (1024.0 * 1024.0))} MB"
 }
