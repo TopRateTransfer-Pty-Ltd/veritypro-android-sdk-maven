@@ -30,6 +30,7 @@ import com.example.veritypro_sdk.services.MLRepository
 import com.example.veritypro_sdk.services.MLSpoofType
 import com.example.veritypro_sdk.services.Resource
 //import com.example.veritypro_sdk.utils.DocumentDetector
+import com.example.veritypro_sdk.utils.DocumentBackValidator
 import com.example.veritypro_sdk.utils.ImageSharpeningUtils
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
@@ -188,13 +189,14 @@ fun PreviewCapturedImageScreen(
             coroutineScope.launch(Dispatchers.IO) {
                 try {
                     if (isBackSide) {
-                        // Skip anti-spoofing for back side - accept directly
+                        // Validate back side using barcode, MRZ, text, and face detection
+                        val backResult = DocumentBackValidator.validateDocumentBack(bmp)
                         withContext(Dispatchers.Main) {
-                            antiSpoofPassed = true
-                            confidence = 1f
-                            hint = "Back side captured"
+                            antiSpoofPassed = backResult.isValid
+                            confidence = backResult.confidence
+                            hint = backResult.message
                         }
-                        Log.d("PreviewScreen", "Back side: Anti-spoofing skipped")
+                        Log.d("PreviewScreen", "Back side validation: barcode=${backResult.hasBarcode}, MRZ=${backResult.hasMRZ}, text=${backResult.hasText}(${backResult.textCount}), face=${backResult.hasFace}, valid=${backResult.isValid}, conf=${backResult.confidence}")
                     } else if (burstFiles.size >= 3) {
                         // Use burst frames for anti-spoofing
                         val mlRepository = MLRepository()
