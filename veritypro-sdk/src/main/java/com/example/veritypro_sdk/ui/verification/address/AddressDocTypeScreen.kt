@@ -51,12 +51,14 @@ import androidx.compose.ui.unit.sp
 import com.example.veritypro_sdk.ui.theme.customColors
 
 enum class AddressDocType(
+    val id: Int,
     val displayName: String,
     val subtitle: String,
     val acceptedDocuments: List<String>,
     val icon: ImageVector
 ) {
     UTILITY_BILL(
+        id = 1,
         displayName = "Utility Bill",
         subtitle = "Electricity, gas, water, or internet bill",
         acceptedDocuments = listOf(
@@ -67,6 +69,7 @@ enum class AddressDocType(
         icon = Icons.Default.ElectricBolt
     ),
     BANK_STATEMENT(
+        id = 2,
         displayName = "Bank Statement",
         subtitle = "Recent bank or financial statement",
         acceptedDocuments = listOf(
@@ -77,6 +80,7 @@ enum class AddressDocType(
         icon = Icons.Default.AccountBalance
     ),
     PAYSLIP(
+        id = 3,
         displayName = "Payslip",
         subtitle = "Employer-issued payslip with address",
         acceptedDocuments = listOf(
@@ -87,6 +91,7 @@ enum class AddressDocType(
         icon = Icons.Default.AttachMoney
     ),
     GOVERNMENT_LETTER(
+        id = 4,
         displayName = "Government Letter",
         subtitle = "Tax notice, council letter, or similar",
         acceptedDocuments = listOf(

@@ -49,6 +49,7 @@ import androidx.compose.ui.unit.sp
 import com.example.veritypro_sdk.ui.theme.customColors
 
 enum class EddDocType(
+    val id: Int,
     val displayName: String,
     val subtitle: String,
     val acceptedFormats: String,
@@ -57,6 +58,7 @@ enum class EddDocType(
     val documentTypeValue: String
 ) {
     SOURCE_OF_FUNDS(
+        id = 2,
         displayName = "Source of Funds",
         subtitle = "Bank statements, payslips, or tax returns showing income source",
         acceptedFormats = "PDF, JPG, or PNG (max 10MB)",
@@ -69,6 +71,7 @@ enum class EddDocType(
         documentTypeValue = "2"
     ),
     EMPLOYMENT_PROOF(
+        id = 3,
         displayName = "Employment Proof",
         subtitle = "Employment letter, contract, or business registration",
         acceptedFormats = "PDF, JPG, or PNG (max 10MB)",
@@ -81,6 +84,7 @@ enum class EddDocType(
         documentTypeValue = "3"
     ),
     PURPOSE_OF_TRANSACTION(
+        id = 4,
         displayName = "Purpose of Transaction",
         subtitle = "Invoice, property documents, or purpose declaration",
         acceptedFormats = "PDF, JPG, or PNG (max 10MB)",
