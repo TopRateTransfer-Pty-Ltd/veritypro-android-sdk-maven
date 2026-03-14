@@ -1,9 +1,7 @@
 package com.example.veritypro_sdk.ui.verification.address
 
 import ScaleUtil
-import android.graphics.Bitmap
 import android.graphics.BitmapFactory
-import android.graphics.Matrix
 import android.net.Uri
 import android.util.Log
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -26,7 +24,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
-import androidx.compose.material.icons.filled.DocumentScanner
+import androidx.compose.material.icons.outlined.UploadFile
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
@@ -42,85 +40,95 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.PathEffect
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import androidx.core.content.FileProvider
-import androidx.exifinterface.media.ExifInterface
+import androidx.compose.ui.unit.sp
+import androidx.documentfile.provider.DocumentFile
 import com.example.veritypro_sdk.ui.theme.customColors
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.io.File
-import java.io.FileOutputStream
 
 @Composable
 fun AddressCaptureScreen(
     docType: AddressDocType,
     onBack: () -> Unit,
-    onImageCaptured: (Bitmap, File) -> Unit
+    onFileCaptured: (ByteArray, String) -> Unit
 ) {
     val context = LocalContext.current
     val coroutineScope = rememberCoroutineScope()
     var isProcessing by remember { mutableStateOf(false) }
-    var tempPhotoFile by remember { mutableStateOf<File?>(null) }
+    var fileError by remember { mutableStateOf<String?>(null) }
 
-    // Camera launcher
-    val cameraLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.TakePicture()
-    ) { success ->
-        val file = tempPhotoFile
-        if (success && file != null && file.exists() && file.length() > 0) {
+    val maxSize = 10 * 1024 * 1024 // 10MB
+
+    // File picker for PDF/images
+    val fileLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenDocument()
+    ) { uri: Uri? ->
+        if (uri != null) {
             isProcessing = true
             coroutineScope.launch(Dispatchers.IO) {
-                val bitmap = loadAndCorrectBitmap(file)
-                withContext(Dispatchers.Main) {
-                    isProcessing = false
-                    if (bitmap != null) {
-                        onImageCaptured(bitmap, file)
+                try {
+                    val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                    withContext(Dispatchers.Main) {
+                        isProcessing = false
+                        if (bytes != null) {
+                            if (bytes.size > maxSize) {
+                                fileError = "File is too large. Maximum file size is 10MB."
+                            } else {
+                                val displayName = DocumentFile.fromSingleUri(context, uri)?.name ?: "document"
+                                onFileCaptured(bytes, displayName)
+                            }
+                        } else {
+                            fileError = "Failed to read the selected file. Please try again."
+                        }
+                    }
+                } catch (e: Exception) {
+                    Log.e("AddressCapture", "Failed to read file", e)
+                    withContext(Dispatchers.Main) {
+                        isProcessing = false
+                        fileError = "Failed to read the selected file. Please try again."
                     }
                 }
             }
         }
     }
 
-    // Gallery launcher
+    // Gallery picker for images
     val galleryLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
     ) { uri: Uri? ->
         if (uri != null) {
             isProcessing = true
             coroutineScope.launch(Dispatchers.IO) {
-                val file = copyUriToFile(context, uri)
-                if (file != null) {
-                    val bitmap = loadPreviewBitmap(file)
+                try {
+                    val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
                     withContext(Dispatchers.Main) {
                         isProcessing = false
-                        if (bitmap != null) {
-                            onImageCaptured(bitmap, file)
+                        if (bytes != null) {
+                            if (bytes.size > maxSize) {
+                                fileError = "Image is too large. Maximum file size is 10MB."
+                            } else {
+                                val displayName = DocumentFile.fromSingleUri(context, uri)?.name ?: "address_photo.jpg"
+                                onFileCaptured(bytes, displayName)
+                            }
+                        } else {
+                            fileError = "Failed to process the selected image."
                         }
                     }
-                } else {
+                } catch (e: Exception) {
+                    Log.e("AddressCapture", "Failed to read gallery image", e)
                     withContext(Dispatchers.Main) {
                         isProcessing = false
+                        fileError = "Failed to process the selected image."
                     }
                 }
             }
         }
-    }
-
-    fun prepareCameraFile(): Uri? {
-        val file = File.createTempFile("address_doc_", ".jpg", context.cacheDir)
-        tempPhotoFile = file
-        return FileProvider.getUriForFile(
-            context,
-            "${context.packageName}.fileprovider",
-            file
-        )
     }
 
     Column(
@@ -160,7 +168,7 @@ fun AddressCaptureScreen(
         )
 
         Text(
-            text = "Capture your ${docType.displayName}",
+            text = "Upload ${docType.displayName}",
             color = MaterialTheme.colorScheme.onSurface,
             fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(18.dp).toSp() },
             fontWeight = FontWeight.W700,
@@ -171,7 +179,7 @@ fun AddressCaptureScreen(
         Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(8.dp)))
 
         Text(
-            text = "Take a clear photo of your document. Ensure all text is readable and the full document is visible.",
+            text = "Upload a clear document or choose from gallery. Accepted formats: PDF, JPG, PNG (max 10MB).",
             fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(14.dp).toSp() },
             fontWeight = FontWeight.W400,
             color = MaterialTheme.customColors.description,
@@ -183,11 +191,11 @@ fun AddressCaptureScreen(
 
         Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(30.dp)))
 
-        // Document placeholder area with dashed border
+        // Upload area with dashed border
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(ScaleUtil.scaleHeight(200.dp))
+                .height(ScaleUtil.scaleHeight(180.dp))
                 .border(
                     width = 2.dp,
                     color = MaterialTheme.customColors.containerBorder,
@@ -200,21 +208,39 @@ fun AddressCaptureScreen(
                 verticalArrangement = Arrangement.Center
             ) {
                 Icon(
-                    imageVector = Icons.Default.DocumentScanner,
-                    contentDescription = "Document placeholder",
+                    imageVector = Icons.Outlined.UploadFile,
+                    contentDescription = "Upload placeholder",
                     modifier = Modifier.size(48.dp),
                     tint = MaterialTheme.customColors.subTitle
                 )
                 Spacer(modifier = Modifier.height(12.dp))
                 Text(
-                    text = "Position document here",
+                    text = "Tap to upload or select",
                     fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(14.dp).toSp() },
                     color = MaterialTheme.customColors.subTitle
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = docType.acceptedFormats,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.W500,
+                    color = Color(0xFF2B7AEF)
                 )
             }
         }
 
         Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(40.dp)))
+
+        // Error message
+        fileError?.let { error ->
+            Text(
+                text = error,
+                fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(13.dp).toSp() },
+                color = Color(0xFFF44336),
+                textAlign = TextAlign.Center,
+                modifier = Modifier.padding(bottom = ScaleUtil.scaleHeight(12.dp))
+            )
+        }
 
         if (isProcessing) {
             androidx.compose.material3.CircularProgressIndicator(
@@ -223,16 +249,16 @@ fun AddressCaptureScreen(
             )
             Spacer(modifier = Modifier.height(8.dp))
             Text(
-                text = "Processing image...",
+                text = "Processing file...",
                 fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(14.dp).toSp() },
                 color = MaterialTheme.customColors.description
             )
         } else {
-            // Take Photo button
+            // Upload File button
             Button(
                 onClick = {
-                    val uri = prepareCameraFile()
-                    if (uri != null) cameraLauncher.launch(uri)
+                    fileError = null
+                    fileLauncher.launch(arrayOf("application/pdf", "image/jpeg", "image/png"))
                 },
                 colors = ButtonDefaults.buttonColors(
                     containerColor = Color(0xFF2B7AEF)
@@ -243,7 +269,7 @@ fun AddressCaptureScreen(
                     .height(ScaleUtil.scaleHeight(48.dp))
             ) {
                 Text(
-                    text = "Take Photo",
+                    text = "Upload File",
                     fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(16.dp).toSp() },
                     fontWeight = FontWeight.W600,
                     color = MaterialTheme.customColors.content
@@ -254,7 +280,10 @@ fun AddressCaptureScreen(
 
             // Choose from Gallery button
             OutlinedButton(
-                onClick = { galleryLauncher.launch("image/*") },
+                onClick = {
+                    fileError = null
+                    galleryLauncher.launch("image/*")
+                },
                 shape = RoundedCornerShape(ScaleUtil.scaleWidth(4.dp)),
                 modifier = Modifier
                     .fillMaxWidth()
@@ -272,88 +301,5 @@ fun AddressCaptureScreen(
         Spacer(modifier = Modifier.weight(1f))
 
         PoweredByFooter()
-    }
-}
-
-/** Load bitmap from file, applying EXIF rotation correction. */
-private fun loadAndCorrectBitmap(file: File): Bitmap? {
-    return try {
-        val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        BitmapFactory.decodeFile(file.path, options)
-
-        val maxDimension = 1920
-        val longestSide = maxOf(options.outWidth, options.outHeight)
-        var inSampleSize = 1
-        while (longestSide / inSampleSize > maxDimension) {
-            inSampleSize *= 2
-        }
-
-        val decodeOptions = BitmapFactory.Options().apply {
-            this.inSampleSize = inSampleSize
-        }
-        val bitmap = BitmapFactory.decodeFile(file.path, decodeOptions) ?: return null
-
-        val exif = ExifInterface(file.path)
-        val orientation = exif.getAttributeInt(
-            ExifInterface.TAG_ORIENTATION,
-            ExifInterface.ORIENTATION_NORMAL
-        )
-        val rotationDegrees = when (orientation) {
-            ExifInterface.ORIENTATION_ROTATE_90 -> 90f
-            ExifInterface.ORIENTATION_ROTATE_180 -> 180f
-            ExifInterface.ORIENTATION_ROTATE_270 -> 270f
-            else -> 0f
-        }
-
-        if (rotationDegrees != 0f) {
-            val matrix = Matrix().apply { postRotate(rotationDegrees) }
-            val rotated = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
-            if (rotated != bitmap) bitmap.recycle()
-            rotated
-        } else {
-            bitmap
-        }
-    } catch (e: Exception) {
-        Log.e("AddressCapture", "Failed to process bitmap", e)
-        null
-    }
-}
-
-/** Load bitmap from file for preview only (gallery picks). */
-private fun loadPreviewBitmap(file: File): Bitmap? {
-    return try {
-        val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        BitmapFactory.decodeFile(file.path, options)
-
-        val maxDimension = 1920
-        val longestSide = maxOf(options.outWidth, options.outHeight)
-        var inSampleSize = 1
-        while (longestSide / inSampleSize > maxDimension) {
-            inSampleSize *= 2
-        }
-
-        val decodeOptions = BitmapFactory.Options().apply {
-            this.inSampleSize = inSampleSize
-        }
-        BitmapFactory.decodeFile(file.path, decodeOptions)
-    } catch (e: Exception) {
-        Log.e("AddressCapture", "Failed to load preview bitmap", e)
-        null
-    }
-}
-
-/** Copy content URI to a local cache file. */
-private fun copyUriToFile(context: android.content.Context, uri: Uri): File? {
-    return try {
-        val file = File(context.cacheDir, "address_gallery_${System.currentTimeMillis()}.jpg")
-        context.contentResolver.openInputStream(uri)?.use { input ->
-            FileOutputStream(file).use { output ->
-                input.copyTo(output)
-            }
-        }
-        if (file.exists() && file.length() > 0) file else null
-    } catch (e: Exception) {
-        Log.e("AddressCapture", "Failed to copy URI to file", e)
-        null
     }
 }

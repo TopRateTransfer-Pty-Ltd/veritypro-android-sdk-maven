@@ -96,6 +96,9 @@ enum class AddressDocType(
         ),
         icon = Icons.Default.Mail
     );
+
+    val acceptedFormats: String
+        get() = "PDF, JPG, or PNG (max 10MB)"
 }
 
 @Composable

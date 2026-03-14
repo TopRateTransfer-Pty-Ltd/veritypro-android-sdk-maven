@@ -27,6 +27,7 @@ import androidx.compose.ui.platform.LocalDensity
 import com.example.veritypro_sdk.services.MLDecision
 import com.example.veritypro_sdk.services.MLDocumentType
 import com.example.veritypro_sdk.services.MLRepository
+import com.example.veritypro_sdk.services.MLSpoofType
 import com.example.veritypro_sdk.services.Resource
 //import com.example.veritypro_sdk.utils.DocumentDetector
 import com.example.veritypro_sdk.utils.ImageSharpeningUtils
@@ -126,8 +127,10 @@ private fun loadBitmapWithRotation(file: File): Bitmap? {
             }
         }
 
-        // Apply 4-stage sharpening pipeline for crisper document text
-        ImageSharpeningUtils.applySharpeningPipeline(oriented)
+        // Return oriented image directly — no sharpening needed for preview.
+        // The camera produces sufficient quality; aggressive sharpening amplifies
+        // sensor noise and makes the image look grainy/bright on mobile screens.
+        oriented
     } catch (e: Exception) {
         Log.e("PreviewScreen", "Failed to load bitmap with rotation", e)
         null
@@ -224,10 +227,10 @@ fun PreviewCapturedImageScreen(
                                 }
                                 is Resource.Error -> {
                                     Log.w("PreviewScreen", "Anti-spoof error: ${result.message}")
-                                    // On ML backend error, accept document (offline fallback)
+                                    // Do NOT accept on error — require actual verification
                                     antiSpoofPassed = false
-                                    confidence = 0.5f
-                                    hint = "Document captured (offline verification)"
+                                    confidence = 0f
+                                    hint = "Verification service unavailable. Please retake and retry."
                                 }
                                 else -> {
                                     antiSpoofPassed = false
@@ -237,21 +240,21 @@ fun PreviewCapturedImageScreen(
                             }
                         }
                     } else {
-                        // Not enough burst frames - accept with warning
+                        // Not enough burst frames — cannot verify
                         withContext(Dispatchers.Main) {
                             antiSpoofPassed = false
-                            confidence = 0.5f
-                            hint = "Document captured (limited verification)"
+                            confidence = 0f
+                            hint = "Insufficient frames for verification. Please retake."
                         }
                         Log.w("PreviewScreen", "Not enough burst frames for anti-spoofing: ${burstFiles.size}")
                     }
                 } catch (e: Exception) {
                     Log.e("PreviewScreen", "Anti-spoofing failed", e)
                     withContext(Dispatchers.Main) {
-                        // On error, accept document (graceful degradation)
+                        // Do NOT accept on error
                         antiSpoofPassed = false
-                        confidence = 0.5f
-                        hint = "Document captured (verification unavailable)"
+                        confidence = 0f
+                        hint = "Verification failed. Please retake the photo."
                     }
                 } finally {
                     withContext(Dispatchers.Main) {
@@ -405,20 +408,15 @@ fun PreviewCapturedImageScreen(
                 } else {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         Text(
-                            text = "Spoof detected. Please use original document.",
+                            text = if (spoofReason.isNotEmpty()) {
+                                MLSpoofType.toUserMessage(spoofReason)
+                            } else {
+                                "Spoof detected. Please use original document."
+                            },
                             color = Color(0xFFEF5350),
                             textAlign = TextAlign.Center,
                             fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(14.dp).toSp() }
                         )
-                        if (spoofReason.isNotEmpty()) {
-                            Spacer(modifier = Modifier.height(4.dp))
-                            Text(
-                                text = "Reason: $spoofReason",
-                                color = Color(0xFFFFB74D),
-                                textAlign = TextAlign.Center,
-                                fontSize = 12.sp
-                            )
-                        }
                     }
                 }
             }

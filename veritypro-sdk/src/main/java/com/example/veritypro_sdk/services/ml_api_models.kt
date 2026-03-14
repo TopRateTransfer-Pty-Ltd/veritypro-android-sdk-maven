@@ -285,12 +285,33 @@ object MLDecision {
 }
 
 /**
- * Spoof types
+ * Spoof types (includes deepfake/AI-generation detection)
  */
 object MLSpoofType {
     const val NONE = "NONE"
     const val SCREEN = "SCREEN"
+    const val SCREENREPLAY = "SCREENREPLAY"
     const val PRINT = "PRINT"
+    const val PRINTEDCOPY = "PRINTEDCOPY"
+    const val AI_GENERATED = "AI_GENERATED"
+    const val AIGENERATED = "AIGENERATED"
+    const val DIGITALLY_MANIPULATED = "DIGITALLY_MANIPULATED"
+    const val DIGITALLYMANIPULATED = "DIGITALLYMANIPULATED"
+    const val PROMPT_INJECTION = "PROMPT_INJECTION"
+    const val PROMPTINJECTION = "PROMPTINJECTION"
     const val UNKNOWN = "UNKNOWN"
     const val PASS = "PASS"
+
+    /** User-friendly message for each spoof type */
+    fun toUserMessage(reason: String): String {
+        return when (reason.uppercase().replace("_", "")) {
+            "SCREEN", "SCREENREPLAY" -> "Screen replay detected. Please use the original physical document."
+            "PRINT", "PRINTEDCOPY" -> "Printed copy detected. Please use the original physical document."
+            "AIGENERATED" -> "Document appears AI-generated or fabricated. Please use your original document."
+            "DIGITALLYMANIPULATED" -> "Document appears digitally altered. Please use the unmodified original."
+            "PROMPTINJECTION" -> "Document verification failed. Please use a valid original document."
+            "BLURRY" -> "Image is too blurry. Please retake with good lighting and hold steady."
+            else -> "Document verification failed. Please try again with your original document."
+        }
+    }
 }

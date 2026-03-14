@@ -37,9 +37,13 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import com.example.veritypro_sdk.ui.theme.ThemeMode
 import com.example.veritypro_sdk.ui.theme.customColors
+import com.example.veritypro_sdk.ui.verification.VerificationScreen
 import com.example.veritypro_sdk.ui.verification.address.AddressVerificationScreen
 import com.example.veritypro_sdk.ui.verification.edd.EddVerificationScreen
+import com.example.veritypro_sdk.utils.VerityMode
+import com.example.veritypro_sdk.utils.VerityOption
 
 /**
  * Combined flow stages.
@@ -60,17 +64,29 @@ enum class CombinedFlowStage {
 /**
  * Combined verification flow orchestrator.
  *
- * Manages a multi-step verification: biometric (existing SDK) -> address -> EDD.
- * Steps are controlled by `requestedSteps` list (e.g. ["biometric", "address", "edd"]).
+ * Manages a multi-step verification: document -> biometric -> address -> EDD.
+ * Steps are controlled by `requestedSteps` list (e.g. ["document", "biometric", "address", "edd"]).
  *
- * @param authToken Bearer token for the API.
- * @param apiBaseUrl Base URL for the VerityPro API.
- * @param requestedSteps List of step identifiers to include: "biometric", "address", "edd".
+ * Session linkage: All steps share the same [VerityOption] which contains `vendorData`
+ * (the external user ID). The backend uses vendorData to link all verification sessions
+ * for the same user — document, biometric, address, and EDD all reference the same user.
+ *
+ * - Document + Biometric: Share a KYC session (created via createKyc with vendorData)
+ * - Address: Creates its own address session (linked via vendorData + integrationId)
+ * - EDD: Creates its own EDD case (linked via vendorData as subjectId)
+ *
+ * @param options VerityOption with apiKey, integrationId, user info. Required for all steps.
+ * @param themeMode Light or dark theme.
+ * @param authToken Legacy bearer token (unused when options is provided).
+ * @param apiBaseUrl Legacy base URL (unused when options is provided).
+ * @param requestedSteps List of step identifiers: "document", "biometric", "address", "edd".
  * @param onFinish Called with result map when all steps complete.
  * @param onCancel Called when the user cancels the flow.
  */
 @Composable
 fun CombinedFlowScreen(
+    options: VerityOption? = null,
+    themeMode: ThemeMode = ThemeMode.LIGHT,
     authToken: String?,
     apiBaseUrl: String?,
     requestedSteps: List<String>,
@@ -172,10 +188,16 @@ fun CombinedFlowScreen(
         }
 
         CombinedFlowStage.DOCUMENT -> {
-            // Document capture placeholder - integrates with existing VerityPro SDK
-            DocumentPlaceholderScreen(
-                onContinue = { advanceAfterDocument() }
-            )
+            if (options != null) {
+                VerificationScreen(
+                    options = options.copy(mode = VerityMode.DOCUMENT.name),
+                    onFinish = { result ->
+                        advanceAfterDocument()
+                    },
+                    onCancel = onCancel,
+                    themeMode = themeMode
+                )
+            }
         }
 
         CombinedFlowStage.DOCUMENT_TO_BIOMETRIC -> {
@@ -188,10 +210,16 @@ fun CombinedFlowScreen(
         }
 
         CombinedFlowStage.BIOMETRIC -> {
-            // Biometric placeholder - integrates with existing VerityPro SDK
-            BiometricPlaceholderScreen(
-                onContinue = { advanceAfterBiometric() }
-            )
+            if (options != null) {
+                VerificationScreen(
+                    options = options.copy(mode = VerityMode.BIOMETRIC.name),
+                    onFinish = { result ->
+                        advanceAfterBiometric()
+                    },
+                    onCancel = onCancel,
+                    themeMode = themeMode
+                )
+            }
         }
 
         CombinedFlowStage.BIOMETRIC_TO_ADDRESS -> {
@@ -204,15 +232,14 @@ fun CombinedFlowScreen(
         }
 
         CombinedFlowStage.ADDRESS -> {
+            // Pass options so address creates its own session linked via vendorData
             AddressVerificationScreen(
-                authToken = authToken,
-                apiBaseUrl = apiBaseUrl,
+                options = options,
                 onFinish = { success ->
                     if (success) {
                         completedSteps.add("address")
                         advanceAfterAddress()
                     }
-                    // On failure, stay on address step
                 },
                 onCancel = onCancel
             )
@@ -228,9 +255,9 @@ fun CombinedFlowScreen(
         }
 
         CombinedFlowStage.EDD -> {
+            // Pass options so EDD creates case with vendorData as subjectId
             EddVerificationScreen(
-                authToken = authToken,
-                apiBaseUrl = apiBaseUrl,
+                options = options,
                 onFinish = { success ->
                     if (success) completedSteps.add("edd")
                     stage = CombinedFlowStage.ALL_COMPLETE
@@ -250,136 +277,6 @@ fun CombinedFlowScreen(
                         )
                     )
                 }
-            )
-        }
-    }
-}
-
-// MARK: - Document placeholder screen
-
-@Composable
-private fun DocumentPlaceholderScreen(
-    onContinue: () -> Unit
-) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(MaterialTheme.customColors.background)
-            .padding(
-                horizontal = ScaleUtil.scaleWidth(24.dp),
-                vertical = ScaleUtil.scaleHeight(40.dp)
-            ),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
-    ) {
-        Icon(
-            imageVector = Icons.Default.Check,
-            contentDescription = "Document",
-            modifier = Modifier.size(64.dp),
-            tint = Color(0xFF2B7AEF)
-        )
-
-        Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(20.dp)))
-
-        Text(
-            text = "Document Capture",
-            fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(18.dp).toSp() },
-            fontWeight = FontWeight.W700,
-            color = MaterialTheme.colorScheme.onSurface
-        )
-
-        Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(8.dp)))
-
-        Text(
-            text = "Document capture will launch here.\nThis step requires SDK integration.",
-            fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(14.dp).toSp() },
-            color = MaterialTheme.customColors.description,
-            textAlign = TextAlign.Center,
-            modifier = Modifier.padding(horizontal = ScaleUtil.scaleWidth(16.dp))
-        )
-
-        Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(30.dp)))
-
-        Button(
-            onClick = onContinue,
-            colors = ButtonDefaults.buttonColors(
-                containerColor = Color(0xFF2B7AEF)
-            ),
-            shape = RoundedCornerShape(ScaleUtil.scaleWidth(4.dp)),
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(ScaleUtil.scaleHeight(48.dp))
-        ) {
-            Text(
-                text = "Continue (Demo)",
-                fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(16.dp).toSp() },
-                fontWeight = FontWeight.W600,
-                color = MaterialTheme.customColors.content
-            )
-        }
-    }
-}
-
-// MARK: - Biometric placeholder screen
-
-@Composable
-private fun BiometricPlaceholderScreen(
-    onContinue: () -> Unit
-) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(MaterialTheme.customColors.background)
-            .padding(
-                horizontal = ScaleUtil.scaleWidth(24.dp),
-                vertical = ScaleUtil.scaleHeight(40.dp)
-            ),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
-    ) {
-        Icon(
-            imageVector = Icons.Default.Face,
-            contentDescription = "Biometric",
-            modifier = Modifier.size(64.dp),
-            tint = Color(0xFF2B7AEF)
-        )
-
-        Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(20.dp)))
-
-        Text(
-            text = "Biometric Verification",
-            fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(18.dp).toSp() },
-            fontWeight = FontWeight.W700,
-            color = MaterialTheme.colorScheme.onSurface
-        )
-
-        Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(8.dp)))
-
-        Text(
-            text = "Biometric verification will launch here.\nThis step requires SDK integration.",
-            fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(14.dp).toSp() },
-            color = MaterialTheme.customColors.description,
-            textAlign = TextAlign.Center,
-            modifier = Modifier.padding(horizontal = ScaleUtil.scaleWidth(16.dp))
-        )
-
-        Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(30.dp)))
-
-        Button(
-            onClick = onContinue,
-            colors = ButtonDefaults.buttonColors(
-                containerColor = Color(0xFF2B7AEF)
-            ),
-            shape = RoundedCornerShape(ScaleUtil.scaleWidth(4.dp)),
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(ScaleUtil.scaleHeight(48.dp))
-        ) {
-            Text(
-                text = "Continue (Demo)",
-                fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(16.dp).toSp() },
-                fontWeight = FontWeight.W600,
-                color = MaterialTheme.customColors.content
             )
         }
     }
@@ -418,13 +315,12 @@ private fun TransitionScreen(
 
         Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(30.dp)))
 
-        // Completed indicator
         Box(
             contentAlignment = Alignment.Center,
             modifier = Modifier
                 .size(56.dp)
                 .background(
-                    color = Color(0xFF22C55E),
+                    color = Color(0xFF4A93FF),
                     shape = CircleShape
                 )
         ) {
@@ -442,12 +338,11 @@ private fun TransitionScreen(
             text = completedTitle,
             fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(18.dp).toSp() },
             fontWeight = FontWeight.W700,
-            color = Color(0xFF22C55E)
+            color = Color(0xFF4A93FF)
         )
 
         Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(30.dp)))
 
-        // Timeline
         FlowTimelineView(steps = flowSteps)
 
         Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(30.dp)))
@@ -482,7 +377,6 @@ private fun TransitionScreen(
 
         Spacer(modifier = Modifier.weight(1f))
 
-        // Powered by footer
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.Center,
@@ -535,7 +429,6 @@ private fun AllCompleteScreen(
 
         Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(40.dp)))
 
-        // Success checkmark
         Box(
             contentAlignment = Alignment.Center,
             modifier = Modifier
@@ -578,7 +471,6 @@ private fun AllCompleteScreen(
 
         Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(24.dp)))
 
-        // Timeline showing all completed
         FlowTimelineView(steps = flowSteps)
 
         Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(30.dp)))
@@ -603,7 +495,6 @@ private fun AllCompleteScreen(
 
         Spacer(modifier = Modifier.weight(1f))
 
-        // Powered by footer
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.Center,
