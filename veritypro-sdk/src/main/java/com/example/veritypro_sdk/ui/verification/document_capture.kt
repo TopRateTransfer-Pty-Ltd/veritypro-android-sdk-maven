@@ -51,6 +51,7 @@ import com.example.veritypro_sdk.utils.DistanceGuidance
 import com.example.veritypro_sdk.utils.DistanceState
 import com.example.veritypro_sdk.utils.FocusMode
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -85,6 +86,9 @@ fun DocumentCaptureScreen(
     var processingStatus by remember { mutableStateOf("") }
     var verificationPassed by remember { mutableStateOf(false) }
     var verificationError by remember { mutableStateOf("") }
+
+    // Auto-dismiss error job
+    var errorDismissJob by remember { mutableStateOf<Job?>(null) }
 
     // Smart camera state
     var capabilityReport by remember { mutableStateOf<CameraCapabilityReport?>(null) }
@@ -150,6 +154,7 @@ fun DocumentCaptureScreen(
     // ML Detection State
     var mlPassed by remember { mutableStateOf(false) }
     var mlConfidence by remember { mutableStateOf(0f) }
+    var mlHint by remember { mutableStateOf("") }
     var isAnalyzing by remember { mutableStateOf(false) }
     val coroutineScope = rememberCoroutineScope()
 
@@ -242,6 +247,8 @@ fun DocumentCaptureScreen(
                                     val response = result.data
                                     mlPassed = response.docOk
                                     mlConfidence = response.confidence ?: 0f
+                                    // Show hint from ML backend (e.g. "Please show the DATA PAGE", "Wrong document type")
+                                    mlHint = if (!response.docOk) response.hint ?: "" else ""
                                     Log.d("DocumentCapture", "ML Live SUCCESS: docOk=${response.docOk}, conf=$mlConfidence, hint=${response.hint}")
 
                                     // Calculate distance guidance from bounding box
@@ -282,6 +289,17 @@ fun DocumentCaptureScreen(
                 Log.e("DocumentCapture", "ML Live EXCEPTION: ${e.message}", e)
             } finally {
                 isAnalyzing = false
+            }
+        }
+    }
+
+    // Auto-dismiss verification error after 4 seconds
+    LaunchedEffect(verificationError) {
+        if (verificationError.isNotEmpty()) {
+            errorDismissJob?.cancel()
+            errorDismissJob = coroutineScope.launch {
+                delay(4000)
+                verificationError = ""
             }
         }
     }
@@ -448,7 +466,7 @@ fun DocumentCaptureScreen(
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             // Top bar with close and torch buttons
-            Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(20.dp)))
+            Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(8.dp)))
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -498,18 +516,18 @@ fun DocumentCaptureScreen(
                 }
             }
 
-            Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(35.dp)))
+            Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(12.dp)))
 
             Text(
                 text = mainInstruction,
                 color = Color.White,
-                fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(16.dp).toSp() },
+                fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(15.dp).toSp() },
                 fontWeight = FontWeight.W500,
                 textAlign = TextAlign.Center,
-                modifier = Modifier.padding(horizontal = ScaleUtil.scaleWidth(57.dp))
+                modifier = Modifier.padding(horizontal = ScaleUtil.scaleWidth(32.dp))
             )
 
-            Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(24.dp)))
+            Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(16.dp)))
 
             // Camera frame with corner indicator overlay
             val detectionState = when {
@@ -645,17 +663,14 @@ fun DocumentCaptureScreen(
                 }
             }
 
-            Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(16.dp)))
-
-
-            Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(24.dp)))
+            Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(12.dp)))
 
             bottomInstruction?.let {
                 Text(
                     text = it,
                     color = Color.White,
-                    fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(16.dp).toSp() },
-                    fontWeight = FontWeight.W500,
+                    fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(14.dp).toSp() },
+                    fontWeight = FontWeight.W400,
                     textAlign = TextAlign.Center,
                     modifier = Modifier
                         .fillMaxWidth()
@@ -665,50 +680,24 @@ fun DocumentCaptureScreen(
                 )
             }
 
-            // Verification error display
-            if (verificationError.isNotEmpty()) {
-                Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(16.dp)))
-                Box(
+            // ML hint feedback (e.g. "Wrong document type", "Show passport data page")
+            if (mlHint.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(8.dp)))
+                Text(
+                    text = mlHint,
+                    color = Color(0xFFFF8A65),
+                    fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(13.dp).toSp() },
+                    fontWeight = FontWeight.W500,
+                    textAlign = TextAlign.Center,
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(horizontal = ScaleUtil.scaleWidth(24.dp))
                         .background(
-                            Color(0xFFEF5350).copy(alpha = 0.15f),
+                            Color(0x33FF5722),
                             RoundedCornerShape(8.dp)
                         )
-                        .border(
-                            width = 1.dp,
-                            color = Color(0xFFEF5350),
-                            shape = RoundedCornerShape(8.dp)
-                        )
-                        .padding(16.dp)
-                ) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text(
-                            text = "⚠️ Verification Failed",
-                            color = Color(0xFFEF5350),
-                            fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(14.dp).toSp() },
-                            fontWeight = FontWeight.W600,
-                            textAlign = TextAlign.Center
-                        )
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text(
-                            text = verificationError,
-                            color = Color.White,
-                            fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(13.dp).toSp() },
-                            fontWeight = FontWeight.W400,
-                            textAlign = TextAlign.Center
-                        )
-                        Spacer(modifier = Modifier.height(8.dp))
-                        Text(
-                            text = "Please try again with the original document",
-                            color = Color.White.copy(alpha = 0.7f),
-                            fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(12.dp).toSp() },
-                            fontWeight = FontWeight.W400,
-                            textAlign = TextAlign.Center
-                        )
-                    }
-                }
+                        .padding(horizontal = 12.dp, vertical = 8.dp)
+                )
             }
 
             Spacer(modifier = Modifier.weight(1f))
@@ -722,8 +711,8 @@ fun DocumentCaptureScreen(
                         color = buttonBorderColor,
                         shape = CircleShape
                     )
-                    .background(if (isProcessing) Color.Gray else buttonInnerColor, CircleShape)
-                    .clickable(enabled = !isProcessing) {
+                    .background(if (isProcessing) Color.Gray else if (!mlPassed) Color.Gray.copy(alpha = 0.5f) else buttonInnerColor, CircleShape)
+                    .clickable(enabled = !isProcessing && mlPassed) {
                         // Clear any previous error
                         verificationError = ""
                         verificationPassed = false
@@ -802,11 +791,9 @@ fun DocumentCaptureScreen(
                                         }
                                         is Resource.Error -> {
                                             Log.e("DocumentCapture", "Verify-burst error: ${result.message}")
-                                            // On network error, allow user to continue (offline fallback)
-                                            verificationPassed = true
-                                            burstFiles = frames
-                                            previewPath = frames.first().path
-                                            Log.w("DocumentCapture", "Network error - allowing offline fallback")
+                                            // Do NOT accept on error — require actual verification
+                                            verificationError = "Verification service unavailable. Please check connection and retry."
+                                            BurstCaptureUtils.cleanupBurstFiles(frames)
                                         }
                                         else -> {
                                             verificationError = "Verification failed. Please try again."
@@ -847,7 +834,31 @@ fun DocumentCaptureScreen(
                 }
             }
 
-            Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(58.dp)))
+            Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(32.dp)))
+        }
+
+        // Floating error overlay — positioned above capture button, auto-dismisses
+        if (verificationError.isNotEmpty()) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = ScaleUtil.scaleHeight(110.dp))
+                    .padding(horizontal = ScaleUtil.scaleWidth(24.dp))
+                    .background(
+                        Color(0xFFEF5350).copy(alpha = 0.95f),
+                        RoundedCornerShape(12.dp)
+                    )
+                    .padding(horizontal = 16.dp, vertical = 12.dp)
+            ) {
+                Text(
+                    text = verificationError,
+                    color = Color.White,
+                    fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(13.dp).toSp() },
+                    fontWeight = FontWeight.W500,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
         }
     }
 }
