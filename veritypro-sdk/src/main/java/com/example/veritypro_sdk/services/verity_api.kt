@@ -79,6 +79,19 @@ interface VerityApiService {
         @Part("IpLocation") ipLocation: RequestBody
     ): ApiResponse<AddressVerificationResponse>
 
+    @GET("/kycintegration/address-verification/{verificationId}/documents")
+    suspend fun getAddressVerificationDocuments(
+        @Path("verificationId") verificationId: String,
+        @Header("x-api-key") apiKey: String
+    ): ApiResponse<List<AddressDocumentFileResponse>>
+
+    @GET("/kycintegration/address-verification/{verificationId}/documents/{documentId}/url")
+    suspend fun getAddressDocumentUrl(
+        @Path("verificationId") verificationId: String,
+        @Path("documentId") documentId: String,
+        @Header("x-api-key") apiKey: String
+    ): ApiResponse<DocumentUrlResponse>
+
     // ── EDD ──
 
     @POST("/kycintegration/edd/cases")
@@ -96,4 +109,17 @@ interface VerityApiService {
         @Path("caseId") caseId: String,
         @Header("x-api-key") apiKey: String
     ): ApiResponse<EddCaseStatusResponse>
+
+    @GET("/kycintegration/edd/cases/{caseId}/documents")
+    suspend fun getEddCaseDocuments(
+        @Path("caseId") caseId: String,
+        @Header("x-api-key") apiKey: String
+    ): ApiResponse<List<EddDocumentResponse>>
+
+    @GET("/kycintegration/edd/cases/{caseId}/documents/{documentId}/url")
+    suspend fun getEddDocumentUrl(
+        @Path("caseId") caseId: String,
+        @Path("documentId") documentId: String,
+        @Header("x-api-key") apiKey: String
+    ): ApiResponse<DocumentUrlResponse>
 }

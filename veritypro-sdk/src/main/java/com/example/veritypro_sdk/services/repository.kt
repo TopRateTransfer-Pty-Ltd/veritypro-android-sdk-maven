@@ -493,5 +493,145 @@ class ApiRepository {
         }
     }
 
+    // ========================================================================
+    // DOCUMENT LISTING & URL ENDPOINTS
+    // ========================================================================
+
+    suspend fun getAddressVerificationDocuments(
+        verificationId: String,
+        apiKey: String
+    ): Resource<List<AddressDocumentFileResponse>> {
+        return try {
+            val response = RetrofitInstance.api.getAddressVerificationDocuments(verificationId, apiKey)
+
+            if (response.statusCode in 100..299 && response.data != null) {
+                Log.d("Verity", "Fetched ${response.data.size} address documents for $verificationId")
+                Resource.Success(response.data)
+            } else {
+                Resource.Error(response.error?.message ?: "Unable to fetch address documents")
+            }
+        } catch (e: IOException) {
+            Log.e("Verity", "Network error: ${e.message}")
+            Resource.Error("No internet connection. Please check your network.")
+        } catch (e: HttpException) {
+            val errorBody = e.response()?.errorBody()?.string()
+            var errorMessage = "HTTP ${e.code()} Error: Unknown error"
+            if (errorBody != null) {
+                try {
+                    val json = JSONObject(errorBody)
+                    val errorObj = json.optJSONObject("Error")
+                    if (errorObj != null) {
+                        errorMessage = errorObj.optString("message", errorMessage)
+                    }
+                } catch (_: Exception) {}
+            }
+            Resource.Error(errorMessage)
+        } catch (e: Exception) {
+            Log.e("Verity", "Failed to fetch address documents: ${e.message}")
+            Resource.Error("Failed to fetch address documents: ${e.message}")
+        }
+    }
+
+    suspend fun getAddressDocumentUrl(
+        verificationId: String,
+        documentId: String,
+        apiKey: String
+    ): Resource<DocumentUrlResponse> {
+        return try {
+            val response = RetrofitInstance.api.getAddressDocumentUrl(verificationId, documentId, apiKey)
+
+            if (response.statusCode in 100..299 && response.data != null) {
+                Resource.Success(response.data)
+            } else {
+                Resource.Error(response.error?.message ?: "Unable to fetch document URL")
+            }
+        } catch (e: IOException) {
+            Resource.Error("No internet connection. Please check your network.")
+        } catch (e: HttpException) {
+            val errorBody = e.response()?.errorBody()?.string()
+            var errorMessage = "HTTP ${e.code()} Error: Unknown error"
+            if (errorBody != null) {
+                try {
+                    val json = JSONObject(errorBody)
+                    val errorObj = json.optJSONObject("Error")
+                    if (errorObj != null) {
+                        errorMessage = errorObj.optString("message", errorMessage)
+                    }
+                } catch (_: Exception) {}
+            }
+            Resource.Error(errorMessage)
+        } catch (e: Exception) {
+            Resource.Error("Failed to fetch document URL: ${e.message}")
+        }
+    }
+
+    suspend fun getEddCaseDocuments(
+        caseId: String,
+        apiKey: String
+    ): Resource<List<EddDocumentResponse>> {
+        return try {
+            val response = RetrofitInstance.api.getEddCaseDocuments(caseId, apiKey)
+
+            if (response.statusCode in 100..299 && response.data != null) {
+                Log.d("Verity", "Fetched ${response.data.size} EDD documents for case $caseId")
+                Resource.Success(response.data)
+            } else {
+                Resource.Error(response.error?.message ?: "Unable to fetch EDD documents")
+            }
+        } catch (e: IOException) {
+            Log.e("Verity", "Network error: ${e.message}")
+            Resource.Error("No internet connection. Please check your network.")
+        } catch (e: HttpException) {
+            val errorBody = e.response()?.errorBody()?.string()
+            var errorMessage = "HTTP ${e.code()} Error: Unknown error"
+            if (errorBody != null) {
+                try {
+                    val json = JSONObject(errorBody)
+                    val errorObj = json.optJSONObject("Error")
+                    if (errorObj != null) {
+                        errorMessage = errorObj.optString("message", errorMessage)
+                    }
+                } catch (_: Exception) {}
+            }
+            Resource.Error(errorMessage)
+        } catch (e: Exception) {
+            Log.e("Verity", "Failed to fetch EDD documents: ${e.message}")
+            Resource.Error("Failed to fetch EDD documents: ${e.message}")
+        }
+    }
+
+    suspend fun getEddDocumentUrl(
+        caseId: String,
+        documentId: String,
+        apiKey: String
+    ): Resource<DocumentUrlResponse> {
+        return try {
+            val response = RetrofitInstance.api.getEddDocumentUrl(caseId, documentId, apiKey)
+
+            if (response.statusCode in 100..299 && response.data != null) {
+                Resource.Success(response.data)
+            } else {
+                Resource.Error(response.error?.message ?: "Unable to fetch EDD document URL")
+            }
+        } catch (e: IOException) {
+            Resource.Error("No internet connection. Please check your network.")
+        } catch (e: HttpException) {
+            val errorBody = e.response()?.errorBody()?.string()
+            var errorMessage = "HTTP ${e.code()} Error: Unknown error"
+            if (errorBody != null) {
+                try {
+                    val json = JSONObject(errorBody)
+                    val errorObj = json.optJSONObject("Error")
+                    if (errorObj != null) {
+                        errorMessage = errorObj.optString("message", errorMessage)
+                    }
+                } catch (_: Exception) {}
+            }
+            Resource.Error(errorMessage)
+        } catch (e: Exception) {
+            Resource.Error("Failed to fetch EDD document URL: ${e.message}")
+        }
+    }
+
 }
 

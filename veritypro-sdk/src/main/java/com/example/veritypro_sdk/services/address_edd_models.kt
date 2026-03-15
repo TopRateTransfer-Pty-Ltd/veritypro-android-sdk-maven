@@ -42,3 +42,38 @@ data class EddCaseStatusResponse(
  * 7 = RentalAgreement, 8 = GovernmentBenefit, 99 = Other
  */
 data class EddDocType(val id: Int, val name: String)
+
+// ── Document list/URL responses ──
+
+data class AddressDocumentFileResponse(
+    val id: String,
+    val documentType: String,
+    val fileName: String,
+    val cloudinaryUrl: String? = null,
+    val cloudinaryPublicId: String? = null,
+    val fileSizeBytes: Long = 0,
+    val mimeType: String? = null,
+    val ocrExtractedText: String? = null,
+    val ocrConfidence: Double? = null,
+    val forensicScore: Double? = null,
+    val isForensicPass: Boolean? = null,
+    val createdAt: String? = null
+)
+
+data class EddDocumentResponse(
+    val id: String,
+    val documentType: String,
+    val fileName: String,
+    val fileUrl: String? = null,
+    val cloudinaryUrl: String? = null,
+    val cloudinaryPublicId: String? = null,
+    val fileSize: Long = 0,
+    val mimeType: String? = null,
+    val ocrExtractedText: String? = null,
+    val ocrConfidence: Double? = null,
+    val uploadedAt: String? = null
+)
+
+data class DocumentUrlResponse(
+    val url: String
+)
