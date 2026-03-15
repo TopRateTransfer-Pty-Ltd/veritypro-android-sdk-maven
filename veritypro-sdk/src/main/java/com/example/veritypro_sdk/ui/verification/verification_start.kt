@@ -352,10 +352,8 @@ fun VerificationScreen(
                             )
 
                             VerificationStage.ID_SELECTION -> {
-                                LaunchedEffect(Unit) {
-                                    viewModel.fetchCountryDocuments(options.apiKey, options.integrationId, options.isO2Code)
-                                }
-
+                                // countryDocumentsState is already populated from the session
+                                // response in createKyc() — no separate API call needed.
                                 IdSelectionScreen(
                                     countryDocumentsState = countryDocumentsState,
                                     onBack = {
@@ -366,7 +364,8 @@ fun VerificationScreen(
                                         stage = viewModel.flowRouter.nextStage(stage) ?: VerificationStage.RESULT
                                     },
                                     onRetry = {
-                                        viewModel.fetchCountryDocuments(options.apiKey, options.integrationId, options.isO2Code)
+                                        // Re-create session to refresh document types
+                                        viewModel.createKyc(options)
                                     }
                                 )
                             }

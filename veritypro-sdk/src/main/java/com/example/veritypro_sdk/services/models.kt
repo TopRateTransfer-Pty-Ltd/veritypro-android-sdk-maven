@@ -13,7 +13,8 @@ data class SessionData(
     val sessionId: String,
     val sessionUrl: String,
     val sessionToEncode: String,
-    val requiredModules: List<String>? = null
+    val requiredModules: List<String>? = null,
+    @SerializedName("allowedDocumentTypes") val allowedDocumentTypes: List<String>? = null
 )
 
 data class ApiError(

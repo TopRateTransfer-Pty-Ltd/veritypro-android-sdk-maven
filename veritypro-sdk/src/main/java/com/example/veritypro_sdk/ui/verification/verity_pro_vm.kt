@@ -167,8 +167,47 @@ class VerityProViewModel(
             if (result is Resource.Success) {
                 currentSessionId = result.data.sessionId
                 Log.d("apikey", currentSessionId)
+
+                // Parse country-allowed document types from session response
+                val allowed = result.data.allowedDocumentTypes
+                if (!allowed.isNullOrEmpty()) {
+                    val items = allowed.mapIndexedNotNull { index, name ->
+                        mapBackendDocTypeToItem(name, index + 1)
+                    }
+                    if (items.isNotEmpty()) {
+                        _countryDocumentsState.value = Resource.Success(items)
+                        Log.d("VerityProVM", "Allowed document types from session: $allowed → ${items.map { it.documentType }}")
+                    } else {
+                        _countryDocumentsState.value = Resource.Success(defaultDocumentTypes())
+                        Log.d("VerityProVM", "No valid document types parsed, using defaults")
+                    }
+                } else {
+                    _countryDocumentsState.value = Resource.Success(defaultDocumentTypes())
+                    Log.d("VerityProVM", "No document type restrictions (all types allowed)")
+                }
             }
             _kycState.value = result
+        }
+    }
+
+    /** Default document types when backend doesn't restrict. */
+    private fun defaultDocumentTypes(): List<CountryDocumentItem> = listOf(
+        CountryDocumentItem(id = 1, documentType = "ID Card"),
+        CountryDocumentItem(id = 2, documentType = "Passport"),
+        CountryDocumentItem(id = 3, documentType = "Driver's License")
+    )
+
+    /** Parse a backend AllowedDocumentTypes string into a CountryDocumentItem. */
+    private fun mapBackendDocTypeToItem(value: String, fallbackId: Int): CountryDocumentItem? {
+        val lower = value.lowercase().trim()
+        return when {
+            lower in listOf("id card", "idcard", "id_card", "national id") ->
+                CountryDocumentItem(id = 1, documentType = "ID Card")
+            lower == "passport" ->
+                CountryDocumentItem(id = 2, documentType = "Passport")
+            lower in listOf("drivers license", "driver's license", "driverslicense", "drivers_license", "driving license") ->
+                CountryDocumentItem(id = 3, documentType = "Driver's License")
+            else -> null
         }
     }
 
