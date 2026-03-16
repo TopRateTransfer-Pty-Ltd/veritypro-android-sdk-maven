@@ -201,11 +201,11 @@ class VerityProViewModel(
     private fun mapBackendDocTypeToItem(value: String, fallbackId: Int): CountryDocumentItem? {
         val lower = value.lowercase().trim()
         return when {
-            lower in listOf("id card", "idcard", "id_card", "national id") ->
+            lower in listOf("id card", "idcard", "id_card", "national id", "identitycard", "identity card", "identity_card") ->
                 CountryDocumentItem(id = 1, documentType = "ID Card")
             lower == "passport" ->
                 CountryDocumentItem(id = 2, documentType = "Passport")
-            lower in listOf("drivers license", "driver's license", "driverslicense", "drivers_license", "driving license") ->
+            lower in listOf("drivers license", "driver's license", "driverslicense", "drivers_license", "driving license", "driverlicense", "driver_license", "driver license") ->
                 CountryDocumentItem(id = 3, documentType = "Driver's License")
             else -> null
         }
