@@ -331,7 +331,7 @@ fun SelfieCaptureScreen(
                     }
                 }
 
-                started -> {
+                started && credentialsProvider != null -> {
                         MaterialTheme(colorScheme = LivenessColorScheme.default()) {
                             FaceLivenessDetector(
                                 sessionId = awsSessionId,
@@ -349,6 +349,32 @@ fun SelfieCaptureScreen(
                             )
                         }
                     }
+
+                started && credentialsProvider == null -> {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.align(Alignment.Center)
+                    ) {
+                        Text(
+                            "Liveness credentials unavailable",
+                            color = Color.White,
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            "Please retry the liveness check.",
+                            color = Color.White.copy(alpha = 0.7f),
+                            fontSize = 14.sp
+                        )
+                        Spacer(Modifier.height(16.dp))
+                        Button(onClick = {
+                            started = false
+                            viewModel.resetLivenessState()
+                            sessionIdFromCreateKyc?.let { viewModel.startBeginLiveness(it, forceRetry = true) }
+                        }) { Text("Retry") }
+                    }
+                }
 
                 else -> {
                     // --- Liveness pre-start screen ---

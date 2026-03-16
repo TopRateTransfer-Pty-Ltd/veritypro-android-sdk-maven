@@ -9,8 +9,6 @@ import androidx.activity.compose.setContent
 import com.example.veritypro_sdk.ui.verification.VerificationScreen
 import com.example.veritypro_sdk.utils.LivenessResult
 import com.example.veritypro_sdk.utils.VerityOption
-import com.amplifyframework.core.Amplify
-import com.amplifyframework.auth.cognito.AWSCognitoAuthPlugin
 import com.example.veritypro_sdk.ui.theme.ThemeMode
 
 class VerityProSdkActivity : AppCompatActivity() {
@@ -41,12 +39,10 @@ class VerityProSdkActivity : AppCompatActivity() {
             return
         }
 
-        try {
-            Amplify.addPlugin(AWSCognitoAuthPlugin())
-            Amplify.configure(applicationContext)
-        } catch (e: Exception) {
-            Log.w("VerityProSdkActivity", "Amplify init failed or already configured: ${e.message}")
-        }
+        // No Amplify.configure() needed — we use custom STS credentials
+        // from the backend's /begin-liveness endpoint, not Cognito auth.
+        // Adding AWSCognitoAuthPlugin without a valid amplifyconfiguration.json
+        // leaves the plugin in a zombie state that crashes FaceLivenessDetector.
 
         try {
             setContent {
