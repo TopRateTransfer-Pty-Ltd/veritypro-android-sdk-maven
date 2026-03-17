@@ -92,9 +92,9 @@ interface VerityApiService {
         @Header("x-api-key") apiKey: String
     ): ApiResponse<DocumentUrlResponse>
 
-    // ── EDD ──
+    // ── EDD (routed via VerityPro infrastructure proxy /edd/ → EDD Intelligence API) ──
 
-    @POST("/kycintegration/edd/cases")
+    @POST("/edd/api/edd/cases")
     @Multipart
     suspend fun createEddCase(
         @Part("SubjectId") subjectId: RequestBody,
@@ -104,19 +104,19 @@ interface VerityApiService {
         @Header("x-api-key") apiKey: String
     ): EddCaseResponse
 
-    @GET("/kycintegration/edd/cases/{caseId}/status")
+    @GET("/edd/api/edd/cases/{caseId}/status")
     suspend fun getEddCaseStatus(
         @Path("caseId") caseId: String,
         @Header("x-api-key") apiKey: String
     ): ApiResponse<EddCaseStatusResponse>
 
-    @GET("/kycintegration/edd/cases/{caseId}/documents")
+    @GET("/edd/api/edd/cases/{caseId}/documents")
     suspend fun getEddCaseDocuments(
         @Path("caseId") caseId: String,
         @Header("x-api-key") apiKey: String
     ): ApiResponse<List<EddDocumentResponse>>
 
-    @GET("/kycintegration/edd/cases/{caseId}/documents/{documentId}/url")
+    @GET("/edd/api/edd/cases/{caseId}/documents/{documentId}/url")
     suspend fun getEddDocumentUrl(
         @Path("caseId") caseId: String,
         @Path("documentId") documentId: String,
