@@ -50,6 +50,7 @@ import com.example.veritypro_sdk.utils.CameraUtils
 import com.example.veritypro_sdk.utils.DistanceGuidance
 import com.example.veritypro_sdk.utils.DistanceState
 import com.example.veritypro_sdk.utils.FocusMode
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -228,18 +229,24 @@ fun DocumentCaptureScreen(
             try {
                 isAnalyzing = true
 
-                // Capture bitmap from preview
-                val bitmap = previewView.bitmap
+                // Capture bitmap from preview — copy immediately so the
+                // preview surface can reuse its buffer without contention.
+                val srcBitmap = previewView.bitmap
+                val bitmap = srcBitmap?.copy(srcBitmap.config ?: android.graphics.Bitmap.Config.ARGB_8888, false)
                 if (bitmap != null) {
                     consecutiveNullBitmaps = 0 // Reset counter on successful bitmap
                     Log.d("DocumentCapture", "ML Live: Got bitmap ${bitmap.width}x${bitmap.height}, calling predict...")
-                    withContext(Dispatchers.IO) {
-                        val result = mlRepository.predict(
-                            sessionId = "android-live-${System.currentTimeMillis()}",
-                            bitmap = bitmap,
-                            docTypeExpected = docTypeExpected,
-                            sideExpected = currentSideExpected
-                        )
+                    withContext(Dispatchers.Default) {
+                        val result = try {
+                            mlRepository.predict(
+                                sessionId = "android-live-${System.currentTimeMillis()}",
+                                bitmap = bitmap,
+                                docTypeExpected = docTypeExpected,
+                                sideExpected = currentSideExpected
+                            )
+                        } finally {
+                            bitmap.recycle() // Free native memory immediately
+                        }
 
                         withContext(Dispatchers.Main) {
                             when (result) {
@@ -280,13 +287,26 @@ fun DocumentCaptureScreen(
                 } else {
                     consecutiveNullBitmaps++
                     if (consecutiveNullBitmaps <= 3) {
-                        Log.w("DocumentCapture", "ML Live: Bitmap is NULL ($consecutiveNullBitmaps/3) - camera warming up")
+                        Log.w("DocumentCapture", "ML Live: Bitmap is NULL ($consecutiveNullBitmaps) - camera warming up")
                     } else if (consecutiveNullBitmaps == 4) {
-                        Log.e("DocumentCapture", "ML Live: Camera failed to provide bitmap after 4 attempts - check camera permissions")
+                        Log.e("DocumentCapture", "ML Live: Camera slow to initialize — applying backoff")
                     }
+                    // Exponential backoff: 1s → 2s → 4s → 8s cap. Prevents busy-waiting
+                    // while camera preview initializes on slower devices.
+                    val backoffMs = (1000L * (1 shl (consecutiveNullBitmaps - 1).coerceAtMost(3)))
+                    delay(backoffMs)
                 }
+            } catch (e: CancellationException) {
+                // Composition left or scope cancelled — normal during navigation.
+                // Do NOT log as error; just exit the loop cleanly.
+                Log.d("DocumentCapture", "ML Live: cancelled (navigation)")
+                break
             } catch (e: Exception) {
-                Log.e("DocumentCapture", "ML Live EXCEPTION: ${e.message}", e)
+                // Only log genuine errors (not OkHttp cancellation from scope exit)
+                val isCancelled = e is java.io.IOException && e.message?.contains("Canceled") == true
+                if (!isCancelled) {
+                    Log.e("DocumentCapture", "ML Live EXCEPTION: ${e.message}", e)
+                }
             } finally {
                 isAnalyzing = false
             }
@@ -307,6 +327,11 @@ fun DocumentCaptureScreen(
     DisposableEffect(lifecycleOwner) {
         onDispose {
             CameraUtils.dispose(context)
+            // Clean up any lingering burst files from cache
+            BurstCaptureUtils.cleanupAllBurstFiles(context)
+            // Recycle frozen bitmap to free native memory
+            frozenBitmap?.recycle()
+            frozenBitmap = null
         }
     }
 

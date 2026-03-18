@@ -17,6 +17,11 @@ class VerityProSdkActivity : AppCompatActivity() {
     private var options: VerityOption? = null
     private var themeMode: ThemeMode = ThemeMode.LIGHT
 
+    companion object {
+        @Volatile
+        private var amplifyConfigured = false
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -41,11 +46,19 @@ class VerityProSdkActivity : AppCompatActivity() {
             return
         }
 
-        try {
-            Amplify.addPlugin(AWSCognitoAuthPlugin())
-            Amplify.configure(applicationContext)
-        } catch (e: Exception) {
-            Log.w("VerityProSdkActivity", "Amplify init failed or already configured: ${e.message}")
+        if (!amplifyConfigured) {
+            try {
+                Amplify.addPlugin(AWSCognitoAuthPlugin())
+                Amplify.configure(applicationContext)
+                amplifyConfigured = true
+                Log.d("VerityProSdkActivity", "Amplify configured successfully")
+            } catch (e: com.amplifyframework.AmplifyException) {
+                // Already configured from a previous Activity instance — safe to continue
+                amplifyConfigured = true
+                Log.d("VerityProSdkActivity", "Amplify already configured: ${e.message}")
+            } catch (e: Exception) {
+                Log.w("VerityProSdkActivity", "Amplify init: ${e.message}")
+            }
         }
 
         try {

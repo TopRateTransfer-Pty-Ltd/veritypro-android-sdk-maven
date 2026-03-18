@@ -3,6 +3,7 @@ package com.example.veritypro_sdk.services
 import android.graphics.Bitmap
 import android.util.Base64
 import android.util.Log
+import kotlinx.coroutines.CancellationException
 import retrofit2.HttpException
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -61,6 +62,8 @@ class MLRepository {
             val errorBody = e.response()?.errorBody()?.string()
             Log.e(TAG, "HTTP ${e.code()} error during predict: $errorBody")
             Resource.Error("ML backend error: ${e.code()}")
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.e(TAG, "Predict failed: ${e.message}", e)
             Resource.Error("Document verification failed: ${e.message}")
@@ -107,6 +110,8 @@ class MLRepository {
             val errorBody = e.response()?.errorBody()?.string()
             Log.e(TAG, "HTTP ${e.code()} error during predict: $errorBody")
             Resource.Error("ML backend error: ${e.code()}")
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.e(TAG, "Predict failed: ${e.message}", e)
             Resource.Error("Document verification failed: ${e.message}")
@@ -157,6 +162,8 @@ class MLRepository {
             val errorBody = e.response()?.errorBody()?.string()
             Log.e(TAG, "HTTP ${e.code()} error during verifyBurst: $errorBody")
             Resource.Error("ML backend error: ${e.code()}")
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.e(TAG, "Verify burst failed: ${e.message}", e)
             Resource.Error("Anti-spoof verification failed: ${e.message}")
@@ -200,6 +207,8 @@ class MLRepository {
         } catch (e: HttpException) {
             Log.e(TAG, "HTTP ${e.code()} error during verifyBurst")
             Resource.Error("ML backend error: ${e.code()}")
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.e(TAG, "Verify burst failed: ${e.message}", e)
             Resource.Error("Anti-spoof verification failed: ${e.message}")
@@ -240,6 +249,8 @@ class MLRepository {
             val errorBody = e.response()?.errorBody()?.string()
             Log.e(TAG, "HTTP ${e.code()} error during detectPresence: $errorBody")
             Resource.Error("ML backend error: ${e.code()}")
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.e(TAG, "Detect presence failed: ${e.message}", e)
             Resource.Error("Presence detection failed: ${e.message}")
@@ -257,6 +268,8 @@ class MLRepository {
         } catch (e: IOException) {
             Log.e(TAG, "Health check network error: ${e.message}")
             Resource.Error("Cannot reach ML backend")
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.e(TAG, "Health check failed: ${e.message}")
             Resource.Error("ML backend unavailable: ${e.message}")
@@ -271,6 +284,8 @@ class MLRepository {
             val response = MLRetrofitInstance.api.getModels()
             Log.d(TAG, "Models info: ready=${response.ready}, count=${response.models.size}")
             Resource.Success(response)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.e(TAG, "Get models failed: ${e.message}")
             Resource.Error("Failed to get models info: ${e.message}")

@@ -67,7 +67,7 @@ fun EddCaptureScreen(
 
     // File/document picker launcher (PDF, JPG, PNG)
     val documentPickerLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.GetContent()
+        contract = ActivityResultContracts.OpenDocument()
     ) { uri: Uri? ->
         if (uri != null) {
             isProcessing = true
@@ -239,7 +239,7 @@ fun EddCaptureScreen(
             Button(
                 onClick = {
                     fileError = null
-                    documentPickerLauncher.launch("*/*")
+                    documentPickerLauncher.launch(arrayOf("application/pdf", "image/jpeg", "image/png"))
                 },
                 colors = ButtonDefaults.buttonColors(
                     containerColor = Color(0xFF2B7AEF)

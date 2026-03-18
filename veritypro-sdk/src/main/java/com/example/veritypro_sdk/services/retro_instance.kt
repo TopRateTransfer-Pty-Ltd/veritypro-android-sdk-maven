@@ -9,6 +9,17 @@ import retrofit2.Retrofit
 import retrofit2.converter.gson.GsonConverterFactory
 import java.util.concurrent.TimeUnit
 
+/** Creates a logging interceptor with sensitive headers redacted. */
+private fun createSafeLoggingInterceptor(level: HttpLoggingInterceptor.Level): HttpLoggingInterceptor {
+    return HttpLoggingInterceptor().apply {
+        this.level = level
+        redactHeader("x-api-key")
+        redactHeader("Authorization")
+        redactHeader("x-session-token")
+        redactHeader("Cookie")
+    }
+}
+
 object RetrofitInstance {
     private const val BASE_URL = "https://api.skylinefare.com"
 
@@ -61,10 +72,16 @@ object MLRetrofitInstance {
 
     private var mlBaseUrl: String = ML_BASE_URL
 
-    // Logging interceptor for debugging
-    private val loggingInterceptor = HttpLoggingInterceptor().apply {
-        level = HttpLoggingInterceptor.Level.BODY
-    }
+    // Logging interceptor — HEADERS only to prevent leaking base64 images,
+    // API keys, and AWS credentials in logcat. BODY level must NEVER be used
+    // in release builds (SaaS B2B/B2C security requirement).
+    private val loggingInterceptor = createSafeLoggingInterceptor(
+        if (Build.FINGERPRINT.contains("generic") || Build.FINGERPRINT.contains("emulator")) {
+            HttpLoggingInterceptor.Level.HEADERS  // Emulator: headers only (still no body)
+        } else {
+            HttpLoggingInterceptor.Level.NONE     // Physical device: no logging
+        }
+    )
 
     // Certificate pinning (same pins as main RetrofitInstance)
     private val certificatePinner = CertificatePinner.Builder()
@@ -75,8 +92,9 @@ object MLRetrofitInstance {
     private fun buildOkHttpClient(): OkHttpClient {
         val builder = OkHttpClient.Builder()
             .connectTimeout(15, TimeUnit.SECONDS)
-            .readTimeout(15, TimeUnit.SECONDS)
-            .writeTimeout(15, TimeUnit.SECONDS)
+            .readTimeout(30, TimeUnit.SECONDS)   // verify-burst needs more read time
+            .writeTimeout(30, TimeUnit.SECONDS)   // burst upload can be large
+            .callTimeout(60, TimeUnit.SECONDS)    // hard cap — prevents 43s+ hangs without timeout
             .addInterceptor(loggingInterceptor)
 
         // Only apply certificate pinning for production URLs

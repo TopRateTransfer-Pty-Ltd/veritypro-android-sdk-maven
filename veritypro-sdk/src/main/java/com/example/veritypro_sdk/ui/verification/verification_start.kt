@@ -455,22 +455,33 @@ fun VerificationScreen(
                                                     // Use polling verification with livenessId (backend session ID)
                                                     viewModel.verifyLivenessResult(livenessId ?: awsSession) { succeeded ->
                                                         if (succeeded) {
-                                                            // PortraitPicture is intentionally null — the backend
-                                                            // extracts the reference face from the AWS liveness
-                                                            // session via LivenessId, replacing the selfie upload.
-                                                            viewModel.updateKyc(
-                                                                VerificationRequestMultipart(
-                                                                    SessionId = sessionId ?: "",
-                                                                    DocumentType = selectedDocumentType ?: 0,
-                                                                    PlatformUsed = "android",
-                                                                    DeviceAndBrowser = DeviceUtils.getDevicePlatform(),
-                                                                    IpAddress = ipAddress ?: "",
-                                                                    IpLocation = locationText ?: "",
-                                                                    DocumentFront = documentFrontPage?.toMultipartBodyPart("DocumentFront"),
-                                                                    DocumentBack = documentBackPage?.toMultipartBodyPart("DocumentBack"),
-                                                                    LivenessId = livenessId ?: ""
-                                                                ),
-                                                            )
+                                                            val hasDocuments = documentFrontPage != null
+                                                            val hasValidDocType = selectedDocumentType != null && selectedDocumentType!! > 0
+
+                                                            if (hasDocuments && hasValidDocType) {
+                                                                // BIOMETRIC / COMBINED mode: submit documents + liveness together
+                                                                viewModel.updateKyc(
+                                                                    VerificationRequestMultipart(
+                                                                        SessionId = sessionId ?: "",
+                                                                        DocumentType = selectedDocumentType!!,
+                                                                        PlatformUsed = "android",
+                                                                        DeviceAndBrowser = DeviceUtils.getDevicePlatform(),
+                                                                        IpAddress = ipAddress ?: "",
+                                                                        IpLocation = locationText ?: "",
+                                                                        DocumentFront = documentFrontPage?.toMultipartBodyPart("DocumentFront"),
+                                                                        DocumentBack = documentBackPage?.toMultipartBodyPart("DocumentBack"),
+                                                                        LivenessId = livenessId ?: ""
+                                                                    ),
+                                                                )
+                                                            } else {
+                                                                // LIVENESS_ONLY mode: no documents captured, skip updateKyc.
+                                                                // Liveness result is already stored server-side via the
+                                                                // AWS session — no multipart upload needed.
+                                                                Log.d("VerificationScreen",
+                                                                    "Skipping updateKyc: mode=${viewModel.currentMode}, " +
+                                                                    "hasDocuments=$hasDocuments, docType=$selectedDocumentType")
+                                                            }
+
                                                             lastResult = LivenessResult(
                                                                 success = true,
                                                                 sessionToken = "fake",
@@ -571,19 +582,19 @@ fun VerificationScreen(
                                 }
                             },
                             onRefresh = {
-                                if (stage == VerificationStage.RESULT && sessionId != null && documentFrontPage != null) {
+                                val hasValidDocType = selectedDocumentType != null && selectedDocumentType!! > 0
+                                if (stage == VerificationStage.RESULT && sessionId != null && documentFrontPage != null && hasValidDocType) {
                                     viewModel.updateKyc(
                                         VerificationRequestMultipart(
                                             SessionId = sessionId!!,
                                             LivenessId = livenessId ?: "",
-                                            DocumentType = selectedDocumentType ?: 0,
+                                            DocumentType = selectedDocumentType!!,
                                             PlatformUsed = "android",
                                             DeviceAndBrowser = DeviceUtils.getDevicePlatform(),
                                             IpAddress = ipAddress ?: "",
                                             IpLocation = locationText ?: "",
                                             DocumentFront = documentFrontPage?.toMultipartBodyPart("DocumentFront"),
                                             DocumentBack = documentBackPage?.toMultipartBodyPart("DocumentBack"),
-                                            //PortraitPicture = selfieFile?.toMultipartBodyPart("PortraitPicture"),
                                         )
                                     )
                                 } else {

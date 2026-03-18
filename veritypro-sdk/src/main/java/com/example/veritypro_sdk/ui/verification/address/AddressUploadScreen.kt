@@ -66,9 +66,18 @@ fun AddressUploadScreen(
     val coroutineScope = rememberCoroutineScope()
     val context = LocalContext.current
 
+    val maxFileSizeBytes = 10 * 1024 * 1024 // 10 MB
+
     fun performUpload() {
         if (sessionId.isNullOrEmpty()) {
             errorMessage = "No address verification session. Please try again."
+            isUploading = false
+            return
+        }
+
+        if (fileData.size > maxFileSizeBytes) {
+            val sizeMb = String.format("%.1f", fileData.size / (1024.0 * 1024.0))
+            errorMessage = "File is too large (${sizeMb} MB). Maximum allowed size is 10 MB."
             isUploading = false
             return
         }
@@ -109,7 +118,9 @@ fun AddressUploadScreen(
                 file = tempFile,
                 documentType = docType.id,
                 ipAddress = ipAddress,
-                ipLocation = ipLocation
+                ipLocation = ipLocation,
+                apiKey = options?.apiKey ?: "",
+                context = context
             )
 
             // Clean up temp file

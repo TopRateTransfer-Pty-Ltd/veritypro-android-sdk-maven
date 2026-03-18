@@ -8,6 +8,7 @@ import com.amplifyframework.auth.AWSTemporaryCredentials
 import com.amplifyframework.auth.AuthException
 import com.amplifyframework.core.Consumer
 import java.time.Instant
+import java.time.OffsetDateTime
 import java.time.format.DateTimeParseException
 
 /**
@@ -64,7 +65,13 @@ class LivenessCredentialsProvider(
             return SmithyInstant.fromEpochSeconds(javaInstant.epochSecond)
         }
         return try {
-            val javaInstant = Instant.parse(expiration)
+            // Parse both ISO-8601 instant ('Z' suffix) and offset ('+00:00') formats.
+            // Backend may return either format depending on serializer configuration.
+            val javaInstant = try {
+                OffsetDateTime.parse(expiration).toInstant()
+            } catch (_: DateTimeParseException) {
+                Instant.parse(expiration)
+            }
             val remainingSeconds = javaInstant.epochSecond - Instant.now().epochSecond
             if (remainingSeconds < 30) {
                 Log.e(TAG, "AWS credentials expired or expiring in ${remainingSeconds}s " +

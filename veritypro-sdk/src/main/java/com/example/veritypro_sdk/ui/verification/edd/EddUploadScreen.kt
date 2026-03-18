@@ -38,6 +38,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.platform.LocalContext
 import com.example.veritypro_sdk.services.ApiRepository
 import com.example.veritypro_sdk.services.Resource
 import com.example.veritypro_sdk.ui.theme.customColors
@@ -60,6 +61,7 @@ fun EddUploadScreen(
 
     val repository = remember { ApiRepository() }
     val coroutineScope = rememberCoroutineScope()
+    val context = LocalContext.current
 
     fun performUpload() {
         val opts = options
@@ -95,7 +97,8 @@ fun EddUploadScreen(
                 subjectName = "${opts.firstName} ${opts.lastName}",
                 file = file,
                 documentType = docType.id,
-                apiKey = opts.apiKey
+                apiKey = opts.apiKey,
+                context = context
             )
 
             when (result) {
@@ -115,6 +118,9 @@ fun EddUploadScreen(
                     errorMessage = "Unexpected response. Please try again."
                 }
             }
+
+            // Clean up temp file
+            file.delete()
         }
     }
 

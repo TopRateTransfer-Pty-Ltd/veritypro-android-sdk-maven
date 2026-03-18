@@ -49,6 +49,8 @@ class ApiRepository {
                 Log.e("Verity", "HTTP ${e.code()} Error: $errorBody")
             }
             Resource.Error(errorMessage)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.e("Verity", "Failed to connect to server: ${e.message}")
             Resource.Error("Failed to connect to server: ${e.message}")
@@ -106,9 +108,29 @@ class ApiRepository {
             if (errorBody != null) {
                 try {
                     val json = JSONObject(errorBody)
+                    // Handle standard { "Error": { "message": "..." } } format
                     val errorObj = json.optJSONObject("Error")
                     if (errorObj != null) {
                         errorMessage = errorObj.optString("message", errorMessage)
+                    }
+                    // Handle ASP.NET validation format:
+                    // { "title": "...", "status": 400, "errors": { "Field": ["msg"] } }
+                    val errorsObj = json.optJSONObject("errors")
+                    if (errorsObj != null) {
+                        val messages = mutableListOf<String>()
+                        val keys = errorsObj.keys()
+                        while (keys.hasNext()) {
+                            val key = keys.next()
+                            val arr = errorsObj.optJSONArray(key)
+                            if (arr != null) {
+                                for (i in 0 until arr.length()) {
+                                    messages.add("$key: ${arr.getString(i)}")
+                                }
+                            }
+                        }
+                        if (messages.isNotEmpty()) {
+                            errorMessage = messages.joinToString("; ")
+                        }
                     }
                 } catch (parseException: Exception) {
                     Log.e("Verity", "Failed to parse error body: ${parseException.message}")
@@ -116,6 +138,8 @@ class ApiRepository {
                 Log.e("Verity", "HTTP ${e.code()} Error: $errorBody")
             }
             Resource.Error(errorMessage)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.e("Verity", "Failed to connect to server: ${e.message}")
             Resource.Error("Failed to connect to server: ${e.message}")
@@ -185,16 +209,18 @@ class ApiRepository {
                 Log.e("Verity", "HTTP ${e.code()} Error: $errorBody")
             }
             Resource.Error(errorMessage)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.e("Verity", "Failed to fetch country documents: ${e.message}")
             Resource.Error("Failed to fetch country documents: ${e.message}")
         }
     }
 
-    suspend fun getLivenessResult(livenessId: String): Resource<LivenessResultResponse> {
+    suspend fun getLivenessResult(livenessId: String, apiKey: String): Resource<LivenessResultResponse> {
         return try {
-            val url = "https://api.skylinefare.com/docengine/liveness/session/$livenessId"
-            val resp = RetrofitInstance.api.getLivenessResult(url)
+            val url = "docengine/liveness/session/$livenessId"
+            val resp = RetrofitInstance.api.getLivenessResult(url, apiKey)
             Log.d("Verity", "getLivenessResult status=${resp.status}, confidence=${resp.confidence}")
 
             when (resp.status.uppercase()) {
@@ -230,6 +256,7 @@ class ApiRepository {
      */
     suspend fun pollLivenessResult(
         livenessId: String,
+        apiKey: String,
         initialDelayMs: Long = 3_000,
         multiplier: Double = 1.5,
         maxDelayMs: Long = 15_000,
@@ -237,8 +264,8 @@ class ApiRepository {
     ): Resource<LivenessResultResponse> {
         // Trigger backend to start processing the liveness result
         try {
-            val pollUrl = "https://api.skylinefare.com/docengine/liveness/session/$livenessId/poll"
-            RetrofitInstance.api.triggerLivenessPoll(pollUrl)
+            val pollUrl = "docengine/liveness/session/$livenessId/poll"
+            RetrofitInstance.api.triggerLivenessPoll(pollUrl, apiKey)
             Log.d("Verity", "pollLivenessResult: triggered backend poll for $livenessId")
         } catch (e: Exception) {
             Log.w("Verity", "pollLivenessResult: trigger poll failed (non-fatal): ${e.message}")
@@ -251,7 +278,7 @@ class ApiRepository {
             attempt++
             Log.d("Verity", "pollLivenessResult attempt $attempt/$maxAttempts (delay=${currentDelay}ms)")
 
-            val result = getLivenessResult(livenessId)
+            val result = getLivenessResult(livenessId, apiKey)
 
             when (result) {
                 is Resource.Success -> {
@@ -319,45 +346,67 @@ class ApiRepository {
     // ADDRESS VERIFICATION
     // ========================================================================
 
-    suspend fun createAddressVerification(options: VerityOption): Resource<AddressVerificationResponse> {
-        return try {
-            val request = AddAddressVerificationRequest(
-                integrationId = options.integrationId,
-                firstName = options.firstName,
-                lastName = options.lastName,
-                streetAddress = options.streetAddress ?: "",
-                vendorData = options.vendorData,
-                isO2Code = options.isO2Code
-            )
-            val response = RetrofitInstance.api.createAddressVerification(request, options.apiKey)
+    suspend fun createAddressVerification(
+        options: VerityOption,
+        maxRetries: Int = 3
+    ): Resource<AddressVerificationResponse> {
+        var lastError: String? = null
+        val backoffDelays = longArrayOf(1_000, 2_000, 4_000)
 
-            if (response.statusCode in 100..299 && response.data != null) {
-                Log.d("Verity", "Address verification session created")
-                Resource.Success(response.data)
-            } else {
-                Log.e("Verity", "Error creating address verification")
-                Resource.Error(response.error?.message ?: "Unable to create address verification")
+        for (attempt in 0 until maxRetries) {
+            try {
+                val request = AddAddressVerificationRequest(
+                    integrationId = options.integrationId,
+                    firstName = options.firstName,
+                    lastName = options.lastName,
+                    streetAddress = options.streetAddress ?: "",
+                    vendorData = options.vendorData,
+                    isO2Code = options.isO2Code
+                )
+                val response = RetrofitInstance.api.createAddressVerification(request, options.apiKey)
+
+                if (response.statusCode in 100..299 && response.data != null) {
+                    Log.d("Verity", "Address verification session created")
+                    return Resource.Success(response.data)
+                } else {
+                    lastError = response.error?.message ?: "Unable to create address verification"
+                    Log.e("Verity", "Error creating address verification (attempt ${attempt + 1}): $lastError")
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: IOException) {
+                lastError = "No internet connection. Please check your network."
+                Log.e("Verity", "Network error (attempt ${attempt + 1}): ${e.message}")
+            } catch (e: HttpException) {
+                val code = e.code()
+                val errorBody = e.response()?.errorBody()?.string()
+                lastError = "HTTP $code Error: Unknown error"
+                if (errorBody != null) {
+                    try {
+                        val json = JSONObject(errorBody)
+                        val errorObj = json.optJSONObject("Error")
+                        if (errorObj != null) {
+                            lastError = errorObj.optString("message", lastError)
+                        }
+                    } catch (_: Exception) {}
+                }
+                Log.e("Verity", "HTTP $code Error (attempt ${attempt + 1}): $errorBody")
+                // Don't retry on 4xx client errors (except 429)
+                if (code in 400..499 && code != 429) return Resource.Error(lastError!!)
+            } catch (e: Exception) {
+                lastError = "Failed to create address verification: ${e.message}"
+                Log.e("Verity", "Attempt ${attempt + 1} failed: ${e.message}")
             }
-        } catch (e: IOException) {
-            Log.e("Verity", "Network error: ${e.message}")
-            Resource.Error("No internet connection. Please check your network.")
-        } catch (e: HttpException) {
-            val errorBody = e.response()?.errorBody()?.string()
-            var errorMessage = "HTTP ${e.code()} Error: Unknown error"
-            if (errorBody != null) {
-                try {
-                    val json = JSONObject(errorBody)
-                    val errorObj = json.optJSONObject("Error")
-                    if (errorObj != null) {
-                        errorMessage = errorObj.optString("message", errorMessage)
-                    }
-                } catch (_: Exception) {}
+
+            // Wait before retrying (except on last attempt)
+            if (attempt < maxRetries - 1) {
+                val delay = backoffDelays.getOrElse(attempt) { backoffDelays.last() }
+                Log.d("Verity", "Address verification: retrying in ${delay}ms...")
+                kotlinx.coroutines.delay(delay)
             }
-            Resource.Error(errorMessage)
-        } catch (e: Exception) {
-            Log.e("Verity", "Failed to create address verification: ${e.message}")
-            Resource.Error("Failed to create address verification: ${e.message}")
         }
+
+        return Resource.Error(lastError ?: "Failed to create address verification after $maxRetries attempts")
     }
 
     suspend fun submitAddressDocument(
@@ -365,7 +414,9 @@ class ApiRepository {
         file: File,
         documentType: Int,
         ipAddress: String,
-        ipLocation: String
+        ipLocation: String,
+        apiKey: String,
+        context: android.content.Context? = null
     ): Resource<AddressVerificationResponse> {
         return try {
             val filePart = MultipartBody.Part.createFormData(
@@ -373,14 +424,22 @@ class ApiRepository {
                 file.name,
                 file.asRequestBody("image/*".toMediaTypeOrNull())
             )
+
+            // Collect security assessment JSON
+            val securityJson = context?.let {
+                com.example.veritypro_sdk.utils.SecurityAssessmentCollector.collectJson(it)
+            } ?: ""
+
             val response = RetrofitInstance.api.updateAddressVerification(
                 sessionId = sessionId.toRequestBody(),
                 documentType = documentType.toString().toRequestBody(),
                 addressDocument = filePart,
-                platformUsed = "android".toRequestBody(),
-                deviceAndBrowser = DeviceUtils.getDevicePlatform().toRequestBody(),
+                platformUsed = com.example.veritypro_sdk.utils.SecurityAssessmentCollector.platformUsed().toRequestBody(),
+                deviceAndBrowser = com.example.veritypro_sdk.utils.SecurityAssessmentCollector.deviceAndBrowser().toRequestBody(),
                 ipAddress = ipAddress.toRequestBody(),
-                ipLocation = ipLocation.toRequestBody()
+                ipLocation = ipLocation.toRequestBody(),
+                securityAssessmentJson = if (securityJson.isNotEmpty()) securityJson.toRequestBody() else null,
+                apiKey = apiKey
             )
 
             if (response.statusCode in 100..299 && response.data != null) {
@@ -406,6 +465,8 @@ class ApiRepository {
                 } catch (_: Exception) {}
             }
             Resource.Error(errorMessage)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.e("Verity", "Failed to submit address document: ${e.message}")
             Resource.Error("Failed to submit address document: ${e.message}")
@@ -421,7 +482,8 @@ class ApiRepository {
         subjectName: String,
         file: File,
         documentType: Int,
-        apiKey: String
+        apiKey: String,
+        context: android.content.Context? = null
     ): Resource<EddCaseResponse> {
         return try {
             val filePart = MultipartBody.Part.createFormData(
@@ -429,32 +491,67 @@ class ApiRepository {
                 file.name,
                 file.asRequestBody("image/*".toMediaTypeOrNull())
             )
+
+            // Collect device/security metadata
+            val platform = com.example.veritypro_sdk.utils.SecurityAssessmentCollector.platformUsed()
+            val deviceBrowser = com.example.veritypro_sdk.utils.SecurityAssessmentCollector.deviceAndBrowser()
+            val securityJson = context?.let {
+                com.example.veritypro_sdk.utils.SecurityAssessmentCollector.collectJson(it)
+            } ?: ""
+
+            // Collect IP address (use LocationHelper if context available)
+            val ipAddress = context?.let {
+                com.example.veritypro_sdk.utils.LocationHelper(it).getLocalIpAddress() ?: ""
+            } ?: ""
+
             val response = RetrofitInstance.api.createEddCase(
                 subjectId = subjectId.toRequestBody(),
                 subjectName = subjectName.toRequestBody(),
                 documentType = documentType.toString().toRequestBody(),
                 file = filePart,
+                platformUsed = platform.toRequestBody(),
+                deviceAndBrowser = deviceBrowser.toRequestBody(),
+                ipAddress = ipAddress.toRequestBody(),
+                ipLocation = "".toRequestBody(), // Backend resolves location from IP server-side
+                securityAssessmentJson = if (securityJson.isNotEmpty()) securityJson.toRequestBody() else null,
                 apiKey = apiKey
             )
 
             Log.d("Verity", "EDD case created: ${response.caseId}")
             Resource.Success(response)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: IOException) {
             Log.e("Verity", "Network error: ${e.message}")
             Resource.Error("No internet connection. Please check your network.")
         } catch (e: HttpException) {
+            val code = e.code()
             val errorBody = e.response()?.errorBody()?.string()
-            var errorMessage = "HTTP ${e.code()} Error: Unknown error"
-            if (errorBody != null) {
-                try {
-                    val json = JSONObject(errorBody)
-                    val errorObj = json.optJSONObject("Error")
-                    if (errorObj != null) {
-                        errorMessage = errorObj.optString("message", errorMessage)
+            Log.e("Verity", "EDD createCase HTTP $code: $errorBody")
+
+            when (code) {
+                401 -> {
+                    Log.e("Verity", "EDD 401: API key invalid or session expired")
+                    Resource.Error("Session expired. Please restart the verification process.")
+                }
+                403 -> {
+                    Log.e("Verity", "EDD 403: Insufficient permissions for EDD")
+                    Resource.Error("EDD verification is not enabled for this integration. Contact support.")
+                }
+                else -> {
+                    var errorMessage = "HTTP $code Error: Unknown error"
+                    if (errorBody != null) {
+                        try {
+                            val json = JSONObject(errorBody)
+                            val errorObj = json.optJSONObject("Error")
+                            if (errorObj != null) {
+                                errorMessage = errorObj.optString("message", errorMessage)
+                            }
+                        } catch (_: Exception) {}
                     }
-                } catch (_: Exception) {}
+                    Resource.Error(errorMessage)
+                }
             }
-            Resource.Error(errorMessage)
         } catch (e: Exception) {
             Log.e("Verity", "Failed to create EDD case: ${e.message}")
             Resource.Error("Failed to create EDD case: ${e.message}")
@@ -471,22 +568,43 @@ class ApiRepository {
             } else {
                 Resource.Error(response.error?.message ?: "Unable to fetch EDD case status")
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: IOException) {
             Log.e("Verity", "Network error: ${e.message}")
             Resource.Error("No internet connection. Please check your network.")
         } catch (e: HttpException) {
+            val code = e.code()
             val errorBody = e.response()?.errorBody()?.string()
-            var errorMessage = "HTTP ${e.code()} Error: Unknown error"
-            if (errorBody != null) {
-                try {
-                    val json = JSONObject(errorBody)
-                    val errorObj = json.optJSONObject("Error")
-                    if (errorObj != null) {
-                        errorMessage = errorObj.optString("message", errorMessage)
+            Log.e("Verity", "EDD getStatus HTTP $code: $errorBody")
+
+            when (code) {
+                401 -> {
+                    Log.e("Verity", "EDD status 401: API key invalid or session expired")
+                    Resource.Error("Session expired. Please restart the verification process.")
+                }
+                403 -> {
+                    Log.e("Verity", "EDD status 403: Insufficient permissions")
+                    Resource.Error("EDD verification is not enabled for this integration. Contact support.")
+                }
+                404 -> {
+                    Log.e("Verity", "EDD status 404: Case $caseId not found")
+                    Resource.Error("EDD case not found. It may have been deleted or the ID is incorrect.")
+                }
+                else -> {
+                    var errorMessage = "HTTP $code Error: Unknown error"
+                    if (errorBody != null) {
+                        try {
+                            val json = JSONObject(errorBody)
+                            val errorObj = json.optJSONObject("Error")
+                            if (errorObj != null) {
+                                errorMessage = errorObj.optString("message", errorMessage)
+                            }
+                        } catch (_: Exception) {}
                     }
-                } catch (_: Exception) {}
+                    Resource.Error(errorMessage)
+                }
             }
-            Resource.Error(errorMessage)
         } catch (e: Exception) {
             Log.e("Verity", "Failed to get EDD case status: ${e.message}")
             Resource.Error("Failed to get EDD case status: ${e.message}")
@@ -526,6 +644,8 @@ class ApiRepository {
                 } catch (_: Exception) {}
             }
             Resource.Error(errorMessage)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Log.e("Verity", "Failed to fetch address documents: ${e.message}")
             Resource.Error("Failed to fetch address documents: ${e.message}")
@@ -560,6 +680,8 @@ class ApiRepository {
                 } catch (_: Exception) {}
             }
             Resource.Error(errorMessage)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             Resource.Error("Failed to fetch document URL: ${e.message}")
         }
@@ -578,22 +700,33 @@ class ApiRepository {
             } else {
                 Resource.Error(response.error?.message ?: "Unable to fetch EDD documents")
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: IOException) {
             Log.e("Verity", "Network error: ${e.message}")
             Resource.Error("No internet connection. Please check your network.")
         } catch (e: HttpException) {
+            val code = e.code()
             val errorBody = e.response()?.errorBody()?.string()
-            var errorMessage = "HTTP ${e.code()} Error: Unknown error"
-            if (errorBody != null) {
-                try {
-                    val json = JSONObject(errorBody)
-                    val errorObj = json.optJSONObject("Error")
-                    if (errorObj != null) {
-                        errorMessage = errorObj.optString("message", errorMessage)
+            Log.e("Verity", "EDD getDocs HTTP $code: $errorBody")
+
+            when (code) {
+                401 -> Resource.Error("Session expired. Please restart the verification process.")
+                403 -> Resource.Error("EDD verification is not enabled for this integration. Contact support.")
+                else -> {
+                    var errorMessage = "HTTP $code Error: Unknown error"
+                    if (errorBody != null) {
+                        try {
+                            val json = JSONObject(errorBody)
+                            val errorObj = json.optJSONObject("Error")
+                            if (errorObj != null) {
+                                errorMessage = errorObj.optString("message", errorMessage)
+                            }
+                        } catch (_: Exception) {}
                     }
-                } catch (_: Exception) {}
+                    Resource.Error(errorMessage)
+                }
             }
-            Resource.Error(errorMessage)
         } catch (e: Exception) {
             Log.e("Verity", "Failed to fetch EDD documents: ${e.message}")
             Resource.Error("Failed to fetch EDD documents: ${e.message}")
@@ -613,21 +746,30 @@ class ApiRepository {
             } else {
                 Resource.Error(response.error?.message ?: "Unable to fetch EDD document URL")
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: IOException) {
             Resource.Error("No internet connection. Please check your network.")
         } catch (e: HttpException) {
+            val code = e.code()
             val errorBody = e.response()?.errorBody()?.string()
-            var errorMessage = "HTTP ${e.code()} Error: Unknown error"
-            if (errorBody != null) {
-                try {
-                    val json = JSONObject(errorBody)
-                    val errorObj = json.optJSONObject("Error")
-                    if (errorObj != null) {
-                        errorMessage = errorObj.optString("message", errorMessage)
+            when (code) {
+                401 -> Resource.Error("Session expired. Please restart the verification process.")
+                403 -> Resource.Error("EDD verification is not enabled for this integration. Contact support.")
+                else -> {
+                    var errorMessage = "HTTP $code Error: Unknown error"
+                    if (errorBody != null) {
+                        try {
+                            val json = JSONObject(errorBody)
+                            val errorObj = json.optJSONObject("Error")
+                            if (errorObj != null) {
+                                errorMessage = errorObj.optString("message", errorMessage)
+                            }
+                        } catch (_: Exception) {}
                     }
-                } catch (_: Exception) {}
+                    Resource.Error(errorMessage)
+                }
             }
-            Resource.Error(errorMessage)
         } catch (e: Exception) {
             Resource.Error("Failed to fetch EDD document URL: ${e.message}")
         }

@@ -51,12 +51,14 @@ interface VerityApiService {
 
     @GET
     suspend fun getLivenessResult(
-        @retrofit2.http.Url url: String
+        @retrofit2.http.Url url: String,
+        @Header("x-api-key") apiKey: String
     ): LivenessResultResponse
 
     @POST
     suspend fun triggerLivenessPoll(
-        @retrofit2.http.Url url: String
+        @retrofit2.http.Url url: String,
+        @Header("x-api-key") apiKey: String
     ): LivenessResultResponse
 
     // ── Address Verification ──
@@ -76,7 +78,9 @@ interface VerityApiService {
         @Part("PlatformUsed") platformUsed: RequestBody,
         @Part("DeviceAndBrowser") deviceAndBrowser: RequestBody,
         @Part("IpAddress") ipAddress: RequestBody,
-        @Part("IpLocation") ipLocation: RequestBody
+        @Part("IpLocation") ipLocation: RequestBody,
+        @Part("SecurityAssessmentJson") securityAssessmentJson: RequestBody? = null,
+        @Header("x-api-key") apiKey: String
     ): ApiResponse<AddressVerificationResponse>
 
     @GET("/kycintegration/address-verification/{verificationId}/documents")
@@ -101,6 +105,11 @@ interface VerityApiService {
         @Part("SubjectName") subjectName: RequestBody,
         @Part("DocumentType") documentType: RequestBody,
         @Part file: MultipartBody.Part,
+        @Part("PlatformUsed") platformUsed: RequestBody? = null,
+        @Part("DeviceAndBrowser") deviceAndBrowser: RequestBody? = null,
+        @Part("IpAddress") ipAddress: RequestBody? = null,
+        @Part("IpLocation") ipLocation: RequestBody? = null,
+        @Part("SecurityAssessmentJson") securityAssessmentJson: RequestBody? = null,
         @Header("x-api-key") apiKey: String
     ): EddCaseResponse
 

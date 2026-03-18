@@ -124,11 +124,13 @@ class VerityProViewModel(
         file: File,
         documentType: Int,
         ipAddress: String,
-        ipLocation: String
+        ipLocation: String,
+        apiKey: String,
+        context: android.content.Context? = null
     ) {
         viewModelScope.launch {
             _addressState.value = Resource.Loading("Submitting address document...")
-            val result = repository.submitAddressDocument(sessionId, file, documentType, ipAddress, ipLocation)
+            val result = repository.submitAddressDocument(sessionId, file, documentType, ipAddress, ipLocation, apiKey, context)
             _addressState.value = result
         }
     }
@@ -145,11 +147,12 @@ class VerityProViewModel(
         subjectName: String,
         file: File,
         documentType: Int,
-        apiKey: String
+        apiKey: String,
+        context: android.content.Context? = null
     ) {
         viewModelScope.launch {
             _eddState.value = Resource.Loading("Submitting EDD document...")
-            val result = repository.createEddCase(subjectId, subjectName, file, documentType, apiKey)
+            val result = repository.createEddCase(subjectId, subjectName, file, documentType, apiKey, context)
             _eddState.value = result
         }
     }
@@ -166,7 +169,6 @@ class VerityProViewModel(
             val result = repository.createKyc(options)
             if (result is Resource.Success) {
                 currentSessionId = result.data.sessionId
-                Log.d("apikey", currentSessionId)
 
                 // Parse country-allowed document types from session response
                 val allowed = result.data.allowedDocumentTypes
@@ -216,7 +218,6 @@ class VerityProViewModel(
         viewModelScope.launch {
             _kycState.value = Resource.Loading("Submitting KYC Verification")
 
-            Log.d("apikey", apiKey)
             val result = repository.updateKyc(data, apiKey)
             _kycState.value = result
         }
@@ -243,7 +244,7 @@ class VerityProViewModel(
             _livenessVerificationState.value = LivenessVerificationState.Polling
             _livenessResultState.value = Resource.Loading("Verifying liveness result...")
 
-            val result = repository.pollLivenessResult(livenessId)
+            val result = repository.pollLivenessResult(livenessId, apiKey)
             _livenessResultState.value = result
 
             when (result) {

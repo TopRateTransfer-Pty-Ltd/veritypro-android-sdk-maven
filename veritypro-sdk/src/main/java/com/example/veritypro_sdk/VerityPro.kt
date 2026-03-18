@@ -8,19 +8,13 @@ import androidx.activity.result.ActivityResult
 import com.example.veritypro_sdk.ui.theme.ThemeMode
 import com.example.veritypro_sdk.utils.VerityOption
 
-//apiKey = "OJ00QwiaWwObUPLebb8lnLcHIESYdqWx",
-//integrationId = "d8e8a90e-74bc-4cc0-9489-782dc4823f94",
-//firstName = "Ade",
-//lastName = "Oba",
-//vendorData = "verity",
-//isO2Code = "NG"
+// Usage: Pass VerityOption with your credentials to startVerification()
 
 class VerityPro(
     private val options: VerityOption,
     private val themeMode: ThemeMode = ThemeMode.LIGHT
 ) {
-    //TODO: Ask Dev to add this to android manifest of host app, e suppose actually dey there normal normal sha
-    // <uses-permission android:name="android.permission.INTERNET"/>
+    // Requires: <uses-permission android:name="android.permission.INTERNET"/> in host app manifest
     fun startVerification(
         launcher: ManagedActivityResultLauncher<Intent, ActivityResult>,
         activity: Activity
