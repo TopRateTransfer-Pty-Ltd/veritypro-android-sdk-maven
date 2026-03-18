@@ -18,6 +18,36 @@ import java.io.IOException
 
 class ApiRepository {
 
+    /**
+     * Parse structured error from EDD backend auth handler.
+     * Expected JSON: {"error_code": "edd_not_provisioned"|"integration_inactive", "message": "..."}
+     */
+    private fun parseEddAuthError(statusCode: Int, errorBody: String?): String {
+        if (errorBody != null) {
+            try {
+                val json = JSONObject(errorBody)
+                val errorCode = json.optString("error_code", "")
+                return when (errorCode) {
+                    "edd_not_provisioned" ->
+                        "EDD is not enabled for this integration. Please enable EDD in the VerityPro dashboard and try again."
+                    "integration_inactive" ->
+                        "This integration is inactive. Please re-activate it in the VerityPro dashboard."
+                    else -> {
+                        val msg = json.optString("message", "")
+                        if (msg.isNotEmpty()) msg
+                        else "Authentication failed. Please verify your API key and ensure EDD is enabled."
+                    }
+                }
+            } catch (_: Exception) {
+                // Not valid JSON — fall through
+            }
+        }
+        return if (statusCode == 403)
+            "EDD verification is not enabled for this integration. Contact support."
+        else
+            "Authentication failed. Please verify your API key and ensure EDD is enabled for this integration."
+    }
+
     suspend fun createKyc(data: VerityOption): Resource<SessionData> {
         return try {
             val response: ApiResponse<SessionData> =
@@ -530,23 +560,22 @@ class ApiRepository {
             Log.e("Verity", "EDD createCase HTTP $code: $errorBody")
 
             when (code) {
-                401 -> {
-                    Log.e("Verity", "EDD 401: API key invalid or session expired")
-                    Resource.Error("Session expired. Please restart the verification process.")
+                401, 403 -> {
+                    // Parse structured error from EDD backend: {"error_code": "...", "message": "..."}
+                    val userMessage = parseEddAuthError(code, errorBody)
+                    Log.e("Verity", "EDD $code: $userMessage")
+                    Resource.Error(userMessage)
                 }
-                403 -> {
-                    Log.e("Verity", "EDD 403: Insufficient permissions for EDD")
-                    Resource.Error("EDD verification is not enabled for this integration. Contact support.")
-                }
+                413 -> Resource.Error("File is too large for the server. Please use a smaller file.")
+                422 -> Resource.Error("Invalid document format. Please upload a PDF, JPEG, or PNG file.")
+                in 500..599 -> Resource.Error("Server error. Please try again in a few moments.")
                 else -> {
-                    var errorMessage = "HTTP $code Error: Unknown error"
+                    var errorMessage = "Upload failed (HTTP $code). Please try again."
                     if (errorBody != null) {
                         try {
                             val json = JSONObject(errorBody)
-                            val errorObj = json.optJSONObject("Error")
-                            if (errorObj != null) {
-                                errorMessage = errorObj.optString("message", errorMessage)
-                            }
+                            val msg = json.optString("message", "")
+                            if (msg.isNotEmpty()) errorMessage = msg
                         } catch (_: Exception) {}
                     }
                     Resource.Error(errorMessage)
@@ -579,13 +608,10 @@ class ApiRepository {
             Log.e("Verity", "EDD getStatus HTTP $code: $errorBody")
 
             when (code) {
-                401 -> {
-                    Log.e("Verity", "EDD status 401: API key invalid or session expired")
-                    Resource.Error("Session expired. Please restart the verification process.")
-                }
-                403 -> {
-                    Log.e("Verity", "EDD status 403: Insufficient permissions")
-                    Resource.Error("EDD verification is not enabled for this integration. Contact support.")
+                401, 403 -> {
+                    val userMessage = parseEddAuthError(code, errorBody)
+                    Log.e("Verity", "EDD status $code: $userMessage")
+                    Resource.Error(userMessage)
                 }
                 404 -> {
                     Log.e("Verity", "EDD status 404: Case $caseId not found")
