@@ -248,10 +248,10 @@ object SecurityAssessmentCollector {
                     context.packageName,
                     PackageManager.GET_SIGNING_CERTIFICATES
                 ).signingInfo
-                if (signingInfo.hasMultipleSigners()) {
+                if (signingInfo?.hasMultipleSigners() == true) {
                     signingInfo.apkContentsSigners
                 } else {
-                    signingInfo.signingCertificateHistory
+                    signingInfo?.signingCertificateHistory
                 }
             } else {
                 context.packageManager.getPackageInfo(
