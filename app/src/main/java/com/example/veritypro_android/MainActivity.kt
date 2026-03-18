@@ -75,7 +75,7 @@ fun VerityProDemoApp() {
         lastName = "Oba",
         dateOfBirth = "1990-01-15T00:00:00.000Z",
         vendorData = "verity",
-        isO2Code = "NG",
+        isO2Code = "AU",
         streetAddress = null,
     )
     val sdk = remember { VerityPro(options, themeMode = ThemeMode.LIGHT) }

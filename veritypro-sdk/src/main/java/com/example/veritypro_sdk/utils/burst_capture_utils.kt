@@ -1,34 +1,144 @@
 package com.example.veritypro_sdk.utils
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.util.Log
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
+import androidx.camera.view.PreviewView
 import java.io.File
 import java.util.concurrent.Executors
+import java.util.concurrent.locks.ReentrantLock
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.resume
-import kotlin.coroutines.resumeWithException
 
 /**
  * Burst Capture Utilities for Anti-Spoofing Verification
  *
- * Captures multiple frames in quick succession for ML backend
- * anti-spoofing verification.
+ * Uses a continuously-filling frame buffer (like iOS) so that when the user
+ * taps capture, frames are ALREADY available — no post-tap camera captures needed.
+ *
+ * Flow:
+ *   1. [startBuffering] begins collecting preview bitmaps every ~150ms
+ *   2. User taps capture → [drainBuffer] returns the stored frames immediately
+ *   3. Frames are sent to verify-burst endpoint
+ *   4. [stopBuffering] stops collection and frees memory
  */
 object BurstCaptureUtils {
 
     private const val TAG = "BurstCapture"
 
+    // ── Frame Buffer (matches iOS burstFrameBuffer + NSLock pattern) ──
+
+    /** Maximum frames to keep in the ring buffer */
+    private const val MAX_BUFFER_SIZE = 6
+
+    /** Interval between frame captures in ms (iOS uses ~100ms) */
+    private const val BUFFER_INTERVAL_MS = 150L
+
+    /** Thread-safe lock for buffer access (equivalent to iOS NSLock) */
+    private val bufferLock = ReentrantLock()
+
+    /** Ring buffer of recent preview frames */
+    private val frameBuffer = ArrayDeque<Bitmap>(MAX_BUFFER_SIZE + 1)
+
+    /** Flag to control the buffering loop */
+    @Volatile
+    private var isBuffering = false
+
     /**
-     * Capture a burst of images for anti-spoofing verification
+     * Start continuously buffering preview frames in the background.
+     * Call this when the camera is ready and the document capture screen is visible.
      *
-     * @param context Application context
-     * @param imageCapture CameraX ImageCapture instance
-     * @param frameCount Number of frames to capture (6-12 recommended)
-     * @param delayMs Delay between captures in milliseconds
-     * @param onProgress Callback for progress updates
-     * @return List of captured image files
+     * The buffer runs on a coroutine and stores up to [MAX_BUFFER_SIZE] bitmaps
+     * from [previewView]. Old frames are evicted and recycled automatically.
+     *
+     * @param previewView The CameraX PreviewView to capture bitmaps from
+     */
+    suspend fun startBuffering(previewView: PreviewView) {
+        if (isBuffering) return
+        isBuffering = true
+        Log.d(TAG, "Frame buffer started (max=$MAX_BUFFER_SIZE, interval=${BUFFER_INTERVAL_MS}ms)")
+
+        while (isBuffering) {
+            try {
+                val srcBitmap = previewView.bitmap
+                if (srcBitmap != null) {
+                    // Copy immediately — PreviewView reuses its internal buffer
+                    val copy = srcBitmap.copy(
+                        srcBitmap.config ?: Bitmap.Config.ARGB_8888,
+                        false
+                    )
+                    if (copy != null) {
+                        bufferLock.lock()
+                        try {
+                            frameBuffer.addLast(copy)
+                            // Evict oldest frame if over capacity
+                            while (frameBuffer.size > MAX_BUFFER_SIZE) {
+                                val evicted = frameBuffer.removeFirst()
+                                evicted.recycle()
+                            }
+                        } finally {
+                            bufferLock.unlock()
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                // Don't crash the buffer loop on transient errors
+                Log.w(TAG, "Buffer frame error: ${e.message}")
+            }
+            kotlinx.coroutines.delay(BUFFER_INTERVAL_MS)
+        }
+    }
+
+    /**
+     * Stop the buffering loop. Does NOT clear already-buffered frames
+     * (call [clearBuffer] separately if needed).
+     */
+    fun stopBuffering() {
+        isBuffering = false
+        Log.d(TAG, "Frame buffer stopped")
+    }
+
+    /**
+     * Drain the frame buffer and return all stored bitmaps.
+     * The buffer is emptied but bitmaps are NOT recycled (caller owns them).
+     *
+     * @return List of bitmaps in chronological order (oldest first)
+     */
+    fun drainBuffer(): List<Bitmap> {
+        bufferLock.lock()
+        return try {
+            val frames = frameBuffer.toList()
+            frameBuffer.clear() // Caller now owns the bitmaps
+            Log.d(TAG, "Drained ${frames.size} frames from buffer")
+            frames
+        } finally {
+            bufferLock.unlock()
+        }
+    }
+
+    /**
+     * Clear the buffer and recycle all bitmaps.
+     */
+    fun clearBuffer() {
+        bufferLock.lock()
+        try {
+            frameBuffer.forEach { bitmap ->
+                if (!bitmap.isRecycled) bitmap.recycle()
+            }
+            frameBuffer.clear()
+            Log.d(TAG, "Buffer cleared")
+        } finally {
+            bufferLock.unlock()
+        }
+    }
+
+    // ── Legacy File-Based Capture (kept for backward compatibility) ──
+
+    /**
+     * Capture a burst of images using CameraX ImageCapture.
+     * Prefer [drainBuffer] for production — this method has post-tap latency.
      */
     suspend fun captureBurst(
         context: Context,
@@ -50,7 +160,6 @@ object BurstCaptureUtils {
                     Log.d(TAG, "Captured frame ${i + 1}/$frameCount: ${file.name}")
                 }
 
-                // Small delay between captures
                 if (i < frameCount - 1) {
                     kotlinx.coroutines.delay(delayMs)
                 }
@@ -63,9 +172,6 @@ object BurstCaptureUtils {
         return capturedFiles
     }
 
-    /**
-     * Capture a single frame
-     */
     private suspend fun captureFrame(
         context: Context,
         imageCapture: ImageCapture,
@@ -99,8 +205,6 @@ object BurstCaptureUtils {
 
     /**
      * Clean up burst capture files
-     *
-     * @param files List of files to delete
      */
     fun cleanupBurstFiles(files: List<File>) {
         files.forEach { file ->

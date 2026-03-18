@@ -40,8 +40,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import android.view.HapticFeedbackConstants
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -59,6 +61,7 @@ fun AddressCaptureScreen(
     onFileCaptured: (ByteArray, String) -> Unit
 ) {
     val context = LocalContext.current
+    val view = LocalView.current
     val coroutineScope = rememberCoroutineScope()
     var isProcessing by remember { mutableStateOf(false) }
     var fileError by remember { mutableStateOf<String?>(null) }
@@ -191,7 +194,7 @@ fun AddressCaptureScreen(
 
         Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(30.dp)))
 
-        // Upload area with dashed border
+        // Upload area with dashed border — tappable to open file picker
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -200,7 +203,12 @@ fun AddressCaptureScreen(
                     width = 2.dp,
                     color = MaterialTheme.customColors.containerBorder,
                     shape = RoundedCornerShape(12.dp)
-                ),
+                )
+                .clickable(enabled = !isProcessing) {
+                    view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+                    fileError = null
+                    fileLauncher.launch(arrayOf("application/pdf", "image/jpeg", "image/png"))
+                },
             contentAlignment = Alignment.Center
         ) {
             Column(
