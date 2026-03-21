@@ -33,6 +33,7 @@ interface VerityApiService {
         @Part DocumentFront: MultipartBody.Part?,
         @Part("LivenessId") LivenessId: RequestBody,
         @Part DocumentBack: MultipartBody.Part?,
+        @Part("SecurityAssessmentJson") SecurityAssessmentJson: RequestBody? = null,
         @Header("x-api-key") apiKey: String
     ): ApiResponse<String>
 

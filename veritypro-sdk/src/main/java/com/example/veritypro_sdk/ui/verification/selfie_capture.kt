@@ -275,17 +275,6 @@ fun SelfieCaptureScreen(
         modifier = Modifier
         .fillMaxSize()
         .background(Color(0xFF0F1724))) {
-        // Top header/back
-        IconButton(
-            onClick = onBack,
-            modifier = Modifier
-                .padding(16.dp)
-                .align(Alignment.TopStart)
-        ) {
-            Icon(imageVector = Icons.Default.Close, contentDescription = "Back", tint = Color.White)
-        }
-
-
 
             when {
                 !hasPermission -> {
@@ -311,23 +300,36 @@ fun SelfieCaptureScreen(
                 error != null -> {
                     // Reset processing state when showing error
                     isProcessingServerResult = false
+                    val isCameraError = error?.message?.contains("camera", ignoreCase = true) == true
+                    val displayMessage = if (isCameraError) {
+                        "Camera could not start. Please ensure no other apps are using the camera, then try again."
+                    } else {
+                        error?.message ?: "Liveness verification failed"
+                    }
                     Column(
                         horizontalAlignment = Alignment.CenterHorizontally,
-                        modifier = Modifier.align(Alignment.Center)
+                        modifier = Modifier
+                            .align(Alignment.Center)
+                            .padding(horizontal = 32.dp)
                         ) {
                         Text(
-                            "Error: ${error?.message ?: "Liveness failed"}",
-                            color = Color.Red,
-                            textAlign = TextAlign.Center
+                            displayMessage,
+                            color = Color(0xFFEF4444),
+                            textAlign = TextAlign.Center,
+                            fontSize = 16.sp
                         )
-                        Spacer(Modifier.height(12.dp))
-                        Button(onClick = {
-                            error = null
-                            started = false
-                            isProcessingServerResult = false
-                            viewModel.resetLivenessState()
-                            sessionIdFromCreateKyc?.let { viewModel.startBeginLiveness(it, forceRetry = true) }
-                        }) { Text("Retry") }
+                        Spacer(Modifier.height(16.dp))
+                        Button(
+                            onClick = {
+                                error = null
+                                started = false
+                                isProcessingServerResult = false
+                                viewModel.resetLivenessState()
+                                sessionIdFromCreateKyc?.let { viewModel.startBeginLiveness(it, forceRetry = true) }
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF3B82F6)),
+                            shape = RoundedCornerShape(24.dp)
+                        ) { Text("Retry") }
                     }
                 }
 
@@ -531,6 +533,19 @@ fun SelfieCaptureScreen(
                     Text("Processing result...", color = Color.White)
                 }
             }
+        }
+
+        // Floating close button — drawn LAST so it's always on top and tappable
+        IconButton(
+            onClick = onBack,
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .statusBarsPadding()
+                .padding(start = 16.dp, top = 8.dp)
+                .size(40.dp)
+                .background(Color.Black.copy(alpha = 0.3f), CircleShape)
+        ) {
+            Icon(imageVector = Icons.Default.Close, contentDescription = "Back", tint = Color.White)
         }
     }
 }

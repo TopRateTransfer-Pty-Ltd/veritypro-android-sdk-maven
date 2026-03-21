@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -111,9 +112,10 @@ fun EddDocTypeScreen(
         modifier = Modifier
             .fillMaxSize()
             .background(MaterialTheme.customColors.background)
+            .statusBarsPadding()
             .padding(
                 horizontal = ScaleUtil.scaleWidth(24.dp),
-                vertical = ScaleUtil.scaleHeight(40.dp)
+                vertical = ScaleUtil.scaleHeight(16.dp)
             )
             .verticalScroll(rememberScrollState()),
         horizontalAlignment = Alignment.CenterHorizontally

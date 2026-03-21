@@ -42,7 +42,9 @@ import androidx.compose.ui.platform.LocalView
 import com.example.veritypro_sdk.services.MLDecision
 import com.example.veritypro_sdk.services.MLDocumentType
 import com.example.veritypro_sdk.services.MLRepository
+import com.example.veritypro_sdk.services.MLSpoofType
 import com.example.veritypro_sdk.services.Resource
+import com.example.veritypro_sdk.services.sanitizeMLHint
 import com.example.veritypro_sdk.utils.BurstCaptureUtils
 import com.example.veritypro_sdk.utils.CameraCapabilityAnalyzer
 import com.example.veritypro_sdk.utils.CameraCapabilityReport
@@ -270,8 +272,8 @@ fun DocumentCaptureScreen(
                                     val response = result.data
                                     mlPassed = response.docOk
                                     mlConfidence = response.confidence ?: 0f
-                                    // Show hint from ML backend (e.g. "Please show the DATA PAGE", "Wrong document type")
-                                    mlHint = if (!response.docOk) response.hint ?: "" else ""
+                                    // Show hint from ML backend, sanitized for readability
+                                    mlHint = if (!response.docOk) sanitizeMLHint(response.hint ?: "") else ""
                                     Log.d("DocumentCapture", "ML Live SUCCESS: docOk=${response.docOk}, conf=$mlConfidence, hint=${response.hint}")
 
                                     // Calculate distance guidance from bounding box
@@ -451,58 +453,8 @@ fun DocumentCaptureScreen(
                 .fillMaxSize(),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            // Top bar with close and torch buttons
-            Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(8.dp)))
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 12.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                // Close button
-                IconButton(
-                    onClick = onBack,
-                    modifier = Modifier
-                        .size(40.dp)
-                        .background(Color.Black.copy(alpha = 0.3f), CircleShape)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Close,
-                        contentDescription = "Close",
-                        tint = Color.White
-                    )
-                }
-
-                // Spacer for layout balance between close button and torch toggle
-                Spacer(modifier = Modifier.size(40.dp))
-
-                // Torch toggle button
-                if (CameraUtils.isTorchAvailable()) {
-                    IconButton(
-                        onClick = {
-                            torchEnabled = CameraUtils.toggleTorch()
-                        },
-                        modifier = Modifier
-                            .size(40.dp)
-                            .background(
-                                if (torchEnabled) Color(0xFFFFC107) else Color.Black.copy(alpha = 0.3f),
-                                CircleShape
-                            )
-                    ) {
-                        Icon(
-                            imageVector = if (torchEnabled) Icons.Default.FlashOn else Icons.Default.FlashOff,
-                            contentDescription = if (torchEnabled) "Turn off flash" else "Turn on flash",
-                            tint = if (torchEnabled) Color.Black else Color.White
-                        )
-                    }
-                } else {
-                    // Placeholder to maintain layout
-                    Spacer(modifier = Modifier.size(40.dp))
-                }
-            }
-
-            Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(12.dp)))
+            // Even spacing — matches design mockup
+            Spacer(modifier = Modifier.weight(0.3f))
 
             Text(
                 text = mainInstruction,
@@ -513,7 +465,7 @@ fun DocumentCaptureScreen(
                 modifier = Modifier.padding(horizontal = ScaleUtil.scaleWidth(32.dp))
             )
 
-            Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(16.dp)))
+            Spacer(modifier = Modifier.weight(0.15f))
 
             // Camera frame with corner indicator overlay
             val detectionState = when {
@@ -527,11 +479,10 @@ fun DocumentCaptureScreen(
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .weight(1f)
-                    .padding(horizontal = ScaleUtil.scaleWidth(24.dp)),
-                contentAlignment = Alignment.Center
+                    .aspectRatio(327f / 191f)
+                    .padding(horizontal = ScaleUtil.scaleWidth(24.dp))
             ) {
-                // Camera preview fills the entire expanded area
+                // Camera preview
                 AndroidView(
                     factory = { previewView },
                     modifier = Modifier
@@ -539,61 +490,53 @@ fun DocumentCaptureScreen(
                         .clip(RoundedCornerShape(ScaleUtil.scaleWidth(8.dp)))
                 )
 
-                // Document frame area — maintains correct document aspect ratio
-                // centered within the larger camera preview
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .aspectRatio(327f / 191f)
-                ) {
-                    // Frozen frame + processing overlay (covers live preview visually)
-                    if (isProcessing && frozenBitmap != null) {
-                        Image(
-                            bitmap = frozenBitmap!!.asImageBitmap(),
-                            contentDescription = "Processing...",
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .clip(RoundedCornerShape(ScaleUtil.scaleWidth(8.dp)))
-                        )
+                // Frozen frame + processing overlay
+                if (isProcessing && frozenBitmap != null) {
+                    Image(
+                        bitmap = frozenBitmap!!.asImageBitmap(),
+                        contentDescription = "Processing...",
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .clip(RoundedCornerShape(ScaleUtil.scaleWidth(8.dp)))
+                    )
 
-                        Box(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .background(
-                                    Color.Black.copy(alpha = 0.5f),
-                                    RoundedCornerShape(ScaleUtil.scaleWidth(8.dp))
-                                ),
-                            contentAlignment = Alignment.Center
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(
+                                Color.Black.copy(alpha = 0.5f),
+                                RoundedCornerShape(ScaleUtil.scaleWidth(8.dp))
+                            ),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.Center
                         ) {
-                            Column(
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                                verticalArrangement = Arrangement.Center
-                            ) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(48.dp),
-                                    color = Color.White,
-                                    strokeWidth = 4.dp
-                                )
-                                Spacer(modifier = Modifier.height(16.dp))
-                                Text(
-                                    text = processingStatus.ifEmpty { "Processing..." },
-                                    color = Color.White,
-                                    fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(16.dp).toSp() },
-                                    fontWeight = FontWeight.W600
-                                )
-                            }
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(48.dp),
+                                color = Color.White,
+                                strokeWidth = 4.dp
+                            )
+                            Spacer(modifier = Modifier.height(16.dp))
+                            Text(
+                                text = processingStatus.ifEmpty { "Processing..." },
+                                color = Color.White,
+                                fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(16.dp).toSp() },
+                                fontWeight = FontWeight.W600
+                            )
                         }
                     }
-
-                    // Corner indicators + status badge overlay
-                    DocumentDetectionOverlay(
-                        state = detectionState,
-                        modifier = Modifier.fillMaxSize()
-                    )
                 }
+
+                // Corner indicators + status badge overlay
+                DocumentDetectionOverlay(
+                    state = detectionState,
+                    modifier = Modifier.fillMaxSize()
+                )
             }
 
-            Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(16.dp)))
+            Spacer(modifier = Modifier.weight(0.05f))
 
             // Distance guidance indicator
             distanceGuidance?.let { guidance ->
@@ -627,7 +570,7 @@ fun DocumentCaptureScreen(
                 }
             }
 
-            Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(12.dp)))
+            Spacer(modifier = Modifier.weight(0.1f))
 
             bottomInstruction?.let {
                 Text(
@@ -664,7 +607,8 @@ fun DocumentCaptureScreen(
                 )
             }
 
-            Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(24.dp)))
+            // Flexible space — pushes button toward bottom
+            Spacer(modifier = Modifier.weight(0.3f))
 
             // Capture button with ML-driven green color
             Box(
@@ -804,7 +748,46 @@ fun DocumentCaptureScreen(
                 }
             }
 
-            Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(32.dp)))
+            Spacer(modifier = Modifier.weight(0.1f))
+        }
+
+        // Floating close button (top-left) — statusBarsPadding clears the system bar
+        IconButton(
+            onClick = onBack,
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .statusBarsPadding()
+                .padding(start = 16.dp, top = 8.dp)
+                .size(40.dp)
+                .background(Color.Black.copy(alpha = 0.3f), CircleShape)
+        ) {
+            Icon(
+                imageVector = Icons.Default.Close,
+                contentDescription = "Close",
+                tint = Color.White
+            )
+        }
+
+        // Floating torch button (top-right)
+        if (CameraUtils.isTorchAvailable()) {
+            IconButton(
+                onClick = { torchEnabled = CameraUtils.toggleTorch() },
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .statusBarsPadding()
+                    .padding(end = 16.dp, top = 8.dp)
+                    .size(40.dp)
+                    .background(
+                        if (torchEnabled) Color(0xFFFFC107) else Color.Black.copy(alpha = 0.3f),
+                        CircleShape
+                    )
+            ) {
+                Icon(
+                    imageVector = if (torchEnabled) Icons.Default.FlashOn else Icons.Default.FlashOff,
+                    contentDescription = if (torchEnabled) "Turn off flash" else "Turn on flash",
+                    tint = if (torchEnabled) Color.Black else Color.White
+                )
+            }
         }
 
         // Floating error overlay — positioned above capture button, auto-dismisses
@@ -871,8 +854,8 @@ private suspend fun verifyAndHandleResult(
                 if (passed) {
                     onPass(frames)
                 } else {
-                    val error = response.hint.ifEmpty {
-                        response.spoof.reason.ifEmpty { "Document verification failed. Please use original document." }
+                    val error = sanitizeMLHint(response.hint).ifEmpty {
+                        MLSpoofType.toUserMessage(response.spoof.reason)
                     }
                     BurstCaptureUtils.cleanupBurstFiles(frames)
                     onFail(error)

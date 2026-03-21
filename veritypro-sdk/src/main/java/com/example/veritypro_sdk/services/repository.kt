@@ -105,7 +105,6 @@ class ApiRepository {
                 RetrofitInstance.api.updateKyc(
                     SessionId = data.SessionId.toRequestBody(),
                     DocumentType = data.DocumentType.toString().toRequestBody(),
-                    //DocumentType = "2".toRequestBody(),
                     PlatformUsed = data.PlatformUsed.toRequestBody(),
                     IpAddress = data.IpAddress.toRequestBody(),
                     IpLocation = data.IpLocation.toRequestBody(),
@@ -114,6 +113,7 @@ class ApiRepository {
                     DocumentFront = data.DocumentFront,
                     DocumentBack = data.DocumentBack,
                     LivenessId = data.LivenessId.toRequestBody(),
+                    SecurityAssessmentJson = data.SecurityAssessmentJson?.toRequestBody(),
                     apiKey = apiKey
                 )
 

@@ -460,6 +460,7 @@ fun VerificationScreen(
 
                                                             if (hasDocuments && hasValidDocType) {
                                                                 // BIOMETRIC / COMBINED mode: submit documents + liveness together
+                                                                val securityJson = SecurityAssessmentCollector.collectJson(context)
                                                                 viewModel.updateKyc(
                                                                     VerificationRequestMultipart(
                                                                         SessionId = sessionId ?: "",
@@ -470,7 +471,8 @@ fun VerificationScreen(
                                                                         IpLocation = locationText ?: "",
                                                                         DocumentFront = documentFrontPage?.toMultipartBodyPart("DocumentFront"),
                                                                         DocumentBack = documentBackPage?.toMultipartBodyPart("DocumentBack"),
-                                                                        LivenessId = livenessId ?: ""
+                                                                        LivenessId = livenessId ?: "",
+                                                                        SecurityAssessmentJson = securityJson
                                                                     ),
                                                                 )
                                                             } else {
@@ -584,6 +586,7 @@ fun VerificationScreen(
                             onRefresh = {
                                 val hasValidDocType = selectedDocumentType != null && selectedDocumentType!! > 0
                                 if (stage == VerificationStage.RESULT && sessionId != null && documentFrontPage != null && hasValidDocType) {
+                                    val securityJson = SecurityAssessmentCollector.collectJson(context)
                                     viewModel.updateKyc(
                                         VerificationRequestMultipart(
                                             SessionId = sessionId!!,
@@ -595,6 +598,7 @@ fun VerificationScreen(
                                             IpLocation = locationText ?: "",
                                             DocumentFront = documentFrontPage?.toMultipartBodyPart("DocumentFront"),
                                             DocumentBack = documentBackPage?.toMultipartBodyPart("DocumentBack"),
+                                            SecurityAssessmentJson = securityJson
                                         )
                                     )
                                 } else {

@@ -17,7 +17,8 @@ data class VerificationRequestMultipart(
     val PlatformUsed: String,
     val DeviceAndBrowser: String,
     val IpAddress: String,
-    val IpLocation: String
+    val IpLocation: String,
+    val SecurityAssessmentJson: String? = null
 )
 
 fun File.toMultipartBodyPart(partName: String): MultipartBody.Part =

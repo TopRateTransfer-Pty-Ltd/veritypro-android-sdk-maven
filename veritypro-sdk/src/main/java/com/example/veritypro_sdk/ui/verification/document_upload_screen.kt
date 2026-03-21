@@ -14,6 +14,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -134,11 +135,12 @@ fun DocumentUploadScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
+                .statusBarsPadding()
                 .verticalScroll(rememberScrollState()),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             // Top bar with back button
-            Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(16.dp)))
+            Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(8.dp)))
             Row(
                 modifier = Modifier
                     .fillMaxWidth()

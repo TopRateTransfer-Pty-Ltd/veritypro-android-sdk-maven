@@ -269,6 +269,23 @@ object MLDocumentSide {
 }
 
 /**
+ * Sanitize ML backend hint text to be human-readable.
+ * Replaces raw API terms like DRIVERS_LICENSE, BACK, FRONT, ID_CARD etc.
+ */
+fun sanitizeMLHint(hint: String): String {
+    if (hint.isBlank()) return hint
+    return hint
+        .replace("DRIVERS_LICENSE", "Driver's License", ignoreCase = true)
+        .replace("DRIVER_LICENSE", "Driver's License", ignoreCase = true)
+        .replace("ID_CARD", "ID Card", ignoreCase = true)
+        .replace("PASSPORT", "Passport", ignoreCase = true)
+        .replace("FRONT", "front side", ignoreCase = true)
+        .replace("BACK", "back side", ignoreCase = true)
+        .replace("COLLECT_BURST", "capture", ignoreCase = true)
+        .replace("RETRY", "try again", ignoreCase = true)
+}
+
+/**
  * Next action from ML backend
  */
 object MLNextAction {

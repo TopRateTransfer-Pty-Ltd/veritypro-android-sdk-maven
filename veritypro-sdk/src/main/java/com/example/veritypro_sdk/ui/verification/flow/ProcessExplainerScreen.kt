@@ -25,6 +25,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -83,6 +84,7 @@ fun ProcessExplainerScreen(
             horizontalAlignment = Alignment.CenterHorizontally,
             modifier = Modifier
                 .fillMaxSize()
+                .statusBarsPadding()
                 .padding(horizontal = ScaleUtil.scaleWidth(24.dp))
         ) {
             // Back button — matches iOS "< Back" style
@@ -90,7 +92,7 @@ fun ProcessExplainerScreen(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(top = ScaleUtil.scaleHeight(12.dp))
+                    .padding(top = ScaleUtil.scaleHeight(8.dp))
                     .clickable(onClick = onBack)
                     .padding(vertical = ScaleUtil.scaleHeight(8.dp))
             ) {

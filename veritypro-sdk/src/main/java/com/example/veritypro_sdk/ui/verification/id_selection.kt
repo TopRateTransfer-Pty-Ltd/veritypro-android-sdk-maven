@@ -38,8 +38,8 @@ fun IdSelectionScreen(
         modifier = Modifier
             .fillMaxSize()
             .background(MaterialTheme.customColors.background)
-
-            .padding(horizontal = ScaleUtil.scaleWidth(24.dp), vertical = ScaleUtil.scaleHeight(40.dp))
+            .statusBarsPadding()
+            .padding(horizontal = ScaleUtil.scaleWidth(24.dp), vertical = ScaleUtil.scaleHeight(16.dp))
             .verticalScroll(rememberScrollState()),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
