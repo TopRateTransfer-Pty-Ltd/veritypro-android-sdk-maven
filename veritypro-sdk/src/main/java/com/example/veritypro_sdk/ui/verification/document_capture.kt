@@ -30,9 +30,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
@@ -450,8 +448,7 @@ fun DocumentCaptureScreen(
 
         Column(
             modifier = Modifier
-                .fillMaxSize()
-                .verticalScroll(rememberScrollState()),
+                .fillMaxSize(),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             // Top bar with close and torch buttons
@@ -530,11 +527,11 @@ fun DocumentCaptureScreen(
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .aspectRatio(327f / 191f)
-                    .padding(horizontal = ScaleUtil.scaleWidth(24.dp))
+                    .weight(1f)
+                    .padding(horizontal = ScaleUtil.scaleWidth(24.dp)),
+                contentAlignment = Alignment.Center
             ) {
-                // Camera preview is ALWAYS rendered to keep the CameraX pipeline
-                // stable. Frozen bitmap overlays on top during processing.
+                // Camera preview fills the entire expanded area
                 AndroidView(
                     factory = { previewView },
                     modifier = Modifier
@@ -542,50 +539,58 @@ fun DocumentCaptureScreen(
                         .clip(RoundedCornerShape(ScaleUtil.scaleWidth(8.dp)))
                 )
 
-                // Frozen frame + processing overlay (covers live preview visually)
-                if (isProcessing && frozenBitmap != null) {
-                    Image(
-                        bitmap = frozenBitmap!!.asImageBitmap(),
-                        contentDescription = "Processing...",
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .clip(RoundedCornerShape(ScaleUtil.scaleWidth(8.dp)))
-                    )
+                // Document frame area — maintains correct document aspect ratio
+                // centered within the larger camera preview
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .aspectRatio(327f / 191f)
+                ) {
+                    // Frozen frame + processing overlay (covers live preview visually)
+                    if (isProcessing && frozenBitmap != null) {
+                        Image(
+                            bitmap = frozenBitmap!!.asImageBitmap(),
+                            contentDescription = "Processing...",
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .clip(RoundedCornerShape(ScaleUtil.scaleWidth(8.dp)))
+                        )
 
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .background(
-                                Color.Black.copy(alpha = 0.5f),
-                                RoundedCornerShape(ScaleUtil.scaleWidth(8.dp))
-                            ),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Column(
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.Center
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .background(
+                                    Color.Black.copy(alpha = 0.5f),
+                                    RoundedCornerShape(ScaleUtil.scaleWidth(8.dp))
+                                ),
+                            contentAlignment = Alignment.Center
                         ) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(48.dp),
-                                color = Color.White,
-                                strokeWidth = 4.dp
-                            )
-                            Spacer(modifier = Modifier.height(16.dp))
-                            Text(
-                                text = processingStatus.ifEmpty { "Processing..." },
-                                color = Color.White,
-                                fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(16.dp).toSp() },
-                                fontWeight = FontWeight.W600
-                            )
+                            Column(
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.Center
+                            ) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(48.dp),
+                                    color = Color.White,
+                                    strokeWidth = 4.dp
+                                )
+                                Spacer(modifier = Modifier.height(16.dp))
+                                Text(
+                                    text = processingStatus.ifEmpty { "Processing..." },
+                                    color = Color.White,
+                                    fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(16.dp).toSp() },
+                                    fontWeight = FontWeight.W600
+                                )
+                            }
                         }
                     }
-                }
 
-                // Corner indicators + status badge overlay
-                DocumentDetectionOverlay(
-                    state = detectionState,
-                    modifier = Modifier.fillMaxSize()
-                )
+                    // Corner indicators + status badge overlay
+                    DocumentDetectionOverlay(
+                        state = detectionState,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
             }
 
             Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(16.dp)))
@@ -659,7 +664,7 @@ fun DocumentCaptureScreen(
                 )
             }
 
-            Spacer(modifier = Modifier.weight(1f))
+            Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(24.dp)))
 
             // Capture button with ML-driven green color
             Box(
