@@ -332,7 +332,18 @@ fun SelfieCaptureScreen(
                 }
 
                 started -> {
-                        MaterialTheme(colorScheme = LivenessColorScheme.default()) {
+                        // Custom branded color scheme: start from AWS defaults, override surface colors
+                        val brandedScheme = LivenessColorScheme.default().copy(
+                            background = Color(0xFF0F1724),       // App dark background
+                            surface = Color(0xFF1A2744),          // Elevated surface
+                            primary = Color(0xFF3B82F6),          // Brand blue
+                            onPrimary = Color.White,
+                            secondary = Color(0xFF10B981),        // Success green
+                            onBackground = Color.White,
+                            onSurface = Color.White,
+                            error = Color(0xFFEF4444)             // Error red
+                        )
+                        MaterialTheme(colorScheme = brandedScheme) {
                             FaceLivenessDetector(
                                 sessionId = awsSessionId,
                                 region = region,
