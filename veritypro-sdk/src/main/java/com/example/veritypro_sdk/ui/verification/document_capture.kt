@@ -217,16 +217,30 @@ fun DocumentCaptureScreen(
 
     // Real-time ML analysis - periodically capture and analyze frames
     // Depends on cameraReady to prevent starting before camera is initialized
-    LaunchedEffect(previewView, documentType, cameraReady) {
+    // NOTE: For back side, ML predict is SKIPPED entirely (matches iOS approach).
+    // YOLO models can't handle back sides: misclassify type, return "not_document".
+    // Back side only uses verify-burst (anti-spoof) at capture time.
+    LaunchedEffect(previewView, documentType, cameraReady, isBackSide) {
         // Wait for camera to be ready before starting ML analysis
         if (!cameraReady) {
             Log.d("DocumentCapture", "ML Live: Waiting for camera to be ready...")
             return@LaunchedEffect
         }
 
+        // BACK SIDE: Skip ML predict entirely — models can't classify back sides
+        // reliably. Enable capture immediately, rely on verify-burst at capture time.
+        if (isBackSide) {
+            Log.d("DocumentCapture", "ML Live: BACK SIDE — skipping predict, capture always enabled")
+            mlPassed = true    // Enable capture button
+            mlHint = ""        // No ML hints for back side
+            mlConfidence = 0f
+            distanceGuidance = null
+            return@LaunchedEffect
+        }
+
         val mlRepository = MLRepository()
         val docTypeExpected = MLDocumentType.fromSdkType(documentType ?: 1)
-        Log.d("DocumentCapture", "ML Live loop started: docType=$docTypeExpected, isBackSide=$isBackSide, cameraReady=$cameraReady")
+        Log.d("DocumentCapture", "ML Live loop started: docType=$docTypeExpected, cameraReady=$cameraReady")
 
         // Additional warm-up delay to ensure camera stream is stable
         delay(500)
@@ -234,16 +248,17 @@ fun DocumentCaptureScreen(
         while (isActive) {
             delay(1000) // Analyze every 1 second (faster feedback)
 
-            // Recalculate side based on current state
-            // For back side: don't send sideExpected — ML models can't reliably
-            // distinguish front vs back, causing false "side mismatch" failures.
-            // Matches iOS approach: back side uses lenient validation.
-            val isCurrentlyBackSide = capturedFiles.isNotEmpty()
-            val currentSideExpected = if (isCurrentlyBackSide) null else "FRONT"
-
             if (previewPath != null) {
                 Log.d("DocumentCapture", "ML Live: Skipping - in preview mode")
                 continue
+            }
+
+            // If user moved to back side while loop is running, stop
+            if (capturedFiles.isNotEmpty()) {
+                Log.d("DocumentCapture", "ML Live: Now on back side, stopping predict loop")
+                mlPassed = true
+                mlHint = ""
+                break
             }
 
             try {
@@ -262,7 +277,7 @@ fun DocumentCaptureScreen(
                                 sessionId = "android-live-${System.currentTimeMillis()}",
                                 bitmap = bitmap,
                                 docTypeExpected = docTypeExpected,
-                                sideExpected = currentSideExpected
+                                sideExpected = "FRONT"
                             )
                         } finally {
                             bitmap.recycle() // Free native memory immediately
