@@ -235,7 +235,11 @@ fun DocumentCaptureScreen(
             delay(1000) // Analyze every 1 second (faster feedback)
 
             // Recalculate side based on current state
-            val currentSideExpected = if (capturedFiles.isNotEmpty()) "BACK" else "FRONT"
+            // For back side: don't send sideExpected — ML models can't reliably
+            // distinguish front vs back, causing false "side mismatch" failures.
+            // Matches iOS approach: back side uses lenient validation.
+            val isCurrentlyBackSide = capturedFiles.isNotEmpty()
+            val currentSideExpected = if (isCurrentlyBackSide) null else "FRONT"
 
             if (previewPath != null) {
                 Log.d("DocumentCapture", "ML Live: Skipping - in preview mode")
@@ -675,8 +679,8 @@ fun DocumentCaptureScreen(
                         color = buttonBorderColor,
                         shape = CircleShape
                     )
-                    .background(if (isProcessing) Color.Gray else if (!mlPassed) Color.Gray.copy(alpha = 0.5f) else buttonInnerColor, CircleShape)
-                    .clickable(enabled = !isProcessing && mlPassed) {
+                    .background(if (isProcessing) Color.Gray else if (!mlPassed && !isBackSide) Color.Gray.copy(alpha = 0.5f) else buttonInnerColor, CircleShape)
+                    .clickable(enabled = !isProcessing && (mlPassed || isBackSide)) {
                         // Haptic feedback on capture tap (matches iOS native button feel)
                         view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
 
