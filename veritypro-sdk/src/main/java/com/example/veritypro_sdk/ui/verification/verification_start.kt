@@ -40,8 +40,10 @@ import com.example.veritypro_sdk.services.Resource
 import com.example.veritypro_sdk.services.SessionData
 import com.example.veritypro_sdk.services.VerificationRequestMultipart
 import com.example.veritypro_sdk.services.toMultipartBodyPart
+import com.example.veritypro_sdk.utils.CaptureRuntimeData
 import com.example.veritypro_sdk.utils.DeviceUtils
 import com.example.veritypro_sdk.utils.ErrorScreen
+import com.example.veritypro_sdk.utils.SecurityAssessmentCollector
 import com.example.veritypro_sdk.utils.VerityOption
 import java.io.File
 import android.Manifest
@@ -54,6 +56,10 @@ import com.example.veritypro_sdk.ui.verification.flow.ProcessExplainerScreen
 import com.example.veritypro_sdk.ui.verification.flow.ThankYouScreen
 import com.example.veritypro_sdk.services.MLRepository
 import kotlinx.coroutines.launch
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import java.util.TimeZone
 
 @Composable
 fun VerificationScreen(
@@ -84,6 +90,10 @@ fun VerificationScreen(
 
     var locationText: String? by remember { mutableStateOf("") }
     var ipAddress: String? by remember { mutableStateOf("") }
+    var locationLatitude: Double? by remember { mutableStateOf(null) }
+    var locationLongitude: Double? by remember { mutableStateOf(null) }
+    var locationAccuracy: Float? by remember { mutableStateOf(null) }
+    var locationTimestamp: String? by remember { mutableStateOf(null) }
     var documentFrontPage: File? by remember { mutableStateOf(null) }
     var documentBackPage: File? by remember { mutableStateOf(null) }
     var sessionId: String? by remember { mutableStateOf(null) }
@@ -248,6 +258,10 @@ fun VerificationScreen(
             ipAddress = locationHelper.getLocalIpAddress()
 
             if (location != null) {
+                locationLatitude = location.latitude
+                locationLongitude = location.longitude
+                locationAccuracy = location.accuracy
+                locationTimestamp = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).apply { timeZone = TimeZone.getTimeZone("UTC") }.format(Date(location.time))
                 locationText =
                     locationHelper.reverseGeocode(context, location.latitude, location.longitude)
                         ?: "Lat: ${location.latitude}, Lng: ${location.longitude}"
@@ -331,10 +345,25 @@ fun VerificationScreen(
                                         onBack = { onCancel() }
                                     )
                                 } else {
-                                    LoadingScreen(
-                                        text = "Checking service availability...",
-                                        poweredByText = "Powered by VERITYPRO"
-                                    )
+                                    Box(modifier = Modifier.fillMaxSize()) {
+                                        LoadingScreen(
+                                            text = "Checking service availability...",
+                                            poweredByText = "Powered by VERITYPRO"
+                                        )
+                                        // Close button overlay so user can exit during health check
+                                        IconButton(
+                                            onClick = { onCancel() },
+                                            modifier = Modifier
+                                                .align(Alignment.TopStart)
+                                                .padding(start = 16.dp, top = 16.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = Icons.Default.Close,
+                                                contentDescription = "Close",
+                                                tint = MaterialTheme.colorScheme.onBackground
+                                            )
+                                        }
+                                    }
                                 }
                             }
 
@@ -460,7 +489,14 @@ fun VerificationScreen(
 
                                                             if (hasDocuments && hasValidDocType) {
                                                                 // BIOMETRIC / COMBINED mode: submit documents + liveness together
-                                                                val securityJson = SecurityAssessmentCollector.collectJson(context)
+                                                                val securityJson = SecurityAssessmentCollector.collectJson(context, CaptureRuntimeData(
+                                                                    latitude = locationLatitude,
+                                                                    longitude = locationLongitude,
+                                                                    locationAccuracy = locationAccuracy,
+                                                                    locationString = locationText,
+                                                                    locationTimestamp = locationTimestamp,
+                                                                    locationSource = if (locationLatitude != null) "gps" else "none"
+                                                                ))
                                                                 viewModel.updateKyc(
                                                                     VerificationRequestMultipart(
                                                                         SessionId = sessionId ?: "",
@@ -586,7 +622,14 @@ fun VerificationScreen(
                             onRefresh = {
                                 val hasValidDocType = selectedDocumentType != null && selectedDocumentType!! > 0
                                 if (stage == VerificationStage.RESULT && sessionId != null && documentFrontPage != null && hasValidDocType) {
-                                    val securityJson = SecurityAssessmentCollector.collectJson(context)
+                                    val securityJson = SecurityAssessmentCollector.collectJson(context, CaptureRuntimeData(
+                                        latitude = locationLatitude,
+                                        longitude = locationLongitude,
+                                        locationAccuracy = locationAccuracy,
+                                        locationString = locationText,
+                                        locationTimestamp = locationTimestamp,
+                                        locationSource = if (locationLatitude != null) "gps" else "none"
+                                    ))
                                     viewModel.updateKyc(
                                         VerificationRequestMultipart(
                                             SessionId = sessionId!!,
