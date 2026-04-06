@@ -20,6 +20,56 @@ import java.util.UUID
 class ApiRepository {
 
     /**
+     * Parse HTTP error response into a user-friendly message.
+     * Handles empty bodies (common with 401 from ASP.NET Core [Authorize] middleware),
+     * structured JSON errors, and ASP.NET validation error format.
+     */
+    private fun parseHttpError(statusCode: Int, errorBody: String?): String {
+        // 401/403 with empty body — auth middleware rejected before reaching controller
+        if (errorBody.isNullOrBlank()) {
+            return when (statusCode) {
+                401 -> "Authentication failed. Please verify your API key is correct and active."
+                403 -> "Access denied. Your API key does not have permission for this operation."
+                else -> "HTTP $statusCode error"
+            }
+        }
+
+        // Try standard { "Error": { "message": "..." } } format
+        try {
+            val json = JSONObject(errorBody)
+            val errorObj = json.optJSONObject("Error")
+            if (errorObj != null) {
+                val msg = errorObj.optString("message", "")
+                if (msg.isNotEmpty()) return msg
+            }
+            // Try ASP.NET validation format: { "title": "...", "errors": { "Field": ["msg"] } }
+            val errorsObj = json.optJSONObject("errors")
+            if (errorsObj != null) {
+                val messages = mutableListOf<String>()
+                val keys = errorsObj.keys()
+                while (keys.hasNext()) {
+                    val key = keys.next()
+                    val arr = errorsObj.optJSONArray(key)
+                    if (arr != null) {
+                        for (i in 0 until arr.length()) {
+                            messages.add("$key: ${arr.getString(i)}")
+                        }
+                    }
+                }
+                if (messages.isNotEmpty()) return messages.joinToString("; ")
+            }
+        } catch (_: Exception) {
+            // Not valid JSON — fall through to default
+        }
+
+        return when (statusCode) {
+            401 -> "Authentication failed. Please verify your API key is correct and active."
+            403 -> "Access denied. Your API key does not have permission for this operation."
+            else -> "HTTP $statusCode error"
+        }
+    }
+
+    /**
      * Parse structured error from EDD backend auth handler.
      * Expected JSON: {"error_code": "edd_not_provisioned"|"integration_inactive", "message": "..."}
      */
@@ -66,19 +116,8 @@ class ApiRepository {
             Resource.Error("No internet connection. Please check your network.")
         } catch (e: HttpException) {
             val errorBody = e.response()?.errorBody()?.string()
-            var errorMessage = "HTTP ${e.code()} Error: Unknown error"
-            if (errorBody != null) {
-                try {
-                    val json = JSONObject(errorBody)
-                    val errorObj = json.optJSONObject("Error")
-                    if (errorObj != null) {
-                        errorMessage = errorObj.optString("message", errorMessage)
-                    }
-                } catch (parseException: Exception) {
-                    Log.e("Verity", "Failed to parse error body: ${parseException.message}")
-                }
-                Log.e("Verity", "HTTP ${e.code()} Error: $errorBody")
-            }
+            val errorMessage = parseHttpError(e.code(), errorBody)
+            Log.e("Verity", "createKyc HTTP ${e.code()}: $errorMessage")
             Resource.Error(errorMessage)
         } catch (e: CancellationException) {
             throw e
@@ -135,39 +174,8 @@ class ApiRepository {
             }
         } catch (e: HttpException) {
             val errorBody = e.response()?.errorBody()?.string()
-            var errorMessage = "HTTP ${e.code()} Error: Unknown error"
-            if (errorBody != null) {
-                try {
-                    val json = JSONObject(errorBody)
-                    // Handle standard { "Error": { "message": "..." } } format
-                    val errorObj = json.optJSONObject("Error")
-                    if (errorObj != null) {
-                        errorMessage = errorObj.optString("message", errorMessage)
-                    }
-                    // Handle ASP.NET validation format:
-                    // { "title": "...", "status": 400, "errors": { "Field": ["msg"] } }
-                    val errorsObj = json.optJSONObject("errors")
-                    if (errorsObj != null) {
-                        val messages = mutableListOf<String>()
-                        val keys = errorsObj.keys()
-                        while (keys.hasNext()) {
-                            val key = keys.next()
-                            val arr = errorsObj.optJSONArray(key)
-                            if (arr != null) {
-                                for (i in 0 until arr.length()) {
-                                    messages.add("$key: ${arr.getString(i)}")
-                                }
-                            }
-                        }
-                        if (messages.isNotEmpty()) {
-                            errorMessage = messages.joinToString("; ")
-                        }
-                    }
-                } catch (parseException: Exception) {
-                    Log.e("Verity", "Failed to parse error body: ${parseException.message}")
-                }
-                Log.e("Verity", "HTTP ${e.code()} Error: $errorBody")
-            }
+            val errorMessage = parseHttpError(e.code(), errorBody)
+            Log.e("Verity", "updateKyc HTTP ${e.code()}: $errorMessage")
             Resource.Error(errorMessage)
         } catch (e: CancellationException) {
             throw e
@@ -226,19 +234,8 @@ class ApiRepository {
             Resource.Error("No internet connection. Please check your network.")
         } catch (e: HttpException) {
             val errorBody = e.response()?.errorBody()?.string()
-            var errorMessage = "HTTP ${e.code()} Error: Unknown error"
-            if (errorBody != null) {
-                try {
-                    val json = JSONObject(errorBody)
-                    val errorObj = json.optJSONObject("Error")
-                    if (errorObj != null) {
-                        errorMessage = errorObj.optString("message", errorMessage)
-                    }
-                } catch (parseException: Exception) {
-                    Log.e("Verity", "Failed to parse error body: ${parseException.message}")
-                }
-                Log.e("Verity", "HTTP ${e.code()} Error: $errorBody")
-            }
+            val errorMessage = parseHttpError(e.code(), errorBody)
+            Log.e("Verity", "getCountryDocuments HTTP ${e.code()}: $errorMessage")
             Resource.Error(errorMessage)
         } catch (e: CancellationException) {
             throw e
