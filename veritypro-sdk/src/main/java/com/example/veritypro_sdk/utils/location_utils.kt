@@ -65,6 +65,17 @@ class LocationHelper(private val context: Context) {
         }
     }
 
+    /**
+     * Returns the device's local/private network interface IP address (e.g. 192.168.x.x, 10.x.x.x).
+     *
+     * NOTE: This does NOT return the public/external IP address visible to remote servers.
+     * To obtain the public IP, a call to an external service (e.g. https://api.ipify.org)
+     * would be required. The server-side can also capture the public IP from the incoming
+     * request headers, which is the recommended approach.
+     *
+     * The returned value is sent as the "IpAddress" multipart field to the backend,
+     * which represents the device's local network interface address.
+     */
     fun getLocalIpAddress(): String? {
         return try {
             val interfaces = NetworkInterface.getNetworkInterfaces()
@@ -84,8 +95,14 @@ class LocationHelper(private val context: Context) {
     }
 
     fun reverseGeocode(context: Context, lat: Double, lon: Double): String? {
+        return reverseGeocodeWithCountry(context, lat, lon)?.first
+    }
+
+    /** Returns (locationString, countryCode) pair, or null if geocoding fails. */
+    fun reverseGeocodeWithCountry(context: Context, lat: Double, lon: Double): Pair<String, String?>? {
         return try {
             val geocoder = Geocoder(context, Locale.getDefault())
+            @Suppress("DEPRECATION")
             val results = geocoder.getFromLocation(lat, lon, 1)
             if (!results.isNullOrEmpty()) {
                 val a = results[0]
@@ -95,7 +112,7 @@ class LocationHelper(private val context: Context) {
                     a.adminArea,
                     a.countryName
                 ).joinToString(", ")
-                if (parts.isBlank()) null else parts
+                if (parts.isBlank()) null else Pair(parts, a.countryCode?.uppercase())
             } else null
         } catch (e: IOException) {
             null

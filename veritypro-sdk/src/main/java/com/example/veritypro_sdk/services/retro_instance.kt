@@ -17,19 +17,21 @@ private fun createSafeLoggingInterceptor(level: HttpLoggingInterceptor.Level): H
         redactHeader("Authorization")
         redactHeader("x-session-token")
         redactHeader("Cookie")
+        redactHeader("X-Verity-Signature")
     }
 }
 
 object RetrofitInstance {
     private const val BASE_URL = "https://api.skylinefare.com"
 
-    // Certificate pinning for api.skylinefare.com (leaf + intermediate CA)
+    // Certificate pinning for api.skylinefare.com (leaf + ISRG Root X1 backup)
     private val certificatePinner = CertificatePinner.Builder()
         .add("api.skylinefare.com", "sha256/b2TlY6Y77KRBmvmbQF7jAbNKQErofrz4KXnXDLn2FeI=")
-        .add("api.skylinefare.com", "sha256/y7xVm0TVJNahMr2sZydE2jQH8SquXV9yLF9seROHHHU=")
+        .add("api.skylinefare.com", "sha256/C5+lpZ7tcVwmwQIMcRtPbsQtWLABXhQzejna0wHFr8M=") // ISRG Root X1
         .build()
 
     val okHttpClient = OkHttpClient.Builder()
+        .addInterceptor(RequestSigningInterceptor())
         .certificatePinner(certificatePinner)
         .connectTimeout(60, TimeUnit.SECONDS)
         .readTimeout(60, TimeUnit.SECONDS)
@@ -86,11 +88,12 @@ object MLRetrofitInstance {
     // Certificate pinning (same pins as main RetrofitInstance)
     private val certificatePinner = CertificatePinner.Builder()
         .add("api.skylinefare.com", "sha256/b2TlY6Y77KRBmvmbQF7jAbNKQErofrz4KXnXDLn2FeI=")
-        .add("api.skylinefare.com", "sha256/y7xVm0TVJNahMr2sZydE2jQH8SquXV9yLF9seROHHHU=")
+        .add("api.skylinefare.com", "sha256/C5+lpZ7tcVwmwQIMcRtPbsQtWLABXhQzejna0wHFr8M=") // ISRG Root X1
         .build()
 
     private fun buildOkHttpClient(): OkHttpClient {
         val builder = OkHttpClient.Builder()
+            .addInterceptor(RequestSigningInterceptor())
             .connectTimeout(15, TimeUnit.SECONDS)
             .readTimeout(30, TimeUnit.SECONDS)   // verify-burst needs more read time
             .writeTimeout(30, TimeUnit.SECONDS)   // burst upload can be large
@@ -105,7 +108,9 @@ object MLRetrofitInstance {
         return builder.build()
     }
 
+    @Volatile
     private var retrofit: Retrofit? = null
+    @Volatile
     private var mlApiService: MLApiService? = null
 
     /**
@@ -124,26 +129,34 @@ object MLRetrofitInstance {
                 "ML backend URL must start with one of: ${ALLOWED_URL_PREFIXES.joinToString()}"
             )
         }
-        mlBaseUrl = trimmed
-        retrofit = null
-        mlApiService = null
+        synchronized(this) {
+            mlBaseUrl = trimmed
+            retrofit = null
+            mlApiService = null
+        }
         Log.d(TAG, "ML backend configured: $trimmed")
     }
 
     /**
-     * Get the ML API service instance
+     * Get the ML API service instance (thread-safe double-checked locking).
      */
     val api: MLApiService
         get() {
-            if (mlApiService == null) {
-                retrofit = Retrofit.Builder()
+            // Fast path: already initialized
+            mlApiService?.let { return it }
+            // Slow path: synchronize and double-check
+            synchronized(this) {
+                mlApiService?.let { return it }
+                val newRetrofit = Retrofit.Builder()
                     .baseUrl(mlBaseUrl)
                     .addConverterFactory(GsonConverterFactory.create())
                     .client(buildOkHttpClient())
                     .build()
-                mlApiService = retrofit!!.create(MLApiService::class.java)
+                retrofit = newRetrofit
+                val newService = newRetrofit.create(MLApiService::class.java)
+                mlApiService = newService
+                return newService
             }
-            return mlApiService!!
         }
 
     /**

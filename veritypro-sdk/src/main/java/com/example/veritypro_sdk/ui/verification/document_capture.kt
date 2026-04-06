@@ -2,6 +2,7 @@ package com.example.veritypro_sdk.ui.verification
 
 import android.Manifest
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.util.Log
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -24,6 +25,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import java.io.File
 import androidx.compose.foundation.Image
@@ -51,7 +53,9 @@ import com.example.veritypro_sdk.utils.CameraCapabilityReport
 import com.example.veritypro_sdk.utils.CameraUtils
 import com.example.veritypro_sdk.utils.DistanceGuidance
 import com.example.veritypro_sdk.utils.DistanceState
+import com.example.veritypro_sdk.utils.DocumentAntiSpoofChecker
 import com.example.veritypro_sdk.utils.FocusMode
+import com.example.veritypro_sdk.utils.SecurityAssessmentCollector
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -94,10 +98,14 @@ fun DocumentCaptureScreen(
     // Auto-dismiss error job
     var errorDismissJob by remember { mutableStateOf<Job?>(null) }
 
+    // Screen recording detection (iOS parity)
+    var screenRecordingDetected by remember { mutableStateOf(false) }
+
     // Smart camera state
     var capabilityReport by remember { mutableStateOf<CameraCapabilityReport?>(null) }
     var torchEnabled by remember { mutableStateOf(false) }
     var distanceGuidance by remember { mutableStateOf<DistanceGuidance?>(null) }
+    var cameraErrorMessage by remember { mutableStateOf<String?>(null) }
 
     val previewView = remember {
         PreviewView(context).apply {
@@ -191,14 +199,38 @@ fun DocumentCaptureScreen(
             onCameraReady = { report ->
                 capabilityReport = report
                 cameraReady = true
+                cameraErrorMessage = null
                 Log.d("DocumentCapture", "Smart camera ready - ${report.focusMode}, zoom: ${report.recommendedZoom}x")
+            },
+            onCameraError = { errorMsg ->
+                cameraErrorMessage = errorMsg
+                cameraReady = false
+                Log.e("DocumentCapture", "Camera error: $errorMsg")
             }
         )
         // Fallback if callback doesn't fire
         delay(2000)
-        if (!cameraReady) {
+        if (!cameraReady && cameraErrorMessage == null) {
             cameraReady = true
             Log.d("DocumentCapture", "Camera ready (fallback timeout)")
+        }
+    }
+
+    // Screen recording detection: periodically check while camera is active (iOS parity).
+    // FLAG_SECURE prevents actual capture, but we also warn the user so they know.
+    LaunchedEffect(cameraReady) {
+        if (!cameraReady) return@LaunchedEffect
+        while (isActive) {
+            val recording = SecurityAssessmentCollector.isScreenBeingRecorded(context)
+            if (recording != screenRecordingDetected) {
+                screenRecordingDetected = recording
+                if (recording) {
+                    Log.w("DocumentCapture", "Screen recording detected during verification")
+                } else {
+                    Log.d("DocumentCapture", "Screen recording stopped")
+                }
+            }
+            delay(3000) // Check every 3 seconds
         }
     }
 
@@ -482,13 +514,76 @@ fun DocumentCaptureScreen(
                     .aspectRatio(327f / 191f)
                     .padding(horizontal = ScaleUtil.scaleWidth(24.dp))
             ) {
-                // Camera preview
-                AndroidView(
-                    factory = { previewView },
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .clip(RoundedCornerShape(ScaleUtil.scaleWidth(8.dp)))
-                )
+                // Camera error overlay
+                if (cameraErrorMessage != null) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(
+                                Color.Black.copy(alpha = 0.85f),
+                                RoundedCornerShape(ScaleUtil.scaleWidth(8.dp))
+                            ),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.Center,
+                            modifier = Modifier.padding(24.dp)
+                        ) {
+                            Text(
+                                text = "Camera Error",
+                                color = Color(0xFFEF4444),
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 18.sp,
+                                textAlign = TextAlign.Center
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(
+                                text = cameraErrorMessage ?: "",
+                                color = Color.White.copy(alpha = 0.7f),
+                                fontSize = 14.sp,
+                                textAlign = TextAlign.Center
+                            )
+                            Spacer(modifier = Modifier.height(16.dp))
+                            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                                Button(
+                                    onClick = {
+                                        cameraErrorMessage = null
+                                        cameraReady = false
+                                        // Re-bind camera
+                                        CameraUtils.bindSmartCamera(
+                                            context = context,
+                                            lifecycleOwner = lifecycleOwner,
+                                            previewView = previewView,
+                                            imageCapture = imageCapture,
+                                            useDetection = false,
+                                            onFacesDetected = null,
+                                            onCameraReady = { report ->
+                                                capabilityReport = report
+                                                cameraReady = true
+                                                cameraErrorMessage = null
+                                            },
+                                            onCameraError = { errorMsg ->
+                                                cameraErrorMessage = errorMsg
+                                                cameraReady = false
+                                            }
+                                        )
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF3B82F6))
+                                ) { Text("Retry") }
+                                OutlinedButton(onClick = onBack) { Text("Cancel") }
+                            }
+                        }
+                    }
+                } else {
+                    // Camera preview
+                    AndroidView(
+                        factory = { previewView },
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .clip(RoundedCornerShape(ScaleUtil.scaleWidth(8.dp)))
+                    )
+                }
 
                 // Frozen frame + processing overlay
                 if (isProcessing && frozenBitmap != null) {
@@ -629,6 +724,8 @@ fun DocumentCaptureScreen(
                         verificationPassed = false
 
                         // IMMEDIATELY freeze the camera frame on tap (iOS-matching behavior)
+                        // Recycle the previous bitmap to prevent native memory leaks on rapid re-capture
+                        frozenBitmap?.recycle()
                         frozenBitmap = previewView.bitmap
                         isProcessing = true
                         isCapturing = false
@@ -645,7 +742,7 @@ fun DocumentCaptureScreen(
                                         try {
                                             val file = File(context.cacheDir, "burst_frame_${System.currentTimeMillis()}_$index.jpg")
                                             file.outputStream().use { out ->
-                                                bitmap.compress(Bitmap.CompressFormat.JPEG, 90, out)
+                                                bitmap.compress(Bitmap.CompressFormat.JPEG, 85, out)
                                             }
                                             file
                                         } catch (e: Exception) {
@@ -790,6 +887,31 @@ fun DocumentCaptureScreen(
             }
         }
 
+        // Screen recording warning banner (iOS parity)
+        if (screenRecordingDetected) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .statusBarsPadding()
+                    .padding(top = 52.dp)
+                    .padding(horizontal = ScaleUtil.scaleWidth(24.dp))
+                    .background(
+                        Color(0xFFFF9800).copy(alpha = 0.95f),
+                        RoundedCornerShape(8.dp)
+                    )
+                    .padding(horizontal = 12.dp, vertical = 8.dp)
+            ) {
+                Text(
+                    text = "Screen recording detected. Please stop recording before capturing your document.",
+                    color = Color.White,
+                    fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(12.dp).toSp() },
+                    fontWeight = FontWeight.W500,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        }
+
         // Floating error overlay — positioned above capture button, auto-dismisses
         if (verificationError.isNotEmpty()) {
             Box(
@@ -820,7 +942,12 @@ fun DocumentCaptureScreen(
  * Shared verification logic: sends burst frames to ML backend and invokes
  * the appropriate callback based on the result.
  *
- * Runs on a background dispatcher — safe to call from a coroutine.
+ * Additionally runs a local [DocumentAntiSpoofChecker] analysis (moire pattern +
+ * texture variance) on the first frame for iOS-parity anti-spoof coverage.
+ * The local check is a *soft* gate: it warns the user but does not hard-block
+ * when the ML backend has already approved the document.
+ *
+ * Runs on a background dispatcher -- safe to call from a coroutine.
  */
 private suspend fun verifyAndHandleResult(
     frames: List<File>,
@@ -835,6 +962,31 @@ private suspend fun verifyAndHandleResult(
     val docTypeExpected = MLDocumentType.fromSdkType(documentType ?: 1)
 
     Log.d("DocumentCapture", "Calling verify-burst: ${frames.size} frames, docType=$docTypeExpected, side=$sideExpected")
+
+    // Run local anti-spoof analysis on the first frame (non-blocking, lightweight)
+    val localAntiSpoofResult = withContext(Dispatchers.Default) {
+        try {
+            val firstFrame = frames.firstOrNull()
+            if (firstFrame != null && firstFrame.exists()) {
+                val bmp = BitmapFactory.decodeFile(firstFrame.path)
+                if (bmp != null) {
+                    try {
+                        DocumentAntiSpoofChecker.analyse(bmp)
+                    } finally {
+                        bmp.recycle()
+                    }
+                } else null
+            } else null
+        } catch (e: Exception) {
+            Log.w("DocumentCapture", "Local anti-spoof analysis failed: ${e.message}")
+            null
+        }
+    }
+
+    localAntiSpoofResult?.let {
+        Log.d("DocumentCapture", "Local anti-spoof: physical=${it.isPhysicalDocument}, " +
+                "moire=${it.moireScore}, texture=${it.textureScore}, conf=${it.confidence}")
+    }
 
     val result = mlRepository.verifyBurst(
         sessionId = "android-antispoof-${System.currentTimeMillis()}",
@@ -852,6 +1004,12 @@ private suspend fun verifyAndHandleResult(
                 Log.d("DocumentCapture", "Verify-burst result: ${response.decision}, conf=${response.confidence}, hint=${response.hint}")
 
                 if (passed) {
+                    // ML backend approved. If local anti-spoof flagged an issue,
+                    // warn the user but still allow them to proceed (soft check).
+                    if (localAntiSpoofResult != null && !localAntiSpoofResult.isPhysicalDocument) {
+                        Log.w("DocumentCapture", "Local anti-spoof warning: ${localAntiSpoofResult.message} " +
+                                "(spoofType=${localAntiSpoofResult.spoofType}). ML backend passed -- proceeding with warning.")
+                    }
                     onPass(frames)
                 } else {
                     val error = sanitizeMLHint(response.hint).ifEmpty {
@@ -863,6 +1021,14 @@ private suspend fun verifyAndHandleResult(
             }
             is Resource.Error -> {
                 Log.e("DocumentCapture", "Verify-burst error: ${result.message}")
+                // ML backend unavailable -- fall back to local anti-spoof check
+                if (localAntiSpoofResult != null) {
+                    if (localAntiSpoofResult.isPhysicalDocument) {
+                        Log.d("DocumentCapture", "ML unavailable but local anti-spoof passed -- rejecting (require ML)")
+                    } else {
+                        Log.w("DocumentCapture", "ML unavailable AND local anti-spoof failed: ${localAntiSpoofResult.message}")
+                    }
+                }
                 BurstCaptureUtils.cleanupBurstFiles(frames)
                 onFail("Verification service unavailable. Please check connection and retry.")
             }

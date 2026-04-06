@@ -271,18 +271,33 @@ object MLDocumentSide {
 /**
  * Sanitize ML backend hint text to be human-readable.
  * Replaces raw API terms like DRIVERS_LICENSE, BACK, FRONT, ID_CARD etc.
+ *
+ * BUG-029 fix: Uses word-boundary regex (\b) instead of plain String.replace()
+ * to prevent greedy matching that corrupts hint messages. For example, plain
+ * replace("BACK", "back side") would also match inside "FEEDBACK" or "BACKGROUND",
+ * and replace("RETRY", "try again") would match inside "DONOTRETRY".
+ * Longer compound tokens (e.g. DRIVERS_LICENSE, COLLECT_BURST) are replaced first
+ * to prevent partial matches by shorter tokens.
  */
 fun sanitizeMLHint(hint: String): String {
     if (hint.isBlank()) return hint
-    return hint
-        .replace("DRIVERS_LICENSE", "Driver's License", ignoreCase = true)
-        .replace("DRIVER_LICENSE", "Driver's License", ignoreCase = true)
-        .replace("ID_CARD", "ID Card", ignoreCase = true)
-        .replace("PASSPORT", "Passport", ignoreCase = true)
-        .replace("FRONT", "front side", ignoreCase = true)
-        .replace("BACK", "back side", ignoreCase = true)
-        .replace("COLLECT_BURST", "capture", ignoreCase = true)
-        .replace("RETRY", "try again", ignoreCase = true)
+    // Ordered from longest/most-specific to shortest to prevent partial matches.
+    // Each pattern uses word boundaries (\b) to match whole tokens only.
+    val replacements = listOf(
+        Regex("\\bDRIVERS_LICENSE\\b", RegexOption.IGNORE_CASE) to "Driver's License",
+        Regex("\\bDRIVER_LICENSE\\b", RegexOption.IGNORE_CASE) to "Driver's License",
+        Regex("\\bCOLLECT_BURST\\b", RegexOption.IGNORE_CASE) to "capture",
+        Regex("\\bID_CARD\\b", RegexOption.IGNORE_CASE) to "ID Card",
+        Regex("\\bPASSPORT\\b", RegexOption.IGNORE_CASE) to "Passport",
+        Regex("\\bFRONT\\b", RegexOption.IGNORE_CASE) to "front side",
+        Regex("\\bBACK\\b", RegexOption.IGNORE_CASE) to "back side",
+        Regex("\\bRETRY\\b", RegexOption.IGNORE_CASE) to "try again"
+    )
+    var result = hint
+    for ((pattern, replacement) in replacements) {
+        result = pattern.replace(result, replacement)
+    }
+    return result
 }
 
 /**

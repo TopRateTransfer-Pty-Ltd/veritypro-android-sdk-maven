@@ -19,7 +19,26 @@ class MLRepository {
     companion object {
 
         private const val TAG = "MLRepository"
+
+        /**
+         * JPEG quality for final submission images (burst verify, file-based predict).
+         */
         private const val JPEG_QUALITY = 85
+
+        /**
+         * BUG-028 fix: Lower JPEG quality for real-time liveness/analysis frames
+         * sent every ~1 second. Reduces base64 payload size significantly while
+         * maintaining sufficient quality for ML document detection.
+         */
+        private const val JPEG_QUALITY_LIVE_FRAME = 65
+
+        /**
+         * BUG-028 fix: Maximum dimension (width or height) for live analysis frames.
+         * Full-resolution camera frames (e.g. 4032x3024) are wasteful for real-time
+         * ML prediction which works well at lower resolutions. Downscaling reduces
+         * base64 payload from ~3-5MB to ~100-200KB per frame.
+         */
+        private const val MAX_LIVE_FRAME_DIMENSION = 640
     }
 
     /**
@@ -71,7 +90,10 @@ class MLRepository {
     }
 
     /**
-     * Predict document from bitmap
+     * Predict document from bitmap (used for real-time live analysis).
+     *
+     * BUG-028 fix: Downscales bitmap and uses lower JPEG quality to reduce
+     * base64 payload size for frames sent every ~1 second during live capture.
      *
      * @param sessionId Client session ID
      * @param bitmap Bitmap image to analyze
@@ -86,7 +108,7 @@ class MLRepository {
         sideExpected: String? = null
     ): Resource<MLPredictResponse> {
         return try {
-            val base64Image = bitmapToBase64(bitmap)
+            val base64Image = bitmapToBase64ForLiveFrame(bitmap)
 
             val request = MLPredictRequest(
                 sessionId = sessionId,
@@ -306,12 +328,45 @@ class MLRepository {
     }
 
     /**
-     * Convert bitmap to base64 JPEG string
+     * Convert bitmap to base64 JPEG string (full quality, used for burst verify submissions).
      */
     private fun bitmapToBase64(bitmap: Bitmap): String {
         val outputStream = ByteArrayOutputStream()
         bitmap.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, outputStream)
         val bytes = outputStream.toByteArray()
         return Base64.encodeToString(bytes, Base64.NO_WRAP)
+    }
+
+    /**
+     * BUG-028 fix: Convert bitmap to base64 JPEG string with downscaling and lower quality.
+     * Used for real-time live analysis frames sent every ~1 second. Reduces bandwidth
+     * consumption from ~3-5MB to ~100-200KB per frame without impacting ML accuracy.
+     */
+    private fun bitmapToBase64ForLiveFrame(bitmap: Bitmap): String {
+        val scaledBitmap = downscaleBitmap(bitmap, MAX_LIVE_FRAME_DIMENSION)
+        val outputStream = ByteArrayOutputStream()
+        scaledBitmap.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY_LIVE_FRAME, outputStream)
+        // Recycle the scaled copy if we created a new one (don't recycle the original)
+        if (scaledBitmap !== bitmap) {
+            scaledBitmap.recycle()
+        }
+        val bytes = outputStream.toByteArray()
+        return Base64.encodeToString(bytes, Base64.NO_WRAP)
+    }
+
+    /**
+     * Downscale a bitmap so its longest dimension does not exceed [maxDimension].
+     * Returns the original bitmap if it is already within the limit.
+     */
+    private fun downscaleBitmap(bitmap: Bitmap, maxDimension: Int): Bitmap {
+        val width = bitmap.width
+        val height = bitmap.height
+        if (width <= maxDimension && height <= maxDimension) {
+            return bitmap
+        }
+        val scale = maxDimension.toFloat() / maxOf(width, height).toFloat()
+        val newWidth = (width * scale).toInt().coerceAtLeast(1)
+        val newHeight = (height * scale).toInt().coerceAtLeast(1)
+        return Bitmap.createScaledBitmap(bitmap, newWidth, newHeight, true)
     }
 }

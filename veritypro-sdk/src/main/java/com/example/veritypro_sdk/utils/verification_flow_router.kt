@@ -51,7 +51,8 @@ class VerificationFlowRouter private constructor(
 
     /** Returns the first content stage after INTRO (the first module-specific stage). */
     fun firstContentStage(): VerificationStage =
-        orderedStages.getOrElse(2) { VerificationStage.RESULT }
+        orderedStages.firstOrNull { it != VerificationStage.HEALTH_CHECK && it != VerificationStage.INTRO }
+            ?: VerificationStage.RESULT
 
     /** Returns all ordered stages for debugging / logging. */
     fun allStages(): List<VerificationStage> = orderedStages.toList()
@@ -130,6 +131,12 @@ class VerificationFlowRouter private constructor(
                 VerificationStage.EDD_DOCUMENT,
                 VerificationStage.THANK_YOU
             )
+            // SERVER_DRIVEN: minimal stage list — the server controls the flow.
+            // The SDK only shows INTRO, then delegates to the server for each step.
+            VerityMode.SERVER_DRIVEN -> listOf(
+                VerificationStage.INTRO,
+                VerificationStage.THANK_YOU
+            )
         }
 
         /** Derive the set of modules implied by a [VerityMode]. */
@@ -140,6 +147,12 @@ class VerificationFlowRouter private constructor(
             VerityMode.ADDRESS -> setOf(VerificationModule.ADDRESS)
             VerityMode.EDD -> setOf(VerificationModule.EDD)
             VerityMode.COMBINED -> setOf(
+                VerificationModule.DOCUMENT,
+                VerificationModule.BIOMETRIC,
+                VerificationModule.ADDRESS,
+                VerificationModule.EDD
+            )
+            VerityMode.SERVER_DRIVEN -> setOf(
                 VerificationModule.DOCUMENT,
                 VerificationModule.BIOMETRIC,
                 VerificationModule.ADDRESS,

@@ -298,8 +298,10 @@ fun SelfieCaptureScreen(
                 }
 
                 error != null -> {
-                    // Reset processing state when showing error
-                    isProcessingServerResult = false
+                    // Reset processing state via LaunchedEffect to avoid side effects during composition
+                    LaunchedEffect(error) {
+                        isProcessingServerResult = false
+                    }
                     val isCameraError = error?.message?.contains("camera", ignoreCase = true) == true
                     val displayMessage = if (isCameraError) {
                         "Camera could not start. Please ensure no other apps are using the camera, then try again."

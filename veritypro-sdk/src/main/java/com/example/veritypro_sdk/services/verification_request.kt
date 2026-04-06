@@ -16,6 +16,11 @@ data class VerificationRequestMultipart(
     val DocumentBack: MultipartBody.Part? = null,
     val PlatformUsed: String,
     val DeviceAndBrowser: String,
+    /**
+     * Device's local network interface IP address (e.g. 192.168.x.x).
+     * This is NOT the public IP; the server should capture the public IP from request headers.
+     * Field name kept as "IpAddress" for backend API compatibility.
+     */
     val IpAddress: String,
     val IpLocation: String,
     val SecurityAssessmentJson: String? = null

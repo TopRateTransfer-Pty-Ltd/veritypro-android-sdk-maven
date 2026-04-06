@@ -15,6 +15,7 @@ import kotlinx.coroutines.CancellationException
 import retrofit2.HttpException
 import java.io.File
 import java.io.IOException
+import java.util.UUID
 
 class ApiRepository {
 
@@ -449,16 +450,28 @@ class ApiRepository {
         context: android.content.Context? = null
     ): Resource<AddressVerificationResponse> {
         return try {
+            // Detect mime type based on file extension — support PDFs alongside images
+            val mimeType = when (file.extension.lowercase()) {
+                "pdf" -> "application/pdf"
+                "png" -> "image/png"
+                "jpg", "jpeg" -> "image/jpeg"
+                "heic", "heif" -> "image/heic"
+                else -> "image/*"
+            }
+
             val filePart = MultipartBody.Part.createFormData(
                 "AddressDocument",
                 file.name,
-                file.asRequestBody("image/*".toMediaTypeOrNull())
+                file.asRequestBody(mimeType.toMediaTypeOrNull())
             )
 
             // Collect security assessment JSON
             val securityJson = context?.let {
                 com.example.veritypro_sdk.utils.SecurityAssessmentCollector.collectJson(it)
             } ?: ""
+
+            // Generate idempotency key to prevent duplicate submissions on retries
+            val idempotencyKey = UUID.randomUUID().toString()
 
             val response = RetrofitInstance.api.updateAddressVerification(
                 sessionId = sessionId.toRequestBody(),
@@ -469,6 +482,7 @@ class ApiRepository {
                 ipAddress = ipAddress.toRequestBody(),
                 ipLocation = ipLocation.toRequestBody(),
                 securityAssessmentJson = if (securityJson.isNotEmpty()) securityJson.toRequestBody() else null,
+                idempotencyKey = idempotencyKey.toRequestBody(),
                 apiKey = apiKey
             )
 
@@ -516,10 +530,18 @@ class ApiRepository {
         context: android.content.Context? = null
     ): Resource<EddCaseResponse> {
         return try {
+            // Detect MIME type based on file extension — support PDFs alongside images
+            val mimeType = when (file.extension.lowercase()) {
+                "pdf" -> "application/pdf"
+                "png" -> "image/png"
+                "jpg", "jpeg" -> "image/jpeg"
+                "heic", "heif" -> "image/heic"
+                else -> "image/*"
+            }
             val filePart = MultipartBody.Part.createFormData(
                 "file",
                 file.name,
-                file.asRequestBody("image/*".toMediaTypeOrNull())
+                file.asRequestBody(mimeType.toMediaTypeOrNull())
             )
 
             // Collect device/security metadata
@@ -534,11 +556,15 @@ class ApiRepository {
                 com.example.veritypro_sdk.utils.LocationHelper(it).getLocalIpAddress() ?: ""
             } ?: ""
 
+            // Generate IdempotencyKey to prevent duplicate case creation on network retries
+            val idempotencyKey = java.util.UUID.randomUUID().toString()
+
             val response = RetrofitInstance.api.createEddCase(
                 subjectId = subjectId.toRequestBody(),
                 subjectName = subjectName.toRequestBody(),
                 documentType = documentType.toString().toRequestBody(),
                 file = filePart,
+                idempotencyKey = idempotencyKey.toRequestBody(),
                 platformUsed = platform.toRequestBody(),
                 deviceAndBrowser = deviceBrowser.toRequestBody(),
                 ipAddress = ipAddress.toRequestBody(),
@@ -798,6 +824,84 @@ class ApiRepository {
             }
         } catch (e: Exception) {
             Resource.Error("Failed to fetch EDD document URL: ${e.message}")
+        }
+    }
+
+    // ── v2 Server-Driven Session Methods ──
+
+    suspend fun createV2Session(options: VerityOption): Resource<SessionStateResponse> {
+        return try {
+            val request = CreateSessionRequest(
+                vendorData = options.vendorData,
+                firstName = options.firstName,
+                lastName = options.lastName,
+                dateOfBirth = options.dateOfBirth,
+                iso2Code = options.isO2Code,
+                steps = options.requiredModules ?: listOf("DOCUMENT", "BIOMETRIC"),
+                previousSessionId = options.previousEngineSessionId
+            )
+            val response = RetrofitInstance.api.createV2Session(request, options.apiKey)
+            if (response.data != null) {
+                Resource.Success(response.data)
+            } else {
+                Resource.Error(response.statusMessage ?: response.error?.message ?: "Failed to create session")
+            }
+        } catch (e: IOException) {
+            Resource.Error("No internet connection. Please check your network.")
+        } catch (e: retrofit2.HttpException) {
+            Resource.Error("Server error (${e.code()}): ${e.message()}")
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Resource.Error("Failed to create session: ${e.message}")
+        }
+    }
+
+    suspend fun getV2SessionState(sessionId: String, apiKey: String): Resource<SessionStateResponse> {
+        return try {
+            val response = RetrofitInstance.api.getV2SessionState(sessionId, apiKey)
+            if (response.data != null) {
+                Resource.Success(response.data)
+            } else {
+                Resource.Error(response.statusMessage ?: response.error?.message ?: "Failed to fetch session state")
+            }
+        } catch (e: IOException) {
+            Resource.Error("No internet connection. Please check your network.")
+        } catch (e: retrofit2.HttpException) {
+            Resource.Error("Server error (${e.code()}): ${e.message()}")
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Resource.Error("Failed to fetch session state: ${e.message}")
+        }
+    }
+
+    suspend fun completeV2Step(
+        sessionId: String,
+        stepName: String,
+        apiKey: String,
+        stepData: Map<String, Any?>? = null
+    ): Resource<SessionStateResponse> {
+        return try {
+            val body = StepCompletionRequest(data = stepData)
+            val response = RetrofitInstance.api.completeV2Step(sessionId, stepName, apiKey, body)
+            if (response.data != null) {
+                Resource.Success(response.data)
+            } else {
+                Resource.Error(response.statusMessage ?: response.error?.message ?: "Failed to complete step")
+            }
+        } catch (e: IOException) {
+            Resource.Error("No internet connection. Please check your network.")
+        } catch (e: retrofit2.HttpException) {
+            val errorMsg = when (e.code()) {
+                409 -> "Session was modified concurrently. Please retry."
+                else -> "Server error (${e.code()}): ${e.message()}"
+            }
+            Resource.Error(errorMsg)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Resource.Error("Failed to complete step: ${e.message}")
         }
     }
 

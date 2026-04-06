@@ -4,6 +4,7 @@ import android.content.Intent
 import android.os.Build
 import android.os.Bundle
 import android.util.Log
+import android.view.WindowManager
 import androidx.appcompat.app.AppCompatActivity
 import androidx.activity.compose.setContent
 import com.example.veritypro_sdk.ui.verification.VerificationScreen
@@ -11,6 +12,7 @@ import com.example.veritypro_sdk.utils.LivenessResult
 import com.example.veritypro_sdk.utils.VerityOption
 import com.amplifyframework.core.Amplify
 import com.amplifyframework.auth.cognito.AWSCognitoAuthPlugin
+import com.example.veritypro_sdk.services.VeritySigningConfig
 import com.example.veritypro_sdk.ui.theme.ThemeMode
 
 class VerityProSdkActivity : AppCompatActivity() {
@@ -25,6 +27,13 @@ class VerityProSdkActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        // Prevent screen recording/screenshots during verification to protect PII
+        // (identity documents, selfie images). Cleared automatically when activity finishes.
+        window.setFlags(
+            WindowManager.LayoutParams.FLAG_SECURE,
+            WindowManager.LayoutParams.FLAG_SECURE
+        )
+
         options = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             intent.getParcelableExtra("verity_options", VerityOption::class.java)
         } else {
@@ -38,6 +47,8 @@ class VerityProSdkActivity : AppCompatActivity() {
             Log.w("VerityProSdkActivity", "Invalid theme_mode passed: $themeModeStr, defaulting to LIGHT")
             ThemeMode.LIGHT
         }
+
+        VeritySigningConfig.initialize(options?.signingKey)
 
         if (options == null) {
             Log.e("VerityProSdkActivity", "Missing VerityOption - finishing")

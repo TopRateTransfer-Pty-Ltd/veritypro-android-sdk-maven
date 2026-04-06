@@ -81,6 +81,7 @@ interface VerityApiService {
         @Part("IpAddress") ipAddress: RequestBody,
         @Part("IpLocation") ipLocation: RequestBody,
         @Part("SecurityAssessmentJson") securityAssessmentJson: RequestBody? = null,
+        @Part("IdempotencyKey") idempotencyKey: RequestBody? = null,
         @Header("x-api-key") apiKey: String
     ): ApiResponse<AddressVerificationResponse>
 
@@ -106,6 +107,7 @@ interface VerityApiService {
         @Part("SubjectName") subjectName: RequestBody,
         @Part("DocumentType") documentType: RequestBody,
         @Part file: MultipartBody.Part,
+        @Part("IdempotencyKey") idempotencyKey: RequestBody? = null,
         @Part("PlatformUsed") platformUsed: RequestBody? = null,
         @Part("DeviceAndBrowser") deviceAndBrowser: RequestBody? = null,
         @Part("IpAddress") ipAddress: RequestBody? = null,
@@ -132,4 +134,26 @@ interface VerityApiService {
         @Path("documentId") documentId: String,
         @Header("x-api-key") apiKey: String
     ): ApiResponse<DocumentUrlResponse>
+
+    // ── v2 Server-Driven Session Endpoints ──
+
+    @POST("/kycintegration/v2/sessions")
+    suspend fun createV2Session(
+        @Body request: CreateSessionRequest,
+        @Header("x-api-key") apiKey: String
+    ): ApiResponse<SessionStateResponse>
+
+    @GET("/kycintegration/v2/sessions/{sessionId}")
+    suspend fun getV2SessionState(
+        @Path("sessionId") sessionId: String,
+        @Header("x-api-key") apiKey: String
+    ): ApiResponse<SessionStateResponse>
+
+    @POST("/kycintegration/v2/sessions/{sessionId}/steps/{stepName}/complete")
+    suspend fun completeV2Step(
+        @Path("sessionId") sessionId: String,
+        @Path("stepName") stepName: String,
+        @Header("x-api-key") apiKey: String,
+        @Body body: StepCompletionRequest = StepCompletionRequest()
+    ): ApiResponse<SessionStateResponse>
 }

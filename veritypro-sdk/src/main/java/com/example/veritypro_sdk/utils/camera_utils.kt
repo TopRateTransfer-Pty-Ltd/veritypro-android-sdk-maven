@@ -100,7 +100,8 @@ object CameraUtils {
         imageCapture: ImageCapture,
         useDetection: Boolean = false,
         onFacesDetected: ((List<Rect>) -> Unit)? = null,
-        onCameraReady: ((CameraCapabilityReport) -> Unit)? = null
+        onCameraReady: ((CameraCapabilityReport) -> Unit)? = null,
+        onCameraError: ((String) -> Unit)? = null
     ) {
         val cameraProviderFuture = ProcessCameraProvider.getInstance(context)
 
@@ -179,11 +180,13 @@ object CameraUtils {
 
                     } catch (e: Exception) {
                         Log.e(TAG, "Failed to bind smart camera: ${e.message}", e)
+                        onCameraError?.invoke("Could not start camera: ${e.message ?: "unknown error"}. Please close other apps using the camera and try again.")
                     }
                 }
 
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to get camera provider: ${e.message}", e)
+                onCameraError?.invoke("Camera is not available: ${e.message ?: "unknown error"}. Please try again.")
             }
         }, ContextCompat.getMainExecutor(context))
     }
@@ -523,7 +526,8 @@ object CameraUtils {
     fun takePicture(
         context: Context,
         imageCapture: ImageCapture,
-        onCaptured: (File) -> Unit
+        onCaptured: (File) -> Unit,
+        onError: ((String) -> Unit)? = null
     ) {
         try {
             val tmpFile = File(context.cacheDir, "document_${System.currentTimeMillis()}.jpg")
@@ -541,11 +545,13 @@ object CameraUtils {
                     }
 
                     override fun onError(exception: ImageCaptureException) {
-                        exception.printStackTrace()
+                        Log.e(TAG, "Image capture failed: ${exception.message}", exception)
+                        onError?.invoke("Failed to capture photo: ${exception.message ?: "unknown error"}")
                     }
                 })
         } catch (e: Exception) {
-            e.printStackTrace()
+            Log.e(TAG, "takePicture exception: ${e.message}", e)
+            onError?.invoke("Camera capture error: ${e.message ?: "unknown error"}")
         }
     }
 

@@ -12,6 +12,7 @@ import kotlinx.parcelize.Parcelize
  * - [ADDRESS]: Address document verification.
  * - [EDD]: Enhanced Due Diligence document upload.
  * - [COMBINED]: Full pipeline — document + liveness + address + EDD.
+ * - [SERVER_DRIVEN]: Backend-driven flow via /v2/sessions API. SDK fetches next step from server.
  */
 enum class VerityMode {
     DOCUMENT,
@@ -19,7 +20,8 @@ enum class VerityMode {
     LIVENESS_ONLY,
     ADDRESS,
     EDD,
-    COMBINED
+    COMBINED,
+    SERVER_DRIVEN
 }
 
 @Parcelize
@@ -34,6 +36,12 @@ data class VerityOption(
     val streetAddress: String? = null,
     val requiredModules: List<String>? = null,
     val mode: String = VerityMode.BIOMETRIC.name,
+    /** Engine session ID from a previous document verification, used for biometric-only flows. */
+    val previousEngineSessionId: String? = null,
+    /** Pre-created v2 session ID for server-driven mode. If null, SDK creates the session. */
+    val serverSessionId: String? = null,
+    /** Secret key for HMAC-SHA256 request signing. If null or blank, signing is skipped. */
+    val signingKey: String? = null,
 ) : Parcelable {
     /** Resolved [VerityMode] from the serialized [mode] string. */
     val verityMode: VerityMode
@@ -50,6 +58,7 @@ data class DataPayload(
     val isO2Code: String,
     val streetAddress: String? = null,
     val requiredModules: List<String>? = null,
+    val previousEngineSessionId: String? = null,
 )
 
 fun VerityOption.toPayload(): DataPayload {
@@ -62,5 +71,6 @@ fun VerityOption.toPayload(): DataPayload {
         isO2Code = this.isO2Code,
         streetAddress = this.streetAddress,
         requiredModules = this.requiredModules,
+        previousEngineSessionId = this.previousEngineSessionId,
     )
 }

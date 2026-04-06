@@ -59,7 +59,7 @@ enum class EddDocType(
     val documentTypeValue: String
 ) {
     SOURCE_OF_FUNDS(
-        id = 2,
+        id = 0,
         displayName = "Source of Funds",
         subtitle = "Bank statements, payslips, or tax returns showing income source",
         acceptedFormats = "PDF, JPG, or PNG (max 10MB)",
@@ -69,10 +69,10 @@ enum class EddDocType(
             "Tax returns or assessment notices"
         ),
         icon = Icons.Default.AccountBalanceWallet,
-        documentTypeValue = "2"
+        documentTypeValue = "0"      // Backend: BankStatement = 0
     ),
     EMPLOYMENT_PROOF(
-        id = 3,
+        id = 4,
         displayName = "Employment Proof",
         subtitle = "Employment letter, contract, or business registration",
         acceptedFormats = "PDF, JPG, or PNG (max 10MB)",
@@ -82,10 +82,10 @@ enum class EddDocType(
             "Recent payslip with employer details"
         ),
         icon = Icons.Default.Work,
-        documentTypeValue = "3"
+        documentTypeValue = "4"      // Backend: EmploymentLetter = 4
     ),
     PURPOSE_OF_TRANSACTION(
-        id = 4,
+        id = 99,
         displayName = "Purpose of Transaction",
         subtitle = "Invoice, property documents, or purpose declaration",
         acceptedFormats = "PDF, JPG, or PNG (max 10MB)",
@@ -95,7 +95,7 @@ enum class EddDocType(
             "Tuition or medical payment receipts"
         ),
         icon = Icons.Default.SwapHorizontalCircle,
-        documentTypeValue = "4"
+        documentTypeValue = "99"     // Backend: Other = 99
     );
 }
 

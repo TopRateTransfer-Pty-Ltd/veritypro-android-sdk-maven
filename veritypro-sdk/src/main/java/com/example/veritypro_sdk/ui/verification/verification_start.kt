@@ -94,6 +94,7 @@ fun VerificationScreen(
     var locationLongitude: Double? by remember { mutableStateOf(null) }
     var locationAccuracy: Float? by remember { mutableStateOf(null) }
     var locationTimestamp: String? by remember { mutableStateOf(null) }
+    var locationCountryCode: String? by remember { mutableStateOf(null) }
     var documentFrontPage: File? by remember { mutableStateOf(null) }
     var documentBackPage: File? by remember { mutableStateOf(null) }
     var sessionId: String? by remember { mutableStateOf(null) }
@@ -262,20 +263,80 @@ fun VerificationScreen(
                 locationLongitude = location.longitude
                 locationAccuracy = location.accuracy
                 locationTimestamp = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).apply { timeZone = TimeZone.getTimeZone("UTC") }.format(Date(location.time))
-                locationText =
-                    locationHelper.reverseGeocode(context, location.latitude, location.longitude)
-                        ?: "Lat: ${location.latitude}, Lng: ${location.longitude}"
+                val geoResult = locationHelper.reverseGeocodeWithCountry(context, location.latitude, location.longitude)
+                locationText = geoResult?.first ?: "Lat: ${location.latitude}, Lng: ${location.longitude}"
+                locationCountryCode = geoResult?.second
             } else {
                 locationText = "Unable to get location"
             }
         }
     }
 
+    // ─── Root / Jailbreak gate ───────────────────────────────────────────────
+    // Block verification entirely on compromised (rooted) devices.
+    val isDeviceRooted = remember { SecurityAssessmentCollector.checkRooted(context) }
+
     VerityProTheme(mode = themeMode, dynamicColor = dynamicColor) {
         Surface(
             Modifier.fillMaxSize(),
             color = MaterialTheme.colorScheme.background
         ) {
+            // Block verification on rooted / compromised devices
+            if (isDeviceRooted) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(24.dp),
+                    verticalArrangement = Arrangement.Center,
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text(
+                        text = "Device Security Check Failed",
+                        fontSize = 20.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.error,
+                        textAlign = TextAlign.Center
+                    )
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text(
+                        text = "Verification cannot proceed on a rooted or compromised device. " +
+                                "Please use an unmodified device to complete identity verification.",
+                        fontSize = 14.sp,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        textAlign = TextAlign.Center
+                    )
+                    Spacer(modifier = Modifier.height(24.dp))
+                    Button(
+                        onClick = {
+                            onFinish(LivenessResult(
+                                success = false,
+                                error = "device_compromised_root_detected"
+                            ))
+                        },
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.error
+                        ),
+                        shape = RoundedCornerShape(4.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(48.dp)
+                    ) {
+                        Text("Close", color = Color.White)
+                    }
+                }
+                return@Surface
+            }
+
+            // Server-driven mode: bypass client-side stage logic entirely
+            if (options.verityMode == VerityMode.SERVER_DRIVEN) {
+                ServerDrivenScreen(
+                    options = options,
+                    onFinish = onFinish,
+                    onCancel = onCancel
+                )
+                return@Surface
+            }
+
             val initialStage = remember(options.verityMode) {
                 when (options.verityMode) {
                     VerityMode.LIVENESS_ONLY, VerityMode.ADDRESS, VerityMode.EDD -> VerificationStage.INTRO
@@ -287,6 +348,14 @@ fun VerificationScreen(
             var selectedDocumentType: Int? by rememberSaveable { mutableStateOf(null) }
             var showExitDialog by rememberSaveable { mutableStateOf(false) }
 
+            // Auto-advance after permissions are granted (avoids requiring a second tap on "Get Started")
+            LaunchedEffect(hasCameraPermission, hasLocationPermission, allowAdvanceAfterPermission) {
+                if (allowAdvanceAfterPermission && hasCameraPermission && hasLocationPermission) {
+                    allowAdvanceAfterPermission = false
+                    stage = viewModel.flowRouter.firstContentStage()
+                }
+            }
+
             BackHandler(enabled = true) {
                 if (showExitDialog || showPermissionScreen) {
                     showExitDialog = false
@@ -297,6 +366,15 @@ fun VerificationScreen(
                 if (stage == VerificationStage.HEALTH_CHECK || stage == VerificationStage.INTRO) {
                     showExitDialog = true
                 } else if (stage == VerificationStage.RESULT) {
+                    // Clear captured data when going back from RESULT to prevent stale resubmission
+                    documentFrontPage = null
+                    documentBackPage = null
+                    addressDocFile = null
+                    addressDocType = null
+                    eddDocFile = null
+                    eddDocType = null
+                    selectedDocumentType = null
+                    lastResult = null
                     stage = VerificationStage.INTRO
                 } else {
                     val prev = viewModel.flowRouter.previousStage(stage)
@@ -495,7 +573,8 @@ fun VerificationScreen(
                                                                     locationAccuracy = locationAccuracy,
                                                                     locationString = locationText,
                                                                     locationTimestamp = locationTimestamp,
-                                                                    locationSource = if (locationLatitude != null) "gps" else "none"
+                                                                    locationSource = if (locationLatitude != null) "gps" else "none",
+                                                                    countryCode = locationCountryCode
                                                                 ))
                                                                 viewModel.updateKyc(
                                                                     VerificationRequestMultipart(
@@ -574,7 +653,18 @@ fun VerificationScreen(
                                         onFinish(lastResult ?: LivenessResult(false, error = "unknown"))
                                     }
                                 },
-                                onRetry = { stage = VerificationStage.SELFIE_CAPTURE }
+                                onRetry = {
+                                    // Clear captured data before retrying to prevent stale resubmission
+                                    documentFrontPage = null
+                                    documentBackPage = null
+                                    addressDocFile = null
+                                    addressDocType = null
+                                    eddDocFile = null
+                                    eddDocType = null
+                                    selectedDocumentType = null
+                                    lastResult = null
+                                    stage = VerificationStage.SELFIE_CAPTURE
+                                }
                             )
 
                             VerificationStage.THANK_YOU -> {
@@ -628,7 +718,8 @@ fun VerificationScreen(
                                         locationAccuracy = locationAccuracy,
                                         locationString = locationText,
                                         locationTimestamp = locationTimestamp,
-                                        locationSource = if (locationLatitude != null) "gps" else "none"
+                                        locationSource = if (locationLatitude != null) "gps" else "none",
+                                        countryCode = locationCountryCode
                                     ))
                                     viewModel.updateKyc(
                                         VerificationRequestMultipart(
@@ -657,7 +748,18 @@ fun VerificationScreen(
                         onClose = {
                             onFinish(lastResult ?: LivenessResult(true, error = "unknown"))
                         },
-                        onRetry = { stage = VerificationStage.SELFIE_CAPTURE }
+                        onRetry = {
+                            // Clear captured data before retrying to prevent stale resubmission
+                            documentFrontPage = null
+                            documentBackPage = null
+                            addressDocFile = null
+                            addressDocType = null
+                            eddDocFile = null
+                            eddDocType = null
+                            selectedDocumentType = null
+                            lastResult = null
+                            stage = VerificationStage.SELFIE_CAPTURE
+                        }
                     )
                 }
 

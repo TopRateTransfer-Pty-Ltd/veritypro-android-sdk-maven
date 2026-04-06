@@ -46,6 +46,7 @@ data class CaptureRuntimeData(
     val locationString: String? = null,
     val locationTimestamp: String? = null,
     val locationSource: String? = null,
+    val countryCode: String? = null,
     // motionAnalysis
     val motionDurationMs: Long? = null,
     val motionSampleCount: Int? = null,
@@ -163,7 +164,12 @@ object SecurityAssessmentCollector {
             assessment.put("auditLog", auditArr)
 
             // ─── 6. captureMetadata ───
+            val hasPhysicalCamera = context.packageManager.hasSystemFeature(PackageManager.FEATURE_CAMERA_ANY)
+            val networkType = getNetworkType(context)
             assessment.put("captureMetadata", JSONObject().apply {
+                put("sdkVersion", "android-2.0.0")
+                put("isPhysicalCamera", hasPhysicalCamera)
+                put("networkType", networkType)
                 put("captureAttempts", runtimeData?.captureAttempts ?: 0)
                 put("captureDurationSeconds", runtimeData?.captureDurationSeconds ?: 0.0)
                 putOpt("antiSpoofBurstScore", runtimeData?.antiSpoofBurstScore)
@@ -183,6 +189,7 @@ object SecurityAssessmentCollector {
                 putOpt("longitude", runtimeData?.longitude)
                 putOpt("accuracy", runtimeData?.locationAccuracy?.toDouble())
                 putOpt("locationString", runtimeData?.locationString)
+                putOpt("countryCode", runtimeData?.countryCode)
                 putOpt("timestamp", runtimeData?.locationTimestamp)
                 put("source", runtimeData?.locationSource ?: "none")
             })
@@ -234,10 +241,9 @@ object SecurityAssessmentCollector {
 
             assessment.toString()
         } catch (e: Exception) {
-            Log.e("Verity", "SecurityAssessmentCollector failed: ${e.message}", e)
+            Log.w("Verity", "SecurityAssessmentCollector: collection failed")
             JSONObject().apply {
                 put("collectionError", true)
-                put("errorMessage", e.message ?: "unknown")
                 put("overallRiskLevel", "unknown")
             }.toString()
         }
@@ -366,7 +372,11 @@ object SecurityAssessmentCollector {
 
     // ─── Detection helpers (unchanged) ───────────────────────────────────────────
 
-    private fun checkRooted(context: Context): Boolean {
+    /**
+     * Returns true when the device appears to be rooted / has su binaries.
+     * Public so that callers can gate verification on device integrity.
+     */
+    fun checkRooted(context: Context): Boolean {
         val suPaths = arrayOf(
             "/system/app/Superuser.apk", "/sbin/su", "/system/bin/su",
             "/system/xbin/su", "/data/local/xbin/su", "/data/local/bin/su",
@@ -449,7 +459,14 @@ object SecurityAssessmentCollector {
         } catch (e: Exception) { false }
     }
 
-    private fun isScreenBeingRecorded(context: Context): Boolean {
+    /**
+     * Checks whether the device appears to have an active screen recording
+     * or screen-cast session via the DisplayManager virtual display heuristic.
+     *
+     * Public so that capture screens can call this during the active
+     * verification flow (not only at submission time), matching iOS parity.
+     */
+    fun isScreenBeingRecorded(context: Context): Boolean {
         return try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
                 val dm = context.getSystemService(Context.DISPLAY_SERVICE) as? android.hardware.display.DisplayManager ?: return false
@@ -460,6 +477,21 @@ object SecurityAssessmentCollector {
 
     private fun isDebuggable(context: Context): Boolean =
         (context.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
+
+    private fun getNetworkType(context: Context): String {
+        return try {
+            val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return "unknown"
+            val net = cm.activeNetwork ?: return "none"
+            val caps = cm.getNetworkCapabilities(net) ?: return "unknown"
+            when {
+                caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> "wifi"
+                caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> "cellular"
+                caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> "ethernet"
+                caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN) -> "vpn"
+                else -> "unknown"
+            }
+        } catch (e: Exception) { "unknown" }
+    }
 
     private fun calculateIntegrityRisk(rooted: Boolean, emulator: Boolean, vpn: Boolean): Double {
         var score = 0.0

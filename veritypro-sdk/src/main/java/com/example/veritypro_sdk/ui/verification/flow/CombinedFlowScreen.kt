@@ -172,10 +172,26 @@ fun CombinedFlowScreen(
     }
 
     fun advanceAfterAddress() {
+        completedSteps.add("address")
         stage = when {
             hasEdd -> CombinedFlowStage.ADDRESS_TO_EDD
             else -> CombinedFlowStage.ALL_COMPLETE
         }
+    }
+
+    fun advanceAfterEdd() {
+        completedSteps.add("edd")
+        stage = CombinedFlowStage.ALL_COMPLETE
+    }
+
+    // BUG-008 fix: If options is null, show an error state instead of a blank screen.
+    // This can happen if the caller fails to pass VerityOption to the combined flow.
+    if (options == null) {
+        CombinedFlowErrorScreen(
+            message = "Verification configuration is missing. Please restart the verification process.",
+            onGoBack = onCancel
+        )
+        return
     }
 
     when (stage) {
@@ -188,16 +204,14 @@ fun CombinedFlowScreen(
         }
 
         CombinedFlowStage.DOCUMENT -> {
-            if (options != null) {
-                VerificationScreen(
-                    options = options.copy(mode = VerityMode.DOCUMENT.name),
-                    onFinish = { result ->
-                        advanceAfterDocument()
-                    },
-                    onCancel = onCancel,
-                    themeMode = themeMode
-                )
-            }
+            VerificationScreen(
+                options = options.copy(mode = VerityMode.DOCUMENT.name),
+                onFinish = { result ->
+                    advanceAfterDocument()
+                },
+                onCancel = onCancel,
+                themeMode = themeMode
+            )
         }
 
         CombinedFlowStage.DOCUMENT_TO_BIOMETRIC -> {
@@ -210,16 +224,14 @@ fun CombinedFlowScreen(
         }
 
         CombinedFlowStage.BIOMETRIC -> {
-            if (options != null) {
-                VerificationScreen(
-                    options = options.copy(mode = VerityMode.BIOMETRIC.name),
-                    onFinish = { result ->
-                        advanceAfterBiometric()
-                    },
-                    onCancel = onCancel,
-                    themeMode = themeMode
-                )
-            }
+            VerificationScreen(
+                options = options.copy(mode = VerityMode.BIOMETRIC.name),
+                onFinish = { result ->
+                    advanceAfterBiometric()
+                },
+                onCancel = onCancel,
+                themeMode = themeMode
+            )
         }
 
         CombinedFlowStage.BIOMETRIC_TO_ADDRESS -> {
@@ -237,7 +249,6 @@ fun CombinedFlowScreen(
                 options = options,
                 onFinish = { success ->
                     if (success) {
-                        completedSteps.add("address")
                         advanceAfterAddress()
                     }
                 },
@@ -259,8 +270,11 @@ fun CombinedFlowScreen(
             EddVerificationScreen(
                 options = options,
                 onFinish = { success ->
-                    if (success) completedSteps.add("edd")
-                    stage = CombinedFlowStage.ALL_COMPLETE
+                    if (success) {
+                        advanceAfterEdd()
+                    } else {
+                        stage = CombinedFlowStage.ALL_COMPLETE
+                    }
                 },
                 onCancel = onCancel
             )
@@ -511,6 +525,67 @@ private fun AllCompleteScreen(
                 fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(14.dp).toSp() },
                 fontWeight = FontWeight.W600,
                 color = MaterialTheme.customColors.powered
+            )
+        }
+    }
+}
+
+// MARK: - Error screen for null options (BUG-008)
+
+@Composable
+private fun CombinedFlowErrorScreen(
+    message: String,
+    onGoBack: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.customColors.background)
+            .padding(
+                horizontal = ScaleUtil.scaleWidth(24.dp),
+                vertical = ScaleUtil.scaleHeight(40.dp)
+            ),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Text(
+            text = "Configuration Error",
+            fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(22.dp).toSp() },
+            fontWeight = FontWeight.W700,
+            color = Color(0xFFEF4444),
+            textAlign = TextAlign.Center
+        )
+
+        Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(16.dp)))
+
+        Text(
+            text = message,
+            fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(16.dp).toSp() },
+            fontWeight = FontWeight.W500,
+            color = MaterialTheme.customColors.description,
+            textAlign = TextAlign.Center,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = ScaleUtil.scaleWidth(16.dp))
+        )
+
+        Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(32.dp)))
+
+        Button(
+            onClick = onGoBack,
+            colors = ButtonDefaults.buttonColors(
+                containerColor = Color(0xFF2B7AEF)
+            ),
+            shape = RoundedCornerShape(ScaleUtil.scaleWidth(4.dp)),
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(ScaleUtil.scaleHeight(48.dp))
+        ) {
+            Text(
+                text = "Go Back",
+                fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(16.dp).toSp() },
+                fontWeight = FontWeight.W600,
+                color = MaterialTheme.customColors.content
             )
         }
     }

@@ -42,3 +42,36 @@ data class CountryData(
     @SerializedName("countryDocuments") val countryDocuments: List<CountryDocumentItem>
 )
 
+// ── v2 Server-Driven Session Models ──
+
+data class NextAction(
+    val step: String,
+    val type: String,
+    val engineSessionId: String? = null,
+    val sessionUrl: String? = null
+)
+
+data class SessionStateResponse(
+    val id: String,
+    val status: String,
+    val requestedSteps: List<String>,
+    val completedSteps: List<String>,
+    val currentStep: String? = null,
+    val nextAction: NextAction? = null,
+    val kycEngineSessionId: String? = null
+)
+
+data class CreateSessionRequest(
+    val vendorData: String,
+    val firstName: String,
+    val lastName: String,
+    val dateOfBirth: String,
+    val iso2Code: String,
+    val steps: List<String>,
+    val previousSessionId: String? = null
+)
+
+data class StepCompletionRequest(
+    val data: Map<String, Any?>? = null
+)
+
