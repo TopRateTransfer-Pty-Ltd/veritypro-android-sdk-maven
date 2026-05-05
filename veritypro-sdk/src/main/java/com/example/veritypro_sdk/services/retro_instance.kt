@@ -24,10 +24,12 @@ private fun createSafeLoggingInterceptor(level: HttpLoggingInterceptor.Level): H
 object RetrofitInstance {
     private const val BASE_URL = "https://api.skylinefare.com"
 
-    // Certificate pinning for api.skylinefare.com (leaf + ISRG Root X1 backup)
+    // Certificate pinning for api.skylinefare.com — pinned to Let's Encrypt ROOT CAs
+    // so that leaf cert renewals (every 90 days) never break the app.
+    // ISRG Root X1 valid until 2035, ISRG Root X2 valid until 2040.
     private val certificatePinner = CertificatePinner.Builder()
-        .add("api.skylinefare.com", "sha256/b2TlY6Y77KRBmvmbQF7jAbNKQErofrz4KXnXDLn2FeI=")
-        .add("api.skylinefare.com", "sha256/C5+lpZ7tcVwmwQIMcRtPbsQtWLABXhQzejna0wHFr8M=") // ISRG Root X1
+        .add("api.skylinefare.com", "sha256/C5+lpZ7tcVwmwQIMcRtPbsQtWLABXhQzejna0wHFr8M=") // ISRG Root X1 (RSA, expires 2035)
+        .add("api.skylinefare.com", "sha256/diGVwiVYbubAI3RW4hB9xU8e/CH2GnkuvVFZE8zmgzI=") // ISRG Root X2 (ECDSA, expires 2040)
         .build()
 
     val okHttpClient = OkHttpClient.Builder()
@@ -85,10 +87,10 @@ object MLRetrofitInstance {
         }
     )
 
-    // Certificate pinning (same pins as main RetrofitInstance)
+    // Certificate pinning (same root CA pins as main RetrofitInstance)
     private val certificatePinner = CertificatePinner.Builder()
-        .add("api.skylinefare.com", "sha256/b2TlY6Y77KRBmvmbQF7jAbNKQErofrz4KXnXDLn2FeI=")
-        .add("api.skylinefare.com", "sha256/C5+lpZ7tcVwmwQIMcRtPbsQtWLABXhQzejna0wHFr8M=") // ISRG Root X1
+        .add("api.skylinefare.com", "sha256/C5+lpZ7tcVwmwQIMcRtPbsQtWLABXhQzejna0wHFr8M=") // ISRG Root X1 (RSA, expires 2035)
+        .add("api.skylinefare.com", "sha256/diGVwiVYbubAI3RW4hB9xU8e/CH2GnkuvVFZE8zmgzI=") // ISRG Root X2 (ECDSA, expires 2040)
         .build()
 
     private fun buildOkHttpClient(): OkHttpClient {
