@@ -517,7 +517,10 @@ fun VerificationScreen(
                                     }
                                 }
 
-                                when (beginState) {
+                                // While verifying liveness result after AWS UI, show loading
+                                if (livenessVerificationState == VerityProViewModel.LivenessVerificationState.Polling) {
+                                    LoadingScreen(text = "Verifying liveness result...")
+                                } else when (beginState) {
                                     is Resource.Loading -> {
                                         LoadingScreen(text = (beginState as Resource.Loading).message)
                                     }
@@ -606,9 +609,17 @@ fun VerificationScreen(
                                                             )
                                                             stage = viewModel.flowRouter.nextStage(stage) ?: VerificationStage.RESULT
                                                         } else {
-                                                            // Liveness failed - reset and force fresh retry
+                                                            // Liveness verification failed — capture error
+                                                            // before resetting so user sees what happened
+                                                            val errorMsg = (viewModel.livenessResultState.value as? Resource.Error)?.message
+                                                                ?: "Liveness verification failed. Please try again."
                                                             viewModel.resetLivenessState()
-                                                            sessionId?.let { viewModel.startBeginLiveness(it, forceRetry = true) }
+                                                            lastResult = LivenessResult(
+                                                                success = false,
+                                                                error = errorMsg
+                                                            )
+                                                            stage = viewModel.flowRouter.nextStage(stage)
+                                                                ?: VerificationStage.RESULT
                                                         }
                                                     }
                                                 }
@@ -654,15 +665,9 @@ fun VerificationScreen(
                                     }
                                 },
                                 onRetry = {
-                                    // Clear captured data before retrying to prevent stale resubmission
-                                    documentFrontPage = null
-                                    documentBackPage = null
-                                    addressDocFile = null
-                                    addressDocType = null
-                                    eddDocFile = null
-                                    eddDocType = null
-                                    selectedDocumentType = null
+                                    // Preserve captured documents — only redo liveness
                                     lastResult = null
+                                    viewModel.resetLivenessState()
                                     stage = VerificationStage.SELFIE_CAPTURE
                                 }
                             )
@@ -749,15 +754,9 @@ fun VerificationScreen(
                             onFinish(lastResult ?: LivenessResult(true, error = "unknown"))
                         },
                         onRetry = {
-                            // Clear captured data before retrying to prevent stale resubmission
-                            documentFrontPage = null
-                            documentBackPage = null
-                            addressDocFile = null
-                            addressDocType = null
-                            eddDocFile = null
-                            eddDocType = null
-                            selectedDocumentType = null
+                            // Preserve captured documents — only redo liveness
                             lastResult = null
+                            viewModel.resetLivenessState()
                             stage = VerificationStage.SELFIE_CAPTURE
                         }
                     )

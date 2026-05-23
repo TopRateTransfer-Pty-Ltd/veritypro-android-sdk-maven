@@ -19,6 +19,7 @@ import com.example.veritypro_sdk.services.MLRepository
 import com.example.veritypro_sdk.services.MLRetrofitInstance
 import com.example.veritypro_sdk.services.MLVerifyBurstResponse
 import com.example.veritypro_sdk.services.Resource
+import com.example.veritypro_sdk.services.SessionData
 import com.example.veritypro_sdk.services.VerificationRequestMultipart
 import com.example.veritypro_sdk.utils.VerificationFlowRouter
 import com.example.veritypro_sdk.utils.VerificationModule
@@ -165,6 +166,38 @@ class VerityProViewModel(
         viewModelScope.launch {
             apiKey = options.apiKey
             _kycState.value = Resource.Loading("Initializing KYC Verification")
+
+            // If a pre-created session ID was provided by the backend, skip the
+            // createKyc API call entirely to avoid dual-session waste.
+            if (!options.preCreatedSessionId.isNullOrEmpty()) {
+                currentSessionId = options.preCreatedSessionId
+                Log.d("VerityProVM", "Using pre-created session: ${options.preCreatedSessionId}")
+                _kycState.value = Resource.Success(
+                    SessionData(
+                        sessionId = options.preCreatedSessionId,
+                        sessionUrl = "",
+                        sessionToEncode = "",
+                    )
+                )
+                // Use backend-provided allowed document types if available, otherwise fall back to defaults
+                val allowed = options.allowedDocumentTypes
+                if (!allowed.isNullOrEmpty()) {
+                    val items = allowed.mapIndexedNotNull { index, name ->
+                        mapBackendDocTypeToItem(name, index + 1)
+                    }
+                    if (items.isNotEmpty()) {
+                        _countryDocumentsState.value = Resource.Success(items)
+                        Log.d("VerityProVM", "Allowed document types (pre-created): $allowed → ${items.map { it.documentType }}")
+                    } else {
+                        _countryDocumentsState.value = Resource.Success(defaultDocumentTypes())
+                        Log.d("VerityProVM", "No valid document types parsed from pre-created session, using defaults")
+                    }
+                } else {
+                    _countryDocumentsState.value = Resource.Success(defaultDocumentTypes())
+                    Log.d("VerityProVM", "No allowedDocumentTypes in pre-created session, using defaults")
+                }
+                return@launch
+            }
 
             val result = repository.createKyc(options)
             if (result is Resource.Success) {

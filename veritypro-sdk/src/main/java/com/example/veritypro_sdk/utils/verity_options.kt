@@ -42,6 +42,10 @@ data class VerityOption(
     val serverSessionId: String? = null,
     /** Secret key for HMAC-SHA256 request signing. If null or blank, signing is skipped. */
     val signingKey: String? = null,
+    /** Pre-created KYC session ID from backend. When set, SDK skips createKyc() API call. */
+    val preCreatedSessionId: String? = null,
+    /** Country-filtered document types from the backend (e.g. ["Passport", "ID Card"]). */
+    val allowedDocumentTypes: List<String>? = null,
 ) : Parcelable {
     /** Resolved [VerityMode] from the serialized [mode] string. */
     val verityMode: VerityMode
