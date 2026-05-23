@@ -37,6 +37,11 @@ class VerityProViewModel(
     private val repository: ApiRepository = repository ?: ApiRepository()
     private val mlRepository: MLRepository = mlRepository ?: MLRepository()
     private var apiKey: String = ""
+    // DEPRECATED: storedOptions was used for client-side session refresh when
+    // liveness returned HTTP 400.  Backend Phases 1-2 now handle session refresh
+    // server-side (new session + document migration).  Kept as null for safety
+    // until backend deployment is confirmed.
+    private var storedOptions: VerityOption? = null
 
     private val _kycState = MutableStateFlow<Resource<Any>>(Resource.Loading("Initializing KYC Verification"))
     val kycState: StateFlow<Resource<Any>> = _kycState
@@ -165,6 +170,7 @@ class VerityProViewModel(
     fun createKyc(options: VerityOption) {
         viewModelScope.launch {
             apiKey = options.apiKey
+            storedOptions = options
             _kycState.value = Resource.Loading("Initializing KYC Verification")
 
             // If a pre-created session ID was provided by the backend, skip the
@@ -313,14 +319,15 @@ class VerityProViewModel(
             _beginLivenessState.value = Resource.Loading("Starting liveness")
             _livenessVerificationState.value = LivenessVerificationState.Idle
 
+            var activeSessionId = sessionId
             var lastError: String? = null
             val backoffDelays = longArrayOf(1_000, 2_000, 4_000) // 1s, 2s, 4s
 
             for (attempt in 0 until maxRetries) {
                 try {
-                    Log.d("BeginLiveness", "Attempt ${attempt + 1}/$maxRetries for session $sessionId")
+                    Log.d("BeginLiveness", "Attempt ${attempt + 1}/$maxRetries for session $activeSessionId")
 
-                    val resp = repository.beginLiveness(sessionId, apiKey)
+                    val resp = repository.beginLiveness(activeSessionId, apiKey)
                     when (resp) {
                         is Resource.Success -> {
                             _beginLivenessState.value = Resource.Success(resp.data)
@@ -336,6 +343,8 @@ class VerityProViewModel(
                         is Resource.Error -> {
                             lastError = resp.message
                             Log.e("BeginLiveness", "Attempt ${attempt + 1} failed: ${resp.message}")
+                            // Session refresh is now handled server-side (backend creates
+                            // new session + migrates documents). SDK just retries with backoff.
                         }
                         else -> {
                             lastError = "Unknown beginLiveness response"

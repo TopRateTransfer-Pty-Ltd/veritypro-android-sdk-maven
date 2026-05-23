@@ -11,5 +11,6 @@ data class LivenessResult(
     val error: String? = null,
     val completedModules: List<String>? = null,
     val addressSessionId: String? = null,
-    val eddCaseId: String? = null
+    val eddCaseId: String? = null,
+    val sessionId: String? = null
 ) : Parcelable
