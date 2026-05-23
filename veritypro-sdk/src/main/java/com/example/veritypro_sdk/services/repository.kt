@@ -247,7 +247,7 @@ class ApiRepository {
 
     suspend fun getLivenessResult(livenessId: String, apiKey: String): Resource<LivenessResultResponse> {
         return try {
-            val url = "docengine/liveness/session/$livenessId"
+            val url = "/kycintegration/kyc-verification/liveness-result/$livenessId"
             val resp = RetrofitInstance.api.getLivenessResult(url, apiKey)
             Log.d("Verity", "getLivenessResult status=${resp.status}, confidence=${resp.confidence}")
 
@@ -292,7 +292,7 @@ class ApiRepository {
     ): Resource<LivenessResultResponse> {
         // Trigger backend to start processing the liveness result
         try {
-            val pollUrl = "docengine/liveness/session/$livenessId/poll"
+            val pollUrl = "/kycintegration/kyc-verification/liveness-result/$livenessId/poll"
             RetrofitInstance.api.triggerLivenessPoll(pollUrl, apiKey)
             Log.d("Verity", "pollLivenessResult: triggered backend poll for $livenessId")
         } catch (e: Exception) {
