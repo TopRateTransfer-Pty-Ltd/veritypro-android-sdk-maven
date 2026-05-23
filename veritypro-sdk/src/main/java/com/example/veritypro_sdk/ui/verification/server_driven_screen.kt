@@ -301,7 +301,8 @@ fun ServerDrivenScreen(
                             LivenessResult(
                                 success = true,
                                 sessionToken = null,
-                                error = null
+                                error = null,
+                                sessionId = sessionId
                             )
                         )
                     }) {

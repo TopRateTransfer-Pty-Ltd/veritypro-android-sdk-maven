@@ -719,6 +719,13 @@ fun DocumentCaptureScreen(
                         // Haptic feedback on capture tap (matches iOS native button feel)
                         view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
 
+                        // Turn off torch immediately on capture so the flash LED doesn't
+                        // stay on during processing / preview screens
+                        if (torchEnabled) {
+                            CameraUtils.setTorch(false)
+                            torchEnabled = false
+                        }
+
                         // Clear any previous error
                         verificationError = ""
                         verificationPassed = false

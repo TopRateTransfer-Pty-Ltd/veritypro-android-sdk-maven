@@ -310,7 +310,8 @@ fun VerificationScreen(
                         onClick = {
                             onFinish(LivenessResult(
                                 success = false,
-                                error = "device_compromised_root_detected"
+                                error = "device_compromised_root_detected",
+                                sessionId = viewModel.getSessionId()
                             ))
                         },
                         colors = ButtonDefaults.buttonColors(
@@ -502,7 +503,8 @@ fun VerificationScreen(
                                     lastResult = LivenessResult(
                                         success = true,
                                         sessionToken = "fake",
-                                        confidence = 0.95f
+                                        confidence = 0.95f,
+                                        sessionId = viewModel.getSessionId()
                                     )
                                     stage = viewModel.flowRouter.nextStage(stage) ?: VerificationStage.RESULT
                                 }
@@ -605,7 +607,8 @@ fun VerificationScreen(
                                                             lastResult = LivenessResult(
                                                                 success = true,
                                                                 sessionToken = "fake",
-                                                                confidence = 0.95f
+                                                                confidence = 0.95f,
+                                                                sessionId = viewModel.getSessionId()
                                                             )
                                                             stage = viewModel.flowRouter.nextStage(stage) ?: VerificationStage.RESULT
                                                         } else {
@@ -616,7 +619,8 @@ fun VerificationScreen(
                                                             viewModel.resetLivenessState()
                                                             lastResult = LivenessResult(
                                                                 success = false,
-                                                                error = errorMsg
+                                                                error = errorMsg,
+                                                                sessionId = viewModel.getSessionId()
                                                             )
                                                             stage = viewModel.flowRouter.nextStage(stage)
                                                                 ?: VerificationStage.RESULT
@@ -655,13 +659,13 @@ fun VerificationScreen(
                             )
 
                             VerificationStage.RESULT -> ResultScreen(
-                                result = lastResult ?: LivenessResult(false, error = "unknown"),
+                                result = lastResult ?: LivenessResult(false, error = "unknown", sessionId = viewModel.getSessionId()),
                                 onClose = {
                                     val next = viewModel.flowRouter.nextStage(stage)
                                     if (next != null) {
                                         stage = next
                                     } else {
-                                        onFinish(lastResult ?: LivenessResult(false, error = "unknown"))
+                                        onFinish(lastResult ?: LivenessResult(false, error = "unknown", sessionId = viewModel.getSessionId()))
                                     }
                                 },
                                 onRetry = {
@@ -678,7 +682,8 @@ fun VerificationScreen(
                                         onFinish(
                                             lastResult ?: LivenessResult(
                                                 success = true,
-                                                completedModules = listOf(options.verityMode.name)
+                                                completedModules = listOf(options.verityMode.name),
+                                                sessionId = viewModel.getSessionId()
                                             )
                                         )
                                     }
@@ -749,9 +754,9 @@ fun VerificationScreen(
                     }
 
                     is Resource.CompletedSuccess<*> -> ResultScreen(
-                        result = lastResult ?: LivenessResult(true, error = "unknown"),
+                        result = lastResult ?: LivenessResult(true, error = "unknown", sessionId = viewModel.getSessionId()),
                         onClose = {
-                            onFinish(lastResult ?: LivenessResult(true, error = "unknown"))
+                            onFinish(lastResult ?: LivenessResult(true, error = "unknown", sessionId = viewModel.getSessionId()))
                         },
                         onRetry = {
                             // Preserve captured documents — only redo liveness
