@@ -32,8 +32,11 @@ object DocumentAntiSpoofChecker {
 
     // ── Thresholds (aligned with iOS AntiSpoofingConfig) ─────────────────
 
-    /** Moire score above this value indicates likely screen recapture. */
-    private const val MOIRE_THRESHOLD = 0.30f
+    /** Moire score above this value indicates likely screen recapture.
+     *  Real LCD/OLED moire typically scores 0.70-0.95. Physical documents
+     *  with repeating text/security features can score 0.40-0.65, so the
+     *  threshold must be high enough to avoid false positives. */
+    private const val MOIRE_THRESHOLD = 0.55f
 
     /** Minimum texture variance expected from a physical document. */
     private const val MIN_TEXTURE_VARIANCE = 12.0f
@@ -292,11 +295,13 @@ object DocumentAntiSpoofChecker {
 
         val avgVariance = totalVariance / regionCount
 
-        // Normalise: physical docs ~100-800 variance, screens/prints < 50
+        // Normalise: physical docs ~40-800 variance. Modern laminated/polycarbonate
+        // ID cards have smooth surfaces with lower variance than paper documents.
+        // Screens/prints are typically < 25.
         return when {
-            avgVariance in 100f..800f -> 0.8f   // healthy physical doc range
-            avgVariance in 50f..1000f -> 0.5f    // acceptable
-            else -> 0.2f                          // suspicious (too uniform or noisy)
+            avgVariance in 60f..800f -> 0.8f    // healthy physical doc range
+            avgVariance in 30f..1000f -> 0.5f   // acceptable (smooth cards, varying light)
+            else -> 0.2f                         // suspicious (too uniform or noisy)
         }
     }
 

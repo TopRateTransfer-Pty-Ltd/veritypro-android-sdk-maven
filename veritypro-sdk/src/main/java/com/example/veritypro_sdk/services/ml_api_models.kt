@@ -337,7 +337,7 @@ object MLSpoofType {
     /** User-friendly message for each spoof type */
     fun toUserMessage(reason: String): String {
         return when (reason.uppercase().replace("_", "")) {
-            "SCREEN", "SCREENREPLAY" -> "Screen replay detected. Please use the original physical document."
+            "SCREEN", "SCREENREPLAY", "SCREENRECAPTURE" -> "Screen replay detected. Please use the original physical document."
             "PRINT", "PRINTEDCOPY" -> "Printed copy detected. Please use the original physical document."
             "AIGENERATED" -> "Document appears AI-generated or fabricated. Please use your original document."
             "DIGITALLYMANIPULATED" -> "Document appears digitally altered. Please use the unmodified original."

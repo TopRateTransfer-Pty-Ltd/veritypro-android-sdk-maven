@@ -303,9 +303,9 @@ data class DistanceGuidance(
             val coverage = (bboxWidth * bboxHeight) / (frameWidth * frameHeight)
 
             // Adjust optimal range based on zoom factor
-            // Higher zoom = document appears larger, so optimal coverage is lower
-            val optimalMin = (0.50f / zoomFactor).coerceIn(0.30f, 0.50f)
-            val optimalMax = (0.85f / zoomFactor).coerceIn(0.60f, 0.85f)
+            // Uses GuidanceConfig thresholds (55-80%)
+            val optimalMin = (GuidanceConfig.OPTIMAL_COVERAGE_MIN / zoomFactor).coerceIn(0.30f, GuidanceConfig.OPTIMAL_COVERAGE_MIN)
+            val optimalMax = (GuidanceConfig.OPTIMAL_COVERAGE_MAX / zoomFactor).coerceIn(0.60f, GuidanceConfig.OPTIMAL_COVERAGE_MAX)
 
             return when {
                 coverage > 0.90f -> DistanceGuidance(

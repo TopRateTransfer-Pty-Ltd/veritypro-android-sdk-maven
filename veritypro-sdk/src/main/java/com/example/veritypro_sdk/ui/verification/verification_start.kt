@@ -104,9 +104,16 @@ fun VerificationScreen(
     var eddDocFile: File? by remember { mutableStateOf(null) }
     var eddDocType: Int? by rememberSaveable { mutableStateOf(null) }
 
+    // Motion & capture timing for anti-spoofing security assessment
+    var motionCollector by remember { mutableStateOf<MotionAnalysisCollector?>(null) }
+    var motionResult by remember { mutableStateOf<MotionAnalysisCollector.MotionResult?>(null) }
+    var captureStartTimeMs by remember { mutableStateOf(0L) }
+    var captureDurationSeconds by remember { mutableStateOf<Double?>(null) }
+    var captureAttemptCount by remember { mutableStateOf(0) }
+
     LaunchedEffect(state) {
         if (state is Resource.Success) {
-            val sessionData = (state as Resource.Success<SessionData>).data
+            val sessionData = (state as Resource.Success<*>).data as SessionData
             sessionId = sessionData.sessionId
             // Initialize flow router from mode (takes precedence) or fallback to modules
             viewModel.initFlowRouterForMode(options.verityMode)
@@ -399,7 +406,7 @@ fun VerificationScreen(
                     }
 
                     is Resource.Success -> {
-                        val result = (state as Resource.Success<SessionData>).data
+                        val result = (state as Resource.Success<*>).data as SessionData
 
                         when (stage) {
 
@@ -490,25 +497,38 @@ fun VerificationScreen(
                                 )
                             }
 
-                            VerificationStage.DOCUMENT_CAPTURE -> DocumentCaptureScreen(
-                                documentType = selectedDocumentType,
-                                onBack = {
-                                    stage = viewModel.flowRouter.previousStage(stage) ?: VerificationStage.INTRO
-                                },
-                                onDocumentCaptured = { photoFile ->
-                                    documentFrontPage = photoFile[0]
-                                    if (photoFile.size > 1) {
-                                        documentBackPage = photoFile[1]
+                            VerificationStage.DOCUMENT_CAPTURE -> {
+                                // Start motion collection when entering document capture
+                                LaunchedEffect(Unit) {
+                                    if (motionCollector == null) {
+                                        motionCollector = MotionAnalysisCollector(context)
+                                        motionCollector?.start()
+                                        captureStartTimeMs = System.currentTimeMillis()
                                     }
-                                    lastResult = LivenessResult(
-                                        success = true,
-                                        sessionToken = "fake",
-                                        confidence = 0.95f,
-                                        sessionId = viewModel.getSessionId()
-                                    )
-                                    stage = viewModel.flowRouter.nextStage(stage) ?: VerificationStage.RESULT
                                 }
-                            )
+                                DocumentCaptureScreen(
+                                    documentType = selectedDocumentType,
+                                    onBack = {
+                                        motionCollector?.stop()
+                                        motionCollector = null
+                                        stage = viewModel.flowRouter.previousStage(stage) ?: VerificationStage.INTRO
+                                    },
+                                    onDocumentCaptured = { photoFile ->
+                                        captureAttemptCount++
+                                        documentFrontPage = photoFile[0]
+                                        if (photoFile.size > 1) {
+                                            documentBackPage = photoFile[1]
+                                        }
+                                        lastResult = LivenessResult(
+                                            success = true,
+                                            sessionToken = "fake",
+                                            confidence = 0.95f,
+                                            sessionId = viewModel.getSessionId()
+                                        )
+                                        stage = viewModel.flowRouter.nextStage(stage) ?: VerificationStage.RESULT
+                                    }
+                                )
+                            }
 
                             VerificationStage.SELFIE_CAPTURE -> {
                                 LaunchedEffect(stage) {
@@ -570,6 +590,15 @@ fun VerificationScreen(
                                                             val hasDocuments = documentFrontPage != null
                                                             val hasValidDocType = selectedDocumentType != null && selectedDocumentType!! > 0
 
+                                                            // Stop motion collection and compute capture duration
+                                                            val mr = motionCollector?.stop()
+                                                            motionResult = mr
+                                                            motionCollector = null
+                                                            val duration = if (captureStartTimeMs > 0)
+                                                                (System.currentTimeMillis() - captureStartTimeMs) / 1000.0
+                                                            else null
+                                                            captureDurationSeconds = duration
+
                                                             if (hasDocuments && hasValidDocType) {
                                                                 // BIOMETRIC / COMBINED mode: submit documents + liveness together
                                                                 val securityJson = SecurityAssessmentCollector.collectJson(context, CaptureRuntimeData(
@@ -579,7 +608,16 @@ fun VerificationScreen(
                                                                     locationString = locationText,
                                                                     locationTimestamp = locationTimestamp,
                                                                     locationSource = if (locationLatitude != null) "gps" else "none",
-                                                                    countryCode = locationCountryCode
+                                                                    countryCode = locationCountryCode,
+                                                                    // Motion analysis fields
+                                                                    motionDurationMs = motionResult?.durationMs,
+                                                                    motionSampleCount = motionResult?.sampleCount,
+                                                                    accelStdDev = motionResult?.accelStdDev,
+                                                                    gyroStdDev = motionResult?.gyroStdDev,
+                                                                    motionScore = motionResult?.motionScore,
+                                                                    // Capture timing fields
+                                                                    captureDurationSeconds = captureDurationSeconds,
+                                                                    captureAttempts = captureAttemptCount,
                                                                 ))
                                                                 viewModel.updateKyc(
                                                                     VerificationRequestMultipart(
@@ -729,7 +767,16 @@ fun VerificationScreen(
                                         locationString = locationText,
                                         locationTimestamp = locationTimestamp,
                                         locationSource = if (locationLatitude != null) "gps" else "none",
-                                        countryCode = locationCountryCode
+                                        countryCode = locationCountryCode,
+                                        // Motion analysis fields
+                                        motionDurationMs = motionResult?.durationMs,
+                                        motionSampleCount = motionResult?.sampleCount,
+                                        accelStdDev = motionResult?.accelStdDev,
+                                        gyroStdDev = motionResult?.gyroStdDev,
+                                        motionScore = motionResult?.motionScore,
+                                        // Capture timing fields
+                                        captureDurationSeconds = captureDurationSeconds,
+                                        captureAttempts = captureAttemptCount,
                                     ))
                                     viewModel.updateKyc(
                                         VerificationRequestMultipart(
@@ -773,6 +820,8 @@ fun VerificationScreen(
                         onContinue = { showExitDialog = false },
                         onConfirmExit = {
                             showExitDialog = false
+                            motionCollector?.stop()
+                            motionCollector = null
                             onCancel()
                         }
                     )

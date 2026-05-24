@@ -36,6 +36,7 @@ import com.google.mlkit.vision.face.FaceDetection
 import com.google.mlkit.vision.face.FaceDetectorOptions
 import java.io.File
 import kotlin.math.min
+import kotlinx.coroutines.delay
 
 /**
  * Smart Camera Utilities for KYC Document Capture
@@ -336,6 +337,44 @@ object CameraUtils {
         } catch (e: Exception) {
             Log.e(TAG, "Failed to set zoom: ${e.message}")
             false
+        }
+    }
+
+    /**
+     * Smoothly animate zoom to a target level in incremental steps.
+     * Used by auto-zoom controller to avoid jarring zoom jumps.
+     *
+     * @param target Target zoom ratio
+     * @param stepSize Zoom increment per step (default 0.1)
+     * @param intervalMs Delay between steps in milliseconds (default 200)
+     */
+    suspend fun setZoomSmooth(
+        target: Float,
+        stepSize: Float = GuidanceConfig.ZOOM_STEP,
+        intervalMs: Long = GuidanceConfig.ZOOM_INTERVAL_MS
+    ) {
+        val camera = currentCamera
+        if (camera == null) {
+            Log.w(TAG, "Cannot set smooth zoom: no camera bound")
+            return
+        }
+
+        try {
+            val zoomState = camera.cameraInfo.zoomState.value ?: return
+            var current = zoomState.zoomRatio
+            val clampedTarget = target.coerceIn(zoomState.minZoomRatio, zoomState.maxZoomRatio)
+
+            while (current != clampedTarget) {
+                current = if (current < clampedTarget) {
+                    (current + stepSize).coerceAtMost(clampedTarget)
+                } else {
+                    (current - stepSize).coerceAtLeast(clampedTarget)
+                }
+                camera.cameraControl.setZoomRatio(current)
+                kotlinx.coroutines.delay(intervalMs)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Smooth zoom failed: ${e.message}")
         }
     }
 

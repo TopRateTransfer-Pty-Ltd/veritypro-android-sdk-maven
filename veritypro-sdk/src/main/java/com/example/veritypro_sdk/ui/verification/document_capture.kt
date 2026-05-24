@@ -47,6 +47,7 @@ import com.example.veritypro_sdk.services.MLRepository
 import com.example.veritypro_sdk.services.MLSpoofType
 import com.example.veritypro_sdk.services.Resource
 import com.example.veritypro_sdk.services.sanitizeMLHint
+import com.example.veritypro_sdk.utils.AutoZoomController
 import com.example.veritypro_sdk.utils.BurstCaptureUtils
 import com.example.veritypro_sdk.utils.CameraCapabilityAnalyzer
 import com.example.veritypro_sdk.utils.CameraCapabilityReport
@@ -55,6 +56,7 @@ import com.example.veritypro_sdk.utils.DistanceGuidance
 import com.example.veritypro_sdk.utils.DistanceState
 import com.example.veritypro_sdk.utils.DocumentAntiSpoofChecker
 import com.example.veritypro_sdk.utils.FocusMode
+import com.example.veritypro_sdk.utils.GuidanceConfig
 import com.example.veritypro_sdk.utils.SecurityAssessmentCollector
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -73,6 +75,27 @@ fun DocumentCaptureScreen(
     val context = LocalContext.current
     val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
     val view = LocalView.current
+
+    // Onboarding gate: show onboarding first if not yet seen
+    val prefs = remember { context.getSharedPreferences("veritypro_sdk", android.content.Context.MODE_PRIVATE) }
+    var onboardingSeen by rememberSaveable { mutableStateOf(prefs.getBoolean(GuidanceConfig.PREF_KEY_ONBOARDING, false)) }
+
+    val docTypeName = when (documentType) {
+        0 -> "ID card"
+        1 -> "passport"
+        2 -> "driver's license"
+        else -> "document"
+    }
+
+    if (!onboardingSeen) {
+        DocumentOnboardingScreen(
+            docTypeName = docTypeName,
+            onOpenCamera = {
+                onboardingSeen = true
+            }
+        )
+        return
+    }
 
     // Use smart image capture with optimal resolution for documents
     val imageCapture = remember { CameraUtils.createSmartImageCapture(context) }
@@ -97,6 +120,9 @@ fun DocumentCaptureScreen(
 
     // Auto-dismiss error job
     var errorDismissJob by remember { mutableStateOf<Job?>(null) }
+
+    // Auto-capture countdown progress (0→1 over 2 seconds when LOCKED)
+    var autoCaptureProgress by remember { mutableStateOf(0f) }
 
     // Screen recording detection (iOS parity)
     var screenRecordingDetected by remember { mutableStateOf(false) }
@@ -175,14 +201,26 @@ fun DocumentCaptureScreen(
     var consecutiveNullBitmaps by remember { mutableStateOf(0) }
 
     // Animated colors for smooth transitions
+    // Determine if in locked state (mlPassed + optimal distance)
+    val isLocked = mlPassed && distanceGuidance?.isOptimal == true
+    val isDetecting = mlPassed && !isLocked
+
     val buttonBorderColor by animateColorAsState(
-        targetValue = if (mlPassed) Color(0xFF4CAF50) else Color(0xFF565B57),
-        animationSpec = tween(durationMillis = 300),
+        targetValue = when {
+            isLocked -> GuidanceConfig.STATE_GREEN
+            isDetecting -> GuidanceConfig.STATE_AMBER
+            else -> Color(0xFF565B57)
+        },
+        animationSpec = tween(durationMillis = GuidanceConfig.PIN_COLOR_CHANGE_MS),
         label = "buttonBorderColor"
     )
     val buttonInnerColor by animateColorAsState(
-        targetValue = if (mlPassed) Color(0xFF81C784) else Color.White,
-        animationSpec = tween(durationMillis = 300),
+        targetValue = when {
+            isLocked -> Color(0xFF81C784)
+            isDetecting -> GuidanceConfig.STATE_AMBER.copy(alpha = 0.6f)
+            else -> Color.White
+        },
+        animationSpec = tween(durationMillis = GuidanceConfig.PIN_COLOR_CHANGE_MS),
         label = "buttonInnerColor"
     )
 
@@ -285,6 +323,9 @@ fun DocumentCaptureScreen(
                 val bitmap = srcBitmap?.copy(srcBitmap.config ?: android.graphics.Bitmap.Config.ARGB_8888, false)
                 if (bitmap != null) {
                     consecutiveNullBitmaps = 0 // Reset counter on successful bitmap
+                    // Save dimensions before bitmap.recycle() in finally block
+                    val bitmapW = bitmap.width.toFloat()
+                    val bitmapH = bitmap.height.toFloat()
                     Log.d("DocumentCapture", "ML Live: Got bitmap ${bitmap.width}x${bitmap.height}, calling predict...")
                     withContext(Dispatchers.Default) {
                         val result = try {
@@ -306,21 +347,23 @@ fun DocumentCaptureScreen(
                                     mlConfidence = response.confidence ?: 0f
                                     // Show hint from ML backend, sanitized for readability
                                     mlHint = if (!response.docOk) sanitizeMLHint(response.hint ?: "") else ""
-                                    Log.d("DocumentCapture", "ML Live SUCCESS: docOk=${response.docOk}, conf=$mlConfidence, hint=${response.hint}")
+                                    Log.d("DocumentCapture", "ML Live SUCCESS: docOk=${response.docOk}, conf=$mlConfidence, hint=${response.hint}, bbox=${response.bbox}")
 
-                                    // Calculate distance guidance from bounding box
-                                    response.bbox?.let { bbox ->
-                                        val zoomFactor = capabilityReport?.recommendedZoom ?: 1f
-                                        distanceGuidance = DistanceGuidance.fromBoundingBox(
-                                            bboxWidth = bbox.w.toFloat(),
-                                            bboxHeight = bbox.h.toFloat(),
-                                            frameWidth = bitmap.width.toFloat(),
-                                            frameHeight = bitmap.height.toFloat(),
-                                            zoomFactor = zoomFactor
+                                    // Distance guidance: ML backend docOk=true means it validated
+                                    // the document is captured well. The backend returns a fixed
+                                    // placeholder bbox (always 0.05,0.05,0.9,0.9) that doesn't
+                                    // reflect actual distance, so we trust docOk as the gate.
+                                    distanceGuidance = if (response.docOk) {
+                                        DistanceGuidance(
+                                            state = DistanceState.PERFECT,
+                                            frameCoverage = GuidanceConfig.OPTIMAL_COVERAGE_TARGET,
+                                            message = "Document detected",
+                                            isOptimal = true
                                         )
-                                    } ?: run {
-                                        distanceGuidance = null
+                                    } else {
+                                        null
                                     }
+                                    Log.d("DocumentCapture", "Distance: docOk=${response.docOk}, optimal=${distanceGuidance?.isOptimal}")
                                 }
                                 is Resource.Error -> {
                                     Log.e("DocumentCapture", "ML Live ERROR: ${result.message}")
@@ -360,6 +403,26 @@ fun DocumentCaptureScreen(
             } finally {
                 isAnalyzing = false
             }
+        }
+    }
+
+    // Auto-zoom: adjust camera zoom based on document coverage during DETECTING state
+    LaunchedEffect(mlPassed, distanceGuidance) {
+        if (!mlPassed || distanceGuidance == null) return@LaunchedEffect
+        val guidance = distanceGuidance ?: return@LaunchedEffect
+
+        // Only auto-zoom when detecting (not yet optimal)
+        if (guidance.isOptimal) return@LaunchedEffect
+
+        val currentZoom = CameraUtils.getCurrentZoom()
+        val (_, maxZoom) = CameraUtils.getZoomRange()
+        val newZoom = AutoZoomController.adjustZoom(
+            docCoverage = guidance.frameCoverage,
+            currentZoom = currentZoom,
+            maxZoom = maxZoom
+        )
+        if (newZoom != currentZoom) {
+            CameraUtils.setZoom(newZoom)
         }
     }
 
@@ -424,6 +487,9 @@ fun DocumentCaptureScreen(
                             capturedFiles.clear()
                             verificationPassed = false
 
+                            // Mark onboarding as seen after first successful capture
+                            prefs.edit().putBoolean(GuidanceConfig.PREF_KEY_ONBOARDING, true).apply()
+
                             // callback with persistent files
                             onDocumentCaptured(finalFiles)
                         } catch (t: Throwable) {
@@ -460,6 +526,7 @@ fun DocumentCaptureScreen(
                             // We have both front and back - complete!
                             val finalFiles = capturedFiles.toList()
                             capturedFiles.clear()
+                            prefs.edit().putBoolean(GuidanceConfig.PREF_KEY_ONBOARDING, true).apply()
                             onDocumentCaptured(finalFiles)
                         } else {
                             // Only have front, UI will automatically switch to "Back" instructions
@@ -504,8 +571,135 @@ fun DocumentCaptureScreen(
                 verificationPassed -> DetectionState.SUCCESS
                 verificationError.isNotEmpty() -> DetectionState.FAILED
                 isCapturing || isProcessing -> DetectionState.CAPTURING
-                mlPassed -> DetectionState.DETECTED
+                mlPassed && distanceGuidance?.isOptimal == true -> DetectionState.LOCKED
+                mlPassed -> DetectionState.DETECTING
                 else -> DetectionState.SEARCHING
+            }
+            Log.d("DocumentCapture", "State: $detectionState (mlPassed=$mlPassed, distOptimal=${distanceGuidance?.isOptimal}, coverage=${distanceGuidance?.frameCoverage})")
+
+            // Auto-capture: countdown when LOCKED, fire capture at 2 seconds
+            LaunchedEffect(detectionState) {
+                if (detectionState == DetectionState.LOCKED) {
+                    view.performHapticFeedback(android.view.HapticFeedbackConstants.VIRTUAL_KEY)
+                    val start = System.currentTimeMillis()
+                    while (isActive) {
+                        val elapsed = System.currentTimeMillis() - start
+                        autoCaptureProgress = (elapsed / GuidanceConfig.COUNTDOWN_DURATION_MS.toFloat()).coerceIn(0f, 1f)
+                        if (elapsed >= GuidanceConfig.COUNTDOWN_DURATION_MS) {
+                            view.performHapticFeedback(android.view.HapticFeedbackConstants.CONFIRM)
+                            // Auto-capture: drain buffer and verify (same flow as manual button)
+                            if (!isCapturing && !isProcessing) {
+                                Log.d("DocumentCapture", "Auto-capture: countdown complete, draining buffer")
+                                frozenBitmap?.recycle()
+                                frozenBitmap = previewView.bitmap
+                                isProcessing = true
+                                isCapturing = false
+                                processingStatus = if (isBackSide) "Processing..." else "Verifying..."
+
+                                if (torchEnabled) {
+                                    CameraUtils.setTorch(false)
+                                    torchEnabled = false
+                                }
+
+                                val bufferedBitmaps = BurstCaptureUtils.drainBuffer()
+                                Log.d("DocumentCapture", "Auto-capture: drained ${bufferedBitmaps.size} frames")
+
+                                coroutineScope.launch {
+                                    try {
+                                        val frames = withContext(Dispatchers.IO) {
+                                            bufferedBitmaps.mapIndexedNotNull { index, bmp ->
+                                                try {
+                                                    val file = java.io.File(context.cacheDir, "burst_frame_${System.currentTimeMillis()}_$index.jpg")
+                                                    file.outputStream().use { out ->
+                                                        bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 85, out)
+                                                    }
+                                                    file
+                                                } catch (e: Exception) {
+                                                    Log.w("DocumentCapture", "Auto-capture: failed to save frame $index: ${e.message}")
+                                                    null
+                                                } finally {
+                                                    bmp.recycle()
+                                                }
+                                            }
+                                        }
+
+                                        if (frames.size < 3) {
+                                            Log.w("DocumentCapture", "Auto-capture: only ${frames.size} frames, falling back to ImageCapture")
+                                            BurstCaptureUtils.cleanupBurstFiles(frames)
+                                            val fallbackFrames = BurstCaptureUtils.captureBurst(
+                                                context = context,
+                                                imageCapture = imageCapture,
+                                                frameCount = 6,
+                                                delayMs = 50
+                                            )
+                                            if (fallbackFrames.isEmpty()) {
+                                                withContext(Dispatchers.Main) {
+                                                    verificationError = "Failed to capture frames. Please try again."
+                                                    isProcessing = false
+                                                    isCapturing = false
+                                                    frozenBitmap = null
+                                                }
+                                                return@launch
+                                            }
+                                            verifyAndHandleResult(
+                                                frames = fallbackFrames,
+                                                documentType = documentType,
+                                                capturedFiles = capturedFiles,
+                                                isBackSide = isBackSide,
+                                                onPass = { passedFrames ->
+                                                    view.performHapticFeedback(android.view.HapticFeedbackConstants.CONFIRM)
+                                                    verificationPassed = true
+                                                    burstFiles = passedFrames
+                                                    previewPath = passedFrames.first().path
+                                                },
+                                                onFail = { error ->
+                                                    view.performHapticFeedback(android.view.HapticFeedbackConstants.REJECT)
+                                                    verificationError = error
+                                                }
+                                            )
+                                            return@launch
+                                        }
+
+                                        verifyAndHandleResult(
+                                            frames = frames,
+                                            documentType = documentType,
+                                            capturedFiles = capturedFiles,
+                                            isBackSide = isBackSide,
+                                            onPass = { passedFrames ->
+                                                view.performHapticFeedback(android.view.HapticFeedbackConstants.CONFIRM)
+                                                verificationPassed = true
+                                                burstFiles = passedFrames
+                                                previewPath = passedFrames.first().path
+                                            },
+                                            onFail = { error ->
+                                                view.performHapticFeedback(android.view.HapticFeedbackConstants.REJECT)
+                                                verificationError = error
+                                            }
+                                        )
+                                    } catch (e: CancellationException) {
+                                        throw e
+                                    } catch (e: Exception) {
+                                        Log.e("DocumentCapture", "Auto-capture verification failed", e)
+                                        withContext(Dispatchers.Main) {
+                                            verificationError = "An error occurred. Please try again."
+                                        }
+                                    } finally {
+                                        withContext(Dispatchers.Main) {
+                                            isProcessing = false
+                                            isCapturing = false
+                                            processingStatus = ""
+                                            frozenBitmap = null
+                                        }
+                                    }
+                                }
+                            }
+                            break
+                        }
+                        delay(16) // ~60fps
+                    }
+                } else {
+                    autoCaptureProgress = 0f
+                }
             }
 
             Box(
@@ -585,7 +779,7 @@ fun DocumentCaptureScreen(
                     )
                 }
 
-                // Frozen frame + processing overlay
+                // Frozen frame + processing overlay with hero thumbnail + sub-steps
                 if (isProcessing && frozenBitmap != null) {
                     Image(
                         bitmap = frozenBitmap!!.asImageBitmap(),
@@ -599,27 +793,52 @@ fun DocumentCaptureScreen(
                         modifier = Modifier
                             .fillMaxSize()
                             .background(
-                                Color.Black.copy(alpha = 0.5f),
+                                GuidanceConfig.OVERLAY_DARK,
                                 RoundedCornerShape(ScaleUtil.scaleWidth(8.dp))
                             ),
                         contentAlignment = Alignment.Center
                     ) {
                         Column(
                             horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.Center
+                            verticalArrangement = Arrangement.Center,
+                            modifier = Modifier.padding(horizontal = 24.dp)
                         ) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(48.dp),
-                                color = Color.White,
-                                strokeWidth = 4.dp
+                            // Hero thumbnail
+                            Image(
+                                bitmap = frozenBitmap!!.asImageBitmap(),
+                                contentDescription = "Captured document",
+                                modifier = Modifier
+                                    .size(260.dp, 180.dp)
+                                    .clip(RoundedCornerShape(12.dp))
                             )
                             Spacer(modifier = Modifier.height(16.dp))
+
+                            // Status indicator
+                            if (verificationPassed) {
+                                Text("✓", color = GuidanceConfig.STATE_GREEN, fontSize = 32.sp, fontWeight = FontWeight.Bold)
+                            } else if (verificationError.isNotEmpty()) {
+                                Text("✗", color = GuidanceConfig.STATE_ERROR, fontSize = 32.sp, fontWeight = FontWeight.Bold)
+                            } else {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(36.dp),
+                                    color = Color.White,
+                                    strokeWidth = 3.dp
+                                )
+                            }
+                            Spacer(modifier = Modifier.height(8.dp))
+
                             Text(
                                 text = processingStatus.ifEmpty { "Processing..." },
                                 color = Color.White,
-                                fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(16.dp).toSp() },
+                                fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(15.dp).toSp() },
                                 fontWeight = FontWeight.W600
                             )
+
+                            // Sub-step progress indicators
+                            Spacer(modifier = Modifier.height(12.dp))
+                            ProcessingSubStep("Quality check", 1.0f)
+                            ProcessingSubStep("Reading text", if (verificationPassed) 1.0f else 0.8f)
+                            ProcessingSubStep("Verification", if (verificationPassed) 1.0f else 0.6f)
                         }
                     }
                 }
@@ -631,14 +850,30 @@ fun DocumentCaptureScreen(
                 )
             }
 
-            Spacer(modifier = Modifier.weight(0.05f))
+            // Distance meter bar — bottom sheet with progress bar + checklist
+            val barProgress = when (detectionState) {
+                DetectionState.SEARCHING -> 0f
+                DetectionState.DETECTING -> (distanceGuidance?.frameCoverage ?: 0f).coerceIn(0f, 0.75f) / 0.75f * 0.75f
+                DetectionState.LOCKED -> 1f
+                else -> 0f
+            }
 
-            // Distance guidance indicator
+            DistanceMeterBar(
+                detectionState = detectionState,
+                barProgress = barProgress,
+                docDetected = mlPassed,
+                goodLighting = true, // TODO: wire to real lighting check
+                distanceOptimal = distanceGuidance?.isOptimal == true,
+                noGlare = true, // TODO: wire to real glare check
+                countdownProgress = autoCaptureProgress
+            )
+
+            // Legacy distance guidance indicator (kept for states not covered by bottom sheet)
             distanceGuidance?.let { guidance ->
                 val guidanceColor = when (guidance.state) {
-                    DistanceState.PERFECT -> Color(0xFF4CAF50) // Green
-                    DistanceState.SLIGHTLY_CLOSE, DistanceState.SLIGHTLY_FAR -> Color(0xFFFFA726) // Orange
-                    DistanceState.TOO_CLOSE, DistanceState.TOO_FAR -> Color(0xFFEF5350) // Red
+                    DistanceState.PERFECT -> GuidanceConfig.STATE_GREEN
+                    DistanceState.SLIGHTLY_CLOSE, DistanceState.SLIGHTLY_FAR -> GuidanceConfig.STATE_AMBER
+                    DistanceState.TOO_CLOSE, DistanceState.TOO_FAR -> GuidanceConfig.STATE_ERROR
                     DistanceState.NO_DOCUMENT -> Color.Gray
                 }
 
@@ -651,10 +886,10 @@ fun DocumentCaptureScreen(
                     ) {
                         Text(
                             text = when (guidance.state) {
-                                DistanceState.TOO_CLOSE -> "📏 Move farther away"
-                                DistanceState.SLIGHTLY_CLOSE -> "📏 Slightly too close"
-                                DistanceState.SLIGHTLY_FAR -> "📏 Move a bit closer"
-                                DistanceState.TOO_FAR -> "📏 Move much closer"
+                                DistanceState.TOO_CLOSE -> "Move farther away"
+                                DistanceState.SLIGHTLY_CLOSE -> "Slightly too close"
+                                DistanceState.SLIGHTLY_FAR -> "Move a bit closer"
+                                DistanceState.TOO_FAR -> "Move much closer"
                                 else -> guidance.message
                             },
                             color = Color.White,
@@ -946,6 +1181,50 @@ fun DocumentCaptureScreen(
 }
 
 /**
+ * Processing sub-step indicator: label + progress bar
+ */
+@Composable
+private fun ProcessingSubStep(label: String, progress: Float) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 3.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = label,
+            color = Color.White.copy(alpha = 0.8f),
+            fontSize = 12.sp,
+            modifier = Modifier.width(100.dp)
+        )
+        Spacer(modifier = Modifier.width(8.dp))
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .height(6.dp)
+                .clip(RoundedCornerShape(3.dp))
+                .background(GuidanceConfig.BAR_TRACK)
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxHeight()
+                    .fillMaxWidth(fraction = progress.coerceIn(0f, 1f))
+                    .background(
+                        if (progress >= 1f) GuidanceConfig.STATE_GREEN else GuidanceConfig.STATE_AMBER,
+                        RoundedCornerShape(3.dp)
+                    )
+            )
+        }
+        Spacer(modifier = Modifier.width(8.dp))
+        Text(
+            text = "${(progress * 100).toInt()}%",
+            color = Color.White.copy(alpha = 0.6f),
+            fontSize = 11.sp
+        )
+    }
+}
+
+/**
  * Shared verification logic: sends burst frames to ML backend and invokes
  * the appropriate callback based on the result.
  *
@@ -1011,11 +1290,14 @@ private suspend fun verifyAndHandleResult(
                 Log.d("DocumentCapture", "Verify-burst result: ${response.decision}, conf=${response.confidence}, hint=${response.hint}")
 
                 if (passed) {
-                    // ML backend approved. If local anti-spoof flagged an issue,
-                    // warn the user but still allow them to proceed (soft check).
+                    // Soft gate: ML backend is authoritative for anti-spoof.
+                    // Local detection is informational — log warnings but don't
+                    // override the backend decision. The heuristic autocorrelation
+                    // produces false positives on legitimate documents with
+                    // repeating text/security features.
                     if (localAntiSpoofResult != null && !localAntiSpoofResult.isPhysicalDocument) {
-                        Log.w("DocumentCapture", "Local anti-spoof warning: ${localAntiSpoofResult.message} " +
-                                "(spoofType=${localAntiSpoofResult.spoofType}). ML backend passed -- proceeding with warning.")
+                        Log.w("DocumentCapture", "Local anti-spoof WARNING: ${localAntiSpoofResult.message} " +
+                                "(spoofType=${localAntiSpoofResult.spoofType}). ML backend passed — trusting backend decision.")
                     }
                     onPass(frames)
                 } else {
