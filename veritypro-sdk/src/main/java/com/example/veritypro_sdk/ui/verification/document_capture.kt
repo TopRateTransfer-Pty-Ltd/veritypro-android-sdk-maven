@@ -49,6 +49,7 @@ import com.example.veritypro_sdk.services.Resource
 import com.example.veritypro_sdk.services.sanitizeMLHint
 import com.example.veritypro_sdk.utils.AutoZoomController
 import com.example.veritypro_sdk.utils.BurstCaptureUtils
+import com.example.veritypro_sdk.utils.ImageSharpeningUtils
 import com.example.veritypro_sdk.utils.CameraCapabilityAnalyzer
 import com.example.veritypro_sdk.utils.CameraCapabilityReport
 import com.example.veritypro_sdk.utils.CameraUtils
@@ -57,10 +58,13 @@ import com.example.veritypro_sdk.utils.DistanceState
 import com.example.veritypro_sdk.utils.DocumentAntiSpoofChecker
 import com.example.veritypro_sdk.utils.FocusMode
 import com.example.veritypro_sdk.utils.GuidanceConfig
+import com.example.veritypro_sdk.utils.CaptureRuntimeData
+import com.example.veritypro_sdk.utils.MotionAnalysisCollector
 import com.example.veritypro_sdk.utils.SecurityAssessmentCollector
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -194,6 +198,13 @@ fun DocumentCaptureScreen(
     var mlConfidence by remember { mutableStateOf(0f) }
     var mlHint by remember { mutableStateOf("") }
     var isAnalyzing by remember { mutableStateOf(false) }
+
+    // Forensic tracking: motion, capture timing, burst score
+    val motionCollector = remember { MotionAnalysisCollector(context) }
+    var captureAttemptCount by remember { mutableStateOf(0) }
+    var captureStartTimeMs by remember { mutableStateOf(System.currentTimeMillis()) }
+    var lastBurstScore by remember { mutableStateOf<Double?>(null) }
+
     val coroutineScope = rememberCoroutineScope()
 
     // Camera ready state - prevents ML analysis until camera is fully initialized
@@ -272,16 +283,19 @@ fun DocumentCaptureScreen(
         }
     }
 
-    // Start burst frame buffer when camera is ready (iOS-matching pattern).
+    // Start burst frame buffer and motion collection when camera is ready (iOS-matching pattern).
     // Continuously captures preview bitmaps so they're available instantly on tap.
     LaunchedEffect(cameraReady) {
         if (!cameraReady) return@LaunchedEffect
         BurstCaptureUtils.startBuffering(previewView)
+        motionCollector.start()
+        captureStartTimeMs = System.currentTimeMillis()
     }
 
-    // Stop buffering and free memory when leaving the screen
+    // Stop buffering, motion collection and free memory when leaving the screen
     DisposableEffect(Unit) {
         onDispose {
+            motionCollector.stop()
             BurstCaptureUtils.stopBuffering()
             BurstCaptureUtils.clearBuffer()
         }
@@ -490,6 +504,21 @@ fun DocumentCaptureScreen(
                             // Mark onboarding as seen after first successful capture
                             prefs.edit().putBoolean(GuidanceConfig.PREF_KEY_ONBOARDING, true).apply()
 
+                            // Store forensic runtime data before delivering result
+                            val passportMotion = motionCollector.stop()
+                            SecurityAssessmentCollector.storeRuntimeData(
+                                CaptureRuntimeData(
+                                    captureAttempts = captureAttemptCount,
+                                    captureDurationSeconds = (System.currentTimeMillis() - captureStartTimeMs) / 1000.0,
+                                    antiSpoofBurstScore = lastBurstScore,
+                                    motionDurationMs = passportMotion.durationMs,
+                                    motionSampleCount = passportMotion.sampleCount,
+                                    accelStdDev = passportMotion.accelStdDev,
+                                    gyroStdDev = passportMotion.gyroStdDev,
+                                    motionScore = passportMotion.motionScore,
+                                )
+                            )
+
                             // callback with persistent files
                             onDocumentCaptured(finalFiles)
                         } catch (t: Throwable) {
@@ -527,6 +556,22 @@ fun DocumentCaptureScreen(
                             val finalFiles = capturedFiles.toList()
                             capturedFiles.clear()
                             prefs.edit().putBoolean(GuidanceConfig.PREF_KEY_ONBOARDING, true).apply()
+
+                            // Store forensic runtime data before delivering result
+                            val twoSideMotion = motionCollector.stop()
+                            SecurityAssessmentCollector.storeRuntimeData(
+                                CaptureRuntimeData(
+                                    captureAttempts = captureAttemptCount,
+                                    captureDurationSeconds = (System.currentTimeMillis() - captureStartTimeMs) / 1000.0,
+                                    antiSpoofBurstScore = lastBurstScore,
+                                    motionDurationMs = twoSideMotion.durationMs,
+                                    motionSampleCount = twoSideMotion.sampleCount,
+                                    accelStdDev = twoSideMotion.accelStdDev,
+                                    gyroStdDev = twoSideMotion.gyroStdDev,
+                                    motionScore = twoSideMotion.motionScore,
+                                )
+                            )
+
                             onDocumentCaptured(finalFiles)
                         } else {
                             // Only have front, UI will automatically switch to "Back" instructions
@@ -594,6 +639,7 @@ fun DocumentCaptureScreen(
                                 frozenBitmap = previewView.bitmap
                                 isProcessing = true
                                 isCapturing = false
+                                captureAttemptCount++
                                 processingStatus = if (isBackSide) "Processing..." else "Verifying..."
 
                                 if (torchEnabled) {
@@ -606,12 +652,22 @@ fun DocumentCaptureScreen(
 
                                 coroutineScope.launch {
                                     try {
+                                        // High-res capture in parallel with burst frame saving
+                                        val highResCapture = async(Dispatchers.IO) {
+                                            BurstCaptureUtils.captureBurst(
+                                                context = context,
+                                                imageCapture = imageCapture,
+                                                frameCount = 1,
+                                                delayMs = 0
+                                            ).firstOrNull()
+                                        }
+
                                         val frames = withContext(Dispatchers.IO) {
                                             bufferedBitmaps.mapIndexedNotNull { index, bmp ->
                                                 try {
                                                     val file = java.io.File(context.cacheDir, "burst_frame_${System.currentTimeMillis()}_$index.jpg")
                                                     file.outputStream().use { out ->
-                                                        bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 85, out)
+                                                        bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 95, out)
                                                     }
                                                     file
                                                 } catch (e: Exception) {
@@ -623,8 +679,30 @@ fun DocumentCaptureScreen(
                                             }
                                         }
 
+                                        val highResFile = highResCapture.await()
+                                        Log.d("DocumentCapture", "Auto-capture high-res: ${highResFile?.name ?: "failed"}")
+
+                                        // Apply 4-stage sharpening pipeline to high-res file (iOS parity).
+                                        // Mirrors iOS ManualCaptureCameraView.applySharpeningFilter().
+                                        if (highResFile != null && highResFile.exists()) {
+                                            try {
+                                                val bmp = BitmapFactory.decodeFile(highResFile.path)
+                                                if (bmp != null) {
+                                                    val sharpened = ImageSharpeningUtils.applySharpeningPipeline(bmp)
+                                                    highResFile.outputStream().use { out ->
+                                                        sharpened.compress(android.graphics.Bitmap.CompressFormat.JPEG, 95, out)
+                                                    }
+                                                    if (sharpened !== bmp) bmp.recycle()
+                                                    Log.d("DocumentCapture", "Auto-capture: sharpening applied")
+                                                }
+                                            } catch (e: Exception) {
+                                                Log.w("DocumentCapture", "Auto-capture: sharpening failed, using original: ${e.message}")
+                                            }
+                                        }
+
                                         if (frames.size < 3) {
                                             Log.w("DocumentCapture", "Auto-capture: only ${frames.size} frames, falling back to ImageCapture")
+                                            highResFile?.delete()
                                             BurstCaptureUtils.cleanupBurstFiles(frames)
                                             val fallbackFrames = BurstCaptureUtils.captureBurst(
                                                 context = context,
@@ -646,7 +724,8 @@ fun DocumentCaptureScreen(
                                                 documentType = documentType,
                                                 capturedFiles = capturedFiles,
                                                 isBackSide = isBackSide,
-                                                onPass = { passedFrames ->
+                                                onPass = { passedFrames, burstScore ->
+                                                    lastBurstScore = burstScore
                                                     view.performHapticFeedback(android.view.HapticFeedbackConstants.CONFIRM)
                                                     verificationPassed = true
                                                     burstFiles = passedFrames
@@ -665,13 +744,16 @@ fun DocumentCaptureScreen(
                                             documentType = documentType,
                                             capturedFiles = capturedFiles,
                                             isBackSide = isBackSide,
-                                            onPass = { passedFrames ->
+                                            onPass = { passedFrames, burstScore ->
+                                                lastBurstScore = burstScore
                                                 view.performHapticFeedback(android.view.HapticFeedbackConstants.CONFIRM)
                                                 verificationPassed = true
                                                 burstFiles = passedFrames
-                                                previewPath = passedFrames.first().path
+                                                previewPath = highResFile?.takeIf { it.exists() }?.path
+                                                    ?: passedFrames.first().path
                                             },
                                             onFail = { error ->
+                                                highResFile?.delete()
                                                 view.performHapticFeedback(android.view.HapticFeedbackConstants.REJECT)
                                                 verificationError = error
                                             }
@@ -858,13 +940,22 @@ fun DocumentCaptureScreen(
                 else -> 0f
             }
 
+            // Derive lighting and glare quality signals from the ML hint text.
+            // The backend sends hints like "Too much glare" or "Image too dark" when
+            // it detects quality problems in the live frame stream.
+            val hintLower = mlHint.lowercase()
+            val goodLighting = !hintLower.contains("dark") && !hintLower.contains("dim") &&
+                !hintLower.contains("bright") && !hintLower.contains("light")
+            val noGlare = !hintLower.contains("glare") && !hintLower.contains("reflect") &&
+                !hintLower.contains("shine")
+
             DistanceMeterBar(
                 detectionState = detectionState,
                 barProgress = barProgress,
                 docDetected = mlPassed,
-                goodLighting = true, // TODO: wire to real lighting check
+                goodLighting = goodLighting,
                 distanceOptimal = distanceGuidance?.isOptimal == true,
-                noGlare = true, // TODO: wire to real glare check
+                noGlare = noGlare,
                 countdownProgress = autoCaptureProgress
             )
 
@@ -964,6 +1055,7 @@ fun DocumentCaptureScreen(
                         // Clear any previous error
                         verificationError = ""
                         verificationPassed = false
+                        captureAttemptCount++
 
                         // IMMEDIATELY freeze the camera frame on tap (iOS-matching behavior)
                         // Recycle the previous bitmap to prevent native memory leaks on rapid re-capture
@@ -978,13 +1070,27 @@ fun DocumentCaptureScreen(
 
                         coroutineScope.launch {
                             try {
-                                // Save buffered bitmaps to temp files for downstream preview/upload
+                                // ── High-res capture (runs in parallel with burst frame saving) ──
+                                // Uses imageCapture (CAPTURE_MODE_MAXIMIZE_QUALITY, 1920×1440 target)
+                                // for the primary document file shown to the user and sent to the server.
+                                // Burst frames from previewView (preview resolution) are kept for
+                                // anti-spoofing verification only.
+                                val highResCapture = async(Dispatchers.IO) {
+                                    BurstCaptureUtils.captureBurst(
+                                        context = context,
+                                        imageCapture = imageCapture,
+                                        frameCount = 1,
+                                        delayMs = 0
+                                    ).firstOrNull()
+                                }
+
+                                // Save buffered bitmaps to temp files for anti-spoofing verification
                                 val frames = withContext(Dispatchers.IO) {
                                     bufferedBitmaps.mapIndexedNotNull { index, bitmap ->
                                         try {
                                             val file = File(context.cacheDir, "burst_frame_${System.currentTimeMillis()}_$index.jpg")
                                             file.outputStream().use { out ->
-                                                bitmap.compress(Bitmap.CompressFormat.JPEG, 85, out)
+                                                bitmap.compress(Bitmap.CompressFormat.JPEG, 95, out)
                                             }
                                             file
                                         } catch (e: Exception) {
@@ -996,9 +1102,32 @@ fun DocumentCaptureScreen(
                                     }
                                 }
 
+                                // Await high-res result (concurrent with burst frame saving above)
+                                val highResFile = highResCapture.await()
+                                Log.d("DocumentCapture", "High-res capture: ${highResFile?.name ?: "failed (will use burst frame)"}")
+
+                                // Apply 4-stage sharpening pipeline to high-res file (iOS parity).
+                                // Mirrors iOS ManualCaptureCameraView.applySharpeningFilter().
+                                if (highResFile != null && highResFile.exists()) {
+                                    try {
+                                        val bmp = BitmapFactory.decodeFile(highResFile.path)
+                                        if (bmp != null) {
+                                            val sharpened = ImageSharpeningUtils.applySharpeningPipeline(bmp)
+                                            highResFile.outputStream().use { out ->
+                                                sharpened.compress(android.graphics.Bitmap.CompressFormat.JPEG, 95, out)
+                                            }
+                                            if (sharpened !== bmp) bmp.recycle()
+                                            Log.d("DocumentCapture", "Sharpening applied to high-res capture")
+                                        }
+                                    } catch (e: Exception) {
+                                        Log.w("DocumentCapture", "Sharpening failed, using original: ${e.message}")
+                                    }
+                                }
+
                                 if (frames.size < 3) {
                                     // Not enough pre-buffered frames — fall back to live capture
                                     Log.w("DocumentCapture", "Buffer had ${frames.size} frames, falling back to ImageCapture")
+                                    highResFile?.delete()
                                     BurstCaptureUtils.cleanupBurstFiles(frames)
                                     val fallbackFrames = BurstCaptureUtils.captureBurst(
                                         context = context,
@@ -1015,13 +1144,14 @@ fun DocumentCaptureScreen(
                                         }
                                         return@launch
                                     }
-                                    // Continue with fallback frames
+                                    // Fallback frames are already full-resolution (from imageCapture)
                                     verifyAndHandleResult(
                                         frames = fallbackFrames,
                                         documentType = documentType,
                                         capturedFiles = capturedFiles,
                                         isBackSide = isBackSide,
-                                        onPass = { passedFrames ->
+                                        onPass = { passedFrames, burstScore ->
+                                            lastBurstScore = burstScore
                                             view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
                                             verificationPassed = true
                                             burstFiles = passedFrames
@@ -1035,19 +1165,25 @@ fun DocumentCaptureScreen(
                                     return@launch
                                 }
 
-                                // Primary path: verify pre-buffered frames (instant)
+                                // Primary path: verify pre-buffered burst frames (anti-spoofing)
+                                // and use high-res imageCapture photo as the primary document file.
                                 verifyAndHandleResult(
                                     frames = frames,
                                     documentType = documentType,
                                     capturedFiles = capturedFiles,
                                     isBackSide = isBackSide,
-                                    onPass = { passedFrames ->
+                                    onPass = { passedFrames, burstScore ->
+                                        lastBurstScore = burstScore
                                         view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
                                         verificationPassed = true
                                         burstFiles = passedFrames
-                                        previewPath = passedFrames.first().path
+                                        // Use full-resolution imageCapture file as primary document.
+                                        // Fall back to first burst frame if high-res capture failed.
+                                        previewPath = highResFile?.takeIf { it.exists() }?.path
+                                            ?: passedFrames.first().path
                                     },
                                     onFail = { error ->
+                                        highResFile?.delete()
                                         view.performHapticFeedback(HapticFeedbackConstants.REJECT)
                                         verificationError = error
                                     }
@@ -1240,7 +1376,7 @@ private suspend fun verifyAndHandleResult(
     documentType: Int?,
     capturedFiles: List<File>,
     isBackSide: Boolean,
-    onPass: suspend (List<File>) -> Unit,
+    onPass: suspend (List<File>, Double) -> Unit,
     onFail: suspend (String) -> Unit
 ) {
     val sideExpected = if (capturedFiles.isNotEmpty()) "BACK" else "FRONT"
@@ -1299,7 +1435,7 @@ private suspend fun verifyAndHandleResult(
                         Log.w("DocumentCapture", "Local anti-spoof WARNING: ${localAntiSpoofResult.message} " +
                                 "(spoofType=${localAntiSpoofResult.spoofType}). ML backend passed — trusting backend decision.")
                     }
-                    onPass(frames)
+                    onPass(frames, response.confidence?.toDouble() ?: 0.0)
                 } else {
                     val error = sanitizeMLHint(response.hint).ifEmpty {
                         MLSpoofType.toUserMessage(response.spoof.reason)

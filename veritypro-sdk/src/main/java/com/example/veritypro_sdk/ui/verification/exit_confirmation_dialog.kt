@@ -77,7 +77,7 @@ import com.example.veritypro_sdk.ui.theme.customColors
                         onClick = onContinue,
                         modifier = Modifier
                             .weight(1f),
-                        shape = RoundedCornerShape(ScaleUtil.scaleWidth(4.dp)),
+                        shape = RoundedCornerShape(ScaleUtil.scaleWidth(8.dp)),
                         border = BorderStroke(ScaleUtil.scaleWidth(0.dp), Color.Transparent),
                         colors = ButtonDefaults.outlinedButtonColors(
                             containerColor = Color(0xFFE2EEFF),
@@ -96,7 +96,7 @@ import com.example.veritypro_sdk.ui.theme.customColors
                         onClick = onConfirmExit,
                         modifier = Modifier
                             .weight(1f),
-                        shape = RoundedCornerShape(ScaleUtil.scaleWidth(4.dp)),
+                        shape = RoundedCornerShape(ScaleUtil.scaleWidth(8.dp)),
                         colors = ButtonDefaults.buttonColors(
                             containerColor = Color.Red,
                             contentColor = Color.White

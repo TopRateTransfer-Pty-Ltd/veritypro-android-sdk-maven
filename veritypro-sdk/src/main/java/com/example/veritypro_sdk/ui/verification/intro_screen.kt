@@ -173,7 +173,7 @@ fun IntroScreen(onCancel: () -> Unit, onGetStarted: () -> Unit) {
             shape = RoundedCornerShape(ScaleUtil.scaleWidth(4.dp)),
             modifier = Modifier
                 .fillMaxWidth()
-                .height(ScaleUtil.scaleHeight(48.dp))
+                .height(ScaleUtil.scaleHeight(56.dp))
         ) {
             Text(
                 text = "Get started",
@@ -209,36 +209,33 @@ fun IntroScreen(onCancel: () -> Unit, onGetStarted: () -> Unit) {
 
 @Composable
 private fun ChecklistItem(iconRes: Int, title: String, subtitle: String) {
-    //TODO: Conditional iconRes color based on device's theme
+    val density = LocalDensity.current
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 10.dp),
+            .padding(vertical = ScaleUtil.scaleHeight(10.dp)),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Icon(
             painter = painterResource(id = iconRes),
             contentDescription = title,
-            modifier = Modifier.size(36.dp),
+            modifier = Modifier.size(ScaleUtil.scaleWidth(36.dp)),
             tint = MaterialTheme.customColors.icon
         )
-        Spacer(modifier = Modifier.width(12.dp))
+        Spacer(modifier = Modifier.width(ScaleUtil.scaleWidth(12.dp)))
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = title,
-                fontSize = 14.sp,
+                fontSize = density.run { ScaleUtil.scaleTextSize(14.dp).toSp() },
                 fontWeight = FontWeight.W600,
                 color = MaterialTheme.colorScheme.onSurface,
             )
-            //Spacer(modifier = Modifier.height(4.dp))
             Text(
                 text = subtitle,
-                fontSize = 14.sp,
+                fontSize = density.run { ScaleUtil.scaleTextSize(14.dp).toSp() },
                 fontWeight = FontWeight.W400,
-
                 color = MaterialTheme.customColors.subTitle,
-
-                )
+            )
         }
     }
 }

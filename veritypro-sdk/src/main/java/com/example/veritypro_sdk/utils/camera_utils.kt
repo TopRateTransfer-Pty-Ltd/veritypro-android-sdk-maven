@@ -34,8 +34,11 @@ import androidx.lifecycle.LifecycleOwner
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.face.FaceDetection
 import com.google.mlkit.vision.face.FaceDetectorOptions
+import androidx.camera.core.FocusMeteringAction
+import androidx.camera.core.SurfaceOrientedMeteringPointFactory
 import java.io.File
 import kotlin.math.min
+import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
 
 /**
@@ -169,6 +172,10 @@ object CameraUtils {
                         // Apply recommended zoom
                         applyRecommendedZoom(camera, capabilityReport)
 
+                        // Apply industry-standard document capture settings:
+                        // center focus/AE/AWB metering + exposure compensation
+                        applyDocumentCaptureSettings(camera)
+
                         Log.i(TAG, "📷 Smart camera bound successfully")
                         Log.i(TAG, "📷 Camera ID: ${capabilityReport.recommendedCameraId}")
                         Log.i(TAG, "📷 Focus mode: ${capabilityReport.focusMode}")
@@ -190,6 +197,49 @@ object CameraUtils {
                 onCameraError?.invoke("Camera is not available: ${e.message ?: "unknown error"}. Please try again.")
             }
         }, ContextCompat.getMainExecutor(context))
+    }
+
+    /**
+     * Apply industry-standard document capture settings after camera binding.
+     *
+     * - Center AF/AE/AWB metering: ensures camera exposes and focuses on the
+     *   document center rather than the background or edges.
+     * - Exposure compensation (~+0.3 EV): prevents dark images on laminated or
+     *   reflective ID surfaces (industry standard: Jumio +0.3 EV, Onfido +0.5 EV).
+     */
+    private fun applyDocumentCaptureSettings(camera: Camera) {
+        // 1. Center focus + auto exposure + auto white balance metering point
+        try {
+            val factory = SurfaceOrientedMeteringPointFactory(1f, 1f)
+            val centerPoint = factory.createPoint(0.5f, 0.5f)
+            val action = FocusMeteringAction.Builder(
+                centerPoint,
+                FocusMeteringAction.FLAG_AF or FocusMeteringAction.FLAG_AE or FocusMeteringAction.FLAG_AWB
+            ).build()
+            camera.cameraControl.startFocusAndMetering(action)
+            Log.d(TAG, "Applied center AF/AE/AWB metering for document capture")
+        } catch (e: Exception) {
+            Log.w(TAG, "Focus metering not supported on this device: ${e.message}")
+        }
+
+        // 2. Exposure compensation: target ~+0.3 EV
+        try {
+            val exposureState = camera.cameraInfo.exposureState
+            if (exposureState.isExposureCompensationSupported) {
+                val step = exposureState.exposureCompensationStep.toFloat()
+                if (step > 0f) {
+                    val targetIndex = (0.3f / step).roundToInt()
+                        .coerceIn(
+                            exposureState.exposureCompensationRange.lower,
+                            exposureState.exposureCompensationRange.upper
+                        )
+                    camera.cameraControl.setExposureCompensationIndex(targetIndex)
+                    Log.d(TAG, "Applied exposure compensation: index=$targetIndex (step=${step}EV, ~+0.3EV)")
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Exposure compensation not supported on this device: ${e.message}")
+        }
     }
 
     /**

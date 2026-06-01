@@ -220,19 +220,19 @@ fun AddressCaptureScreen(
                 Icon(
                     imageVector = Icons.Outlined.UploadFile,
                     contentDescription = "Upload placeholder",
-                    modifier = Modifier.size(48.dp),
+                    modifier = Modifier.size(ScaleUtil.scaleWidth(48.dp)),
                     tint = MaterialTheme.customColors.subTitle
                 )
-                Spacer(modifier = Modifier.height(12.dp))
+                Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(12.dp)))
                 Text(
                     text = "Tap to upload or select",
                     fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(14.dp).toSp() },
                     color = MaterialTheme.customColors.subTitle
                 )
-                Spacer(modifier = Modifier.height(4.dp))
+                Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(4.dp)))
                 Text(
                     text = docType.acceptedFormats,
-                    fontSize = 12.sp,
+                    fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(12.dp).toSp() },
                     fontWeight = FontWeight.W500,
                     color = Color(0xFF2B7AEF)
                 )
@@ -254,10 +254,10 @@ fun AddressCaptureScreen(
 
         if (isProcessing) {
             androidx.compose.material3.CircularProgressIndicator(
-                modifier = Modifier.size(48.dp),
+                modifier = Modifier.size(ScaleUtil.scaleWidth(48.dp)),
                 color = Color(0xFF2B7AEF)
             )
-            Spacer(modifier = Modifier.height(8.dp))
+            Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(8.dp)))
             Text(
                 text = "Processing file...",
                 fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(14.dp).toSp() },

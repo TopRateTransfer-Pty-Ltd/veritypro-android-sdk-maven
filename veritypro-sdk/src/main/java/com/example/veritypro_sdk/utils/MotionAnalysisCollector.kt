@@ -25,17 +25,20 @@ class MotionAnalysisCollector(context: Context) : SensorEventListener {
     private val accelSensor = sensorManager?.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
     private val gyroSensor = sensorManager?.getDefaultSensor(Sensor.TYPE_GYROSCOPE)
 
+    private val lock = Any()
     private val accelSamples = mutableListOf<FloatArray>()
     private val gyroSamples = mutableListOf<FloatArray>()
     private var startTimeMs = 0L
-    private var running = false
+    @Volatile private var running = false
 
     fun start() {
-        if (running) return
-        accelSamples.clear()
-        gyroSamples.clear()
-        startTimeMs = System.currentTimeMillis()
-        running = true
+        synchronized(lock) {
+            if (running) return
+            accelSamples.clear()
+            gyroSamples.clear()
+            startTimeMs = System.currentTimeMillis()
+            running = true
+        }
 
         accelSensor?.let {
             sensorManager?.registerListener(this, it, SensorManager.SENSOR_DELAY_UI)
@@ -54,12 +57,18 @@ class MotionAnalysisCollector(context: Context) : SensorEventListener {
     )
 
     fun stop(): MotionResult {
-        running = false
-        sensorManager?.unregisterListener(this)
-        val durationMs = System.currentTimeMillis() - startTimeMs
+        val (durationMs, accelSnapshot, gyroSnapshot) = synchronized(lock) {
+            running = false
+            sensorManager?.unregisterListener(this)
+            Triple(
+                System.currentTimeMillis() - startTimeMs,
+                accelSamples.toList(),
+                gyroSamples.toList()
+            )
+        }
 
-        val accelStd = stdDev3(accelSamples)
-        val gyroStd = stdDev3(gyroSamples)
+        val accelStd = stdDev3(accelSnapshot)
+        val gyroStd = stdDev3(gyroSnapshot)
 
         // Motion score: magnitude of combined accel + gyro std deviations, clamped [0, 1]
         val accelMag = sqrt(accelStd.map { it * it }.sum())
@@ -68,7 +77,7 @@ class MotionAnalysisCollector(context: Context) : SensorEventListener {
 
         return MotionResult(
             durationMs = durationMs,
-            sampleCount = accelSamples.size + gyroSamples.size,
+            sampleCount = accelSnapshot.size + gyroSnapshot.size,
             accelStdDev = accelStd,
             gyroStdDev = gyroStd,
             motionScore = raw,
@@ -77,9 +86,13 @@ class MotionAnalysisCollector(context: Context) : SensorEventListener {
 
     override fun onSensorChanged(event: SensorEvent) {
         if (!running) return
-        when (event.sensor.type) {
-            Sensor.TYPE_ACCELEROMETER -> accelSamples.add(event.values.copyOf())
-            Sensor.TYPE_GYROSCOPE -> gyroSamples.add(event.values.copyOf())
+        val values = event.values.copyOf() // copy outside lock to minimise hold time
+        synchronized(lock) {
+            if (!running) return
+            when (event.sensor.type) {
+                Sensor.TYPE_ACCELEROMETER -> accelSamples.add(values)
+                Sensor.TYPE_GYROSCOPE -> gyroSamples.add(values)
+            }
         }
     }
 

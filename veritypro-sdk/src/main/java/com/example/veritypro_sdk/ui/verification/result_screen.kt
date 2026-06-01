@@ -88,7 +88,7 @@ fun ResultScreen(
 
                 Button(
                     onClick = onClose,
-                    shape = RoundedCornerShape(ScaleUtil.scaleWidth(4.dp)),
+                    shape = RoundedCornerShape(ScaleUtil.scaleWidth(8.dp)),
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(ScaleUtil.scaleHeight(56.dp)),
@@ -159,6 +159,7 @@ fun ResultScreen(
 
                 Button(
                     onClick = onRetry,
+                    shape = RoundedCornerShape(ScaleUtil.scaleWidth(8.dp)),
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(ScaleUtil.scaleHeight(56.dp)),
@@ -173,6 +174,7 @@ fun ResultScreen(
 
                 OutlinedButton(
                     onClick = onClose,
+                    shape = RoundedCornerShape(ScaleUtil.scaleWidth(8.dp)),
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(ScaleUtil.scaleHeight(56.dp)),

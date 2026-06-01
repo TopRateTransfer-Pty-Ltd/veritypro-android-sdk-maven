@@ -107,7 +107,7 @@ fun ThankYouScreen(
 
             Button(
                 onClick = onFinish,
-                shape = RoundedCornerShape(ScaleUtil.scaleWidth(8.dp)),
+                shape = RoundedCornerShape(ScaleUtil.scaleWidth(4.dp)),
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(ScaleUtil.scaleHeight(56.dp)),

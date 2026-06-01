@@ -153,13 +153,13 @@ fun EddIntroScreen(
             Icon(
                 imageVector = Icons.Default.Shield,
                 contentDescription = "Shield",
-                modifier = Modifier.size(20.dp),
+                modifier = Modifier.size(ScaleUtil.scaleWidth(20.dp)),
                 tint = MaterialTheme.customColors.icon
             )
-            Spacer(modifier = Modifier.width(8.dp))
+            Spacer(modifier = Modifier.width(ScaleUtil.scaleWidth(8.dp)))
             Text(
                 text = "Required by AUSTRAC for regulatory compliance",
-                fontSize = 12.sp,
+                fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(12.dp).toSp() },
                 fontWeight = FontWeight.W500,
                 color = MaterialTheme.customColors.subTitle
             )
@@ -201,26 +201,26 @@ private fun EddChecklistItem(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 10.dp),
+            .padding(vertical = ScaleUtil.scaleHeight(10.dp)),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Icon(
             imageVector = icon,
             contentDescription = title,
-            modifier = Modifier.size(36.dp),
+            modifier = Modifier.size(ScaleUtil.scaleWidth(36.dp)),
             tint = MaterialTheme.customColors.icon
         )
-        Spacer(modifier = Modifier.width(12.dp))
+        Spacer(modifier = Modifier.width(ScaleUtil.scaleWidth(12.dp)))
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = title,
-                fontSize = 14.sp,
+                fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(14.dp).toSp() },
                 fontWeight = FontWeight.W600,
                 color = MaterialTheme.colorScheme.onSurface
             )
             Text(
                 text = subtitle,
-                fontSize = 14.sp,
+                fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(14.dp).toSp() },
                 fontWeight = FontWeight.W400,
                 color = MaterialTheme.customColors.subTitle
             )

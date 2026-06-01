@@ -125,7 +125,7 @@ fun IdSelectionScreen(
                         colors = ButtonDefaults.buttonColors(
                             containerColor = Color(0xFF2B7AEF)
                         ),
-                        shape = MaterialTheme.shapes.small
+                        shape = RoundedCornerShape(ScaleUtil.scaleWidth(4.dp))
                     ) {
                         Text(
                             "Retry",
@@ -163,8 +163,7 @@ fun IdSelectionScreen(
             colors = ButtonDefaults.buttonColors(
                 containerColor = Color(0xFF2B7AEF)
             ),
-            shape = MaterialTheme.shapes.small,
-
+            shape = RoundedCornerShape(ScaleUtil.scaleWidth(4.dp)),
             modifier = Modifier
                 .fillMaxWidth()
                 .height(ScaleUtil.scaleHeight(48.dp)),
@@ -240,20 +239,22 @@ fun DocumentTypeOption(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 8.dp),
+                .padding(
+                    horizontal = ScaleUtil.scaleWidth(16.dp),
+                    vertical = ScaleUtil.scaleHeight(8.dp)
+                ),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Icon(
                 painter = painterResource(id = iconRes),
                 contentDescription = title,
-                modifier = Modifier.size(36.dp),
+                modifier = Modifier.size(ScaleUtil.scaleWidth(36.dp)),
                 tint = MaterialTheme.customColors.icon
-
             )
-            Spacer(modifier = Modifier.width(12.dp))
+            Spacer(modifier = Modifier.width(ScaleUtil.scaleWidth(12.dp)))
             Text(
                 text = title,
-                fontSize = 14.sp,
+                fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(14.dp).toSp() },
                 fontWeight = FontWeight.W600,
                 color = MaterialTheme.colorScheme.onSurface,
                 modifier = Modifier.weight(1f)

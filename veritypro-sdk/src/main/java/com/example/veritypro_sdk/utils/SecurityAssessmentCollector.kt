@@ -73,8 +73,16 @@ object SecurityAssessmentCollector {
 
     private var cachedIsEmulator: Boolean? = null
 
-    /** Backward-compatible overload — no runtime capture data. */
-    fun collectJson(context: Context): String = collectJson(context, null)
+    /** Runtime data stored from last document capture session. */
+    @Volatile private var lastRuntimeData: CaptureRuntimeData? = null
+
+    /** Called by DocumentCaptureScreen before onDocumentCaptured to store forensic data. */
+    fun storeRuntimeData(data: CaptureRuntimeData) {
+        lastRuntimeData = data
+    }
+
+    /** Backward-compatible overload — uses last stored runtime capture data. */
+    fun collectJson(context: Context): String = collectJson(context, lastRuntimeData)
 
     /** Full collection with optional runtime capture/geolocation/motion data. */
     fun collectJson(context: Context, runtimeData: CaptureRuntimeData?): String {

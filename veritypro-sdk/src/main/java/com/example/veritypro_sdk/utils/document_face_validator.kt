@@ -24,9 +24,21 @@ object DocumentFaceValidator {
     /** Maximum face area as percentage of total image area */
     private const val MAX_FACE_AREA_PERCENT = 50f
 
+    /** Front-side detector: sensitive (5% min) to catch small passport photos. */
     private val detectorOptions = FaceDetectorOptions.Builder()
         .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_ACCURATE)
         .setMinFaceSize(0.05f)
+        .build()
+
+    /**
+     * Back-side detector: stricter (15% min face width) to prevent ghost images
+     * and holographic security features on driver's licence backs from being
+     * falsely detected as faces and blocking capture.
+     * Mirrors iOS FaceDetectionService.detectFaceOnly minFaceArea = 0.04 (≥20% width).
+     */
+    private val backDetectorOptions = FaceDetectorOptions.Builder()
+        .setPerformanceMode(FaceDetectorOptions.PERFORMANCE_MODE_FAST)
+        .setMinFaceSize(0.15f)
         .build()
 
     /**
@@ -68,12 +80,14 @@ object DocumentFaceValidator {
 
     /**
      * Validate that the back side of a document contains no faces.
+     * Uses the stricter [backDetectorOptions] (MinFaceSize=0.15) to avoid
+     * false positives from ghost/hologram security features on licence backs.
      *
      * @return true if no faces detected (valid back side), false if faces found
      */
     suspend fun validateBackNoFace(bitmap: Bitmap): Boolean {
         return try {
-            val detector = FaceDetection.getClient(detectorOptions)
+            val detector = FaceDetection.getClient(backDetectorOptions)
             val image = InputImage.fromBitmap(bitmap, 0)
             val faces = detector.process(image).await()
 

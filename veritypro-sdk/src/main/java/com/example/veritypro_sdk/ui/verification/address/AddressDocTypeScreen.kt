@@ -181,7 +181,7 @@ fun AddressDocTypeScreen(
         AddressDocType.entries.forEach { docType ->
             val isSelected = selected == docType
             Surface(
-                shape = RoundedCornerShape(8.dp),
+                shape = RoundedCornerShape(ScaleUtil.scaleWidth(8.dp)),
                 color = Color.Transparent,
                 modifier = Modifier
                     .fillMaxWidth()
@@ -189,7 +189,7 @@ fun AddressDocTypeScreen(
                     .border(
                         width = if (isSelected) 2.dp else 1.dp,
                         color = if (isSelected) selectedColor else MaterialTheme.customColors.containerBorder,
-                        shape = RoundedCornerShape(8.dp)
+                        shape = RoundedCornerShape(ScaleUtil.scaleWidth(8.dp))
                     )
             ) {
                 Row(
@@ -211,27 +211,27 @@ fun AddressDocTypeScreen(
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
                             text = docType.displayName,
-                            fontSize = 14.sp,
+                            fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(14.dp).toSp() },
                             fontWeight = FontWeight.W600,
                             color = MaterialTheme.colorScheme.onSurface
                         )
                         Text(
                             text = docType.subtitle,
-                            fontSize = 12.sp,
+                            fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(12.dp).toSp() },
                             fontWeight = FontWeight.W400,
                             color = MaterialTheme.customColors.subTitle
                         )
-                        Spacer(modifier = Modifier.height(4.dp))
+                        Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(4.dp)))
                         Text(
                             text = "Accepted:",
-                            fontSize = 11.sp,
+                            fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(11.dp).toSp() },
                             fontWeight = FontWeight.W600,
                             color = MaterialTheme.customColors.subTitle
                         )
                         docType.acceptedDocuments.forEach { doc ->
                             Text(
                                 text = "• $doc",
-                                fontSize = 11.sp,
+                                fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(11.dp).toSp() },
                                 fontWeight = FontWeight.W400,
                                 color = MaterialTheme.customColors.subTitle
                             )
