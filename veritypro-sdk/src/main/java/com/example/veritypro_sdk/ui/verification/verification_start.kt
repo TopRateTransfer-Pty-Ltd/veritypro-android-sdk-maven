@@ -508,6 +508,11 @@ fun VerificationScreen(
                                 }
                                 DocumentCaptureScreen(
                                     documentType = selectedDocumentType,
+                                    // FIX (Architectural): Forward the KYC session ID so the
+                                    // anti-spoof verify-burst call can be correlated to this
+                                    // KYC session on the backend. sessionId is populated in the
+                                    // LaunchedEffect above after createKyc() completes.
+                                    kycSessionId = sessionId ?: "",
                                     onBack = {
                                         motionCollector?.stop()
                                         motionCollector = null

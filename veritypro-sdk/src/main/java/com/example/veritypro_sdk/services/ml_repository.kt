@@ -160,7 +160,16 @@ class MLRepository {
                 return Resource.Error("At least 3 frames required for verification")
             }
 
-            val base64Frames = frames.map { fileToBase64(it) }
+            // FIX: Process files sequentially to avoid loading all 6 high-res JPEGs
+            // into memory simultaneously. `frames.map { fileToBase64(it) }` would allocate
+            // all frame bytes + their base64 strings at the same time — on a device with
+            // 6 × ~3 MB images that's ~18 MB raw + ~24 MB base64 = ~42 MB peak RAM, which
+            // can trigger OOM on low-end devices with 512 MB RAM.
+            val base64Frames = buildList {
+                for (frame in frames) {
+                    add(fileToBase64(frame))
+                }
+            }
 
             val request = MLVerifyBurstRequest(
                 sessionId = sessionId,

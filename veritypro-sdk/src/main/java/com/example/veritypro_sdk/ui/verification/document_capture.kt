@@ -73,6 +73,11 @@ import kotlinx.coroutines.withContext
 @Composable
 fun DocumentCaptureScreen(
     documentType: Int?,
+    // FIX (Architectural): Accept the KYC session ID from the parent VerificationScreen
+    // so it can be forwarded to the verify-burst anti-spoof call. Previously the burst
+    // session ID was a synthetic timestamp string with no relationship to the KYC session,
+    // making backend correlation of anti-spoof checks to KYC submissions impossible.
+    kycSessionId: String = "",
     onBack: () -> Unit,
     onDocumentCaptured: (List<File>) -> Unit
 ) {
@@ -363,6 +368,16 @@ fun DocumentCaptureScreen(
                                     mlHint = if (!response.docOk) sanitizeMLHint(response.hint ?: "") else ""
                                     Log.d("DocumentCapture", "ML Live SUCCESS: docOk=${response.docOk}, conf=$mlConfidence, hint=${response.hint}, bbox=${response.bbox}")
 
+                                    // FIX: Auto-turn-off torch when ML hints glare — torch is the
+                                    // most common cause of "Too much glare" on laminated documents.
+                                    val hintLc = (response.hint ?: "").lowercase()
+                                    if (torchEnabled && (hintLc.contains("glare") || hintLc.contains("reflect"))) {
+                                        CameraUtils.setTorch(false)
+                                        torchEnabled = false
+                                        mlHint = "Flash turned off — tilt document slightly to reduce reflection"
+                                        Log.d("DocumentCapture", "Torch auto-disabled due to glare hint")
+                                    }
+
                                     // Distance guidance: ML backend docOk=true means it validated
                                     // the document is captured well. The backend returns a fixed
                                     // placeholder bbox (always 0.05,0.05,0.9,0.9) that doesn't
@@ -642,10 +657,9 @@ fun DocumentCaptureScreen(
                                 captureAttemptCount++
                                 processingStatus = if (isBackSide) "Processing..." else "Verifying..."
 
-                                if (torchEnabled) {
-                                    CameraUtils.setTorch(false)
-                                    torchEnabled = false
-                                }
+                                // FIX: Do NOT turn off torch here — leave it on during the capture
+                                // so the high-res photo is taken under the same lighting as the
+                                // frozen preview. Torch is turned off after highResCapture.await().
 
                                 val bufferedBitmaps = BurstCaptureUtils.drainBuffer()
                                 Log.d("DocumentCapture", "Auto-capture: drained ${bufferedBitmaps.size} frames")
@@ -682,6 +696,15 @@ fun DocumentCaptureScreen(
                                         val highResFile = highResCapture.await()
                                         Log.d("DocumentCapture", "Auto-capture high-res: ${highResFile?.name ?: "failed"}")
 
+                                        // FIX: Turn off torch AFTER capture so the captured image
+                                        // matches the lighting shown in the frozen preview.
+                                        if (torchEnabled) {
+                                            withContext(Dispatchers.Main) {
+                                                CameraUtils.setTorch(false)
+                                                torchEnabled = false
+                                            }
+                                        }
+
                                         // Apply 4-stage sharpening pipeline to high-res file (iOS parity).
                                         // Mirrors iOS ManualCaptureCameraView.applySharpeningFilter().
                                         if (highResFile != null && highResFile.exists()) {
@@ -697,6 +720,22 @@ fun DocumentCaptureScreen(
                                                 }
                                             } catch (e: Exception) {
                                                 Log.w("DocumentCapture", "Auto-capture: sharpening failed, using original: ${e.message}")
+                                            }
+
+                                            // FIX: Update frozenBitmap to a thumbnail of the actual
+                                            // captured image so the processing overlay shows the
+                                            // same content as the preview/confirmation screen.
+                                            try {
+                                                val opts = android.graphics.BitmapFactory.Options().apply { inSampleSize = 4 }
+                                                val thumb = android.graphics.BitmapFactory.decodeFile(highResFile.path, opts)
+                                                if (thumb != null) {
+                                                    withContext(Dispatchers.Main) {
+                                                        frozenBitmap?.recycle()
+                                                        frozenBitmap = thumb
+                                                    }
+                                                }
+                                            } catch (e: Exception) {
+                                                Log.w("DocumentCapture", "Auto-capture: frozen bitmap update skipped: ${e.message}")
                                             }
                                         }
 
@@ -724,6 +763,7 @@ fun DocumentCaptureScreen(
                                                 documentType = documentType,
                                                 capturedFiles = capturedFiles,
                                                 isBackSide = isBackSide,
+                                                kycSessionId = kycSessionId,
                                                 onPass = { passedFrames, burstScore ->
                                                     lastBurstScore = burstScore
                                                     view.performHapticFeedback(android.view.HapticFeedbackConstants.CONFIRM)
@@ -739,11 +779,16 @@ fun DocumentCaptureScreen(
                                             return@launch
                                         }
 
+                                        // FIX: Pass highResFile so verifyAndHandleResult can:
+                                        // (a) append it as the final burst frame for the backend, and
+                                        // (b) run local DocumentAntiSpoofChecker at full resolution.
                                         verifyAndHandleResult(
                                             frames = frames,
                                             documentType = documentType,
                                             capturedFiles = capturedFiles,
                                             isBackSide = isBackSide,
+                                            kycSessionId = kycSessionId,
+                                            highResFile = highResFile,
                                             onPass = { passedFrames, burstScore ->
                                                 lastBurstScore = burstScore
                                                 view.performHapticFeedback(android.view.HapticFeedbackConstants.CONFIRM)
@@ -1045,13 +1090,6 @@ fun DocumentCaptureScreen(
                         // Haptic feedback on capture tap (matches iOS native button feel)
                         view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
 
-                        // Turn off torch immediately on capture so the flash LED doesn't
-                        // stay on during processing / preview screens
-                        if (torchEnabled) {
-                            CameraUtils.setTorch(false)
-                            torchEnabled = false
-                        }
-
                         // Clear any previous error
                         verificationError = ""
                         verificationPassed = false
@@ -1071,10 +1109,11 @@ fun DocumentCaptureScreen(
                         coroutineScope.launch {
                             try {
                                 // ── High-res capture (runs in parallel with burst frame saving) ──
-                                // Uses imageCapture (CAPTURE_MODE_MAXIMIZE_QUALITY, 1920×1440 target)
-                                // for the primary document file shown to the user and sent to the server.
-                                // Burst frames from previewView (preview resolution) are kept for
-                                // anti-spoofing verification only.
+                                // FIX: Torch remains ON during capture so the actual photo is taken
+                                // under the same lighting the user saw in the frozen preview.
+                                // Torch is turned off AFTER highResCapture.await() completes.
+                                // (CAPTURE_MODE_ZERO_SHUTTER_LAG means the photo is from the preview
+                                // stream buffer — same frame as frozenBitmap.)
                                 val highResCapture = async(Dispatchers.IO) {
                                     BurstCaptureUtils.captureBurst(
                                         context = context,
@@ -1105,6 +1144,34 @@ fun DocumentCaptureScreen(
                                 // Await high-res result (concurrent with burst frame saving above)
                                 val highResFile = highResCapture.await()
                                 Log.d("DocumentCapture", "High-res capture: ${highResFile?.name ?: "failed (will use burst frame)"}")
+
+                                // FIX: Turn off torch AFTER capture completes so the captured image
+                                // has the same lighting as the frozen preview. Turning it off before
+                                // caused the AE to re-adjust mid-capture, producing a darker photo.
+                                if (torchEnabled) {
+                                    withContext(Dispatchers.Main) {
+                                        CameraUtils.setTorch(false)
+                                        torchEnabled = false
+                                    }
+                                }
+
+                                // FIX: Replace the frozen preview bitmap with a thumbnail of the
+                                // actual captured image. This ensures what the user sees during
+                                // processing and in the preview screen is the same image.
+                                if (highResFile != null && highResFile.exists()) {
+                                    try {
+                                        val opts = android.graphics.BitmapFactory.Options().apply { inSampleSize = 4 }
+                                        val thumb = android.graphics.BitmapFactory.decodeFile(highResFile.path, opts)
+                                        if (thumb != null) {
+                                            withContext(Dispatchers.Main) {
+                                                frozenBitmap?.recycle()
+                                                frozenBitmap = thumb
+                                            }
+                                        }
+                                    } catch (e: Exception) {
+                                        Log.w("DocumentCapture", "Frozen bitmap update skipped: ${e.message}")
+                                    }
+                                }
 
                                 // Apply 4-stage sharpening pipeline to high-res file (iOS parity).
                                 // Mirrors iOS ManualCaptureCameraView.applySharpeningFilter().
@@ -1150,6 +1217,7 @@ fun DocumentCaptureScreen(
                                         documentType = documentType,
                                         capturedFiles = capturedFiles,
                                         isBackSide = isBackSide,
+                                        kycSessionId = kycSessionId,
                                         onPass = { passedFrames, burstScore ->
                                             lastBurstScore = burstScore
                                             view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
@@ -1167,11 +1235,17 @@ fun DocumentCaptureScreen(
 
                                 // Primary path: verify pre-buffered burst frames (anti-spoofing)
                                 // and use high-res imageCapture photo as the primary document file.
+                                // FIX: Pass highResFile and kycSessionId so verifyAndHandleResult can:
+                                // (a) append it as the final burst frame for the backend,
+                                // (b) run local DocumentAntiSpoofChecker at full sensor resolution, and
+                                // (c) tie the burst session ID to the KYC session for backend correlation.
                                 verifyAndHandleResult(
                                     frames = frames,
                                     documentType = documentType,
                                     capturedFiles = capturedFiles,
                                     isBackSide = isBackSide,
+                                    kycSessionId = kycSessionId,
+                                    highResFile = highResFile,
                                     onPass = { passedFrames, burstScore ->
                                         lastBurstScore = burstScore
                                         view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
@@ -1365,9 +1439,13 @@ private fun ProcessingSubStep(label: String, progress: Float) {
  * the appropriate callback based on the result.
  *
  * Additionally runs a local [DocumentAntiSpoofChecker] analysis (moire pattern +
- * texture variance) on the first frame for iOS-parity anti-spoof coverage.
- * The local check is a *soft* gate: it warns the user but does not hard-block
- * when the ML backend has already approved the document.
+ * texture variance) on [highResFile] when provided, or the first frame otherwise,
+ * for iOS-parity anti-spoof coverage. The local check is a *soft* gate: it warns
+ * the user but does not hard-block when the ML backend has already approved the document.
+ *
+ * When [highResFile] is provided it is also appended to the burst payload as the final
+ * frame so the backend receives one full-sensor-resolution image alongside the
+ * preview-resolution ring-buffer frames.
  *
  * Runs on a background dispatcher -- safe to call from a coroutine.
  */
@@ -1376,6 +1454,15 @@ private suspend fun verifyAndHandleResult(
     documentType: Int?,
     capturedFiles: List<File>,
     isBackSide: Boolean,
+    // FIX (Architectural): Accept KYC session ID so the anti-spoof burst can be
+    // correlated to the originating KYC record on the backend. Without this, the
+    // backend receives a synthetic session ID with no link to the KYC session.
+    kycSessionId: String = "",
+    // FIX: Accept the high-resolution capture file separately.
+    // Used for (a) local anti-spoof analysis at full sensor resolution, and
+    // (b) appending to burst payload so the backend receives one full-res frame
+    // among the preview-resolution ring-buffer frames.
+    highResFile: File? = null,
     onPass: suspend (List<File>, Double) -> Unit,
     onFail: suspend (String) -> Unit
 ) {
@@ -1383,14 +1470,41 @@ private suspend fun verifyAndHandleResult(
     val mlRepository = MLRepository()
     val docTypeExpected = MLDocumentType.fromSdkType(documentType ?: 1)
 
-    Log.d("DocumentCapture", "Calling verify-burst: ${frames.size} frames, docType=$docTypeExpected, side=$sideExpected")
+    // FIX (Architectural): Combine the real KYC session ID with a per-call UUID suffix.
+    // Format: "{kycSessionId}-{UUID}" when a real session ID is available, otherwise
+    // just a UUID. This gives the backend two properties simultaneously:
+    //   1. Correlation: prefix ties the burst check to the specific KYC session
+    //   2. Uniqueness:  UUID suffix ensures idempotency even if the same KYC session
+    //                   triggers multiple retries (e.g. user retakes the document)
+    val antiSpoofSessionId = if (kycSessionId.isNotBlank()) {
+        "${kycSessionId}-${java.util.UUID.randomUUID()}"
+    } else {
+        java.util.UUID.randomUUID().toString()
+    }
 
-    // Run local anti-spoof analysis on the first frame (non-blocking, lightweight)
+    // FIX: Append the high-res capture as the final frame in the burst payload when available.
+    // The ring buffer contains preview-resolution bitmaps (~screen-size). Including the actual
+    // ZSL/high-res photo gives the backend one full-sensor-resolution frame for texture,
+    // moiré, and edge-sharpness analysis that preview bitmaps cannot reliably provide.
+    val burstFrames = if (highResFile != null && highResFile.exists()) {
+        frames + highResFile
+    } else {
+        frames
+    }
+
+    Log.d("DocumentCapture", "Calling verify-burst: ${burstFrames.size} frames " +
+            "(${frames.size} preview + ${if (highResFile != null && highResFile.exists()) 1 else 0} high-res), " +
+            "docType=$docTypeExpected, side=$sideExpected")
+
+    // FIX: Run local anti-spoof analysis on the HIGH-RESOLUTION file when available.
+    // Previously used the first ring-buffer frame (preview resolution ~screen-size) which
+    // has too few pixels for reliable moiré autocorrelation and texture variance analysis.
+    // The high-res file from CAPTURE_MODE_ZERO_SHUTTER_LAG provides full sensor resolution.
+    val antiSpoofSource = highResFile?.takeIf { it.exists() } ?: frames.firstOrNull()
     val localAntiSpoofResult = withContext(Dispatchers.Default) {
         try {
-            val firstFrame = frames.firstOrNull()
-            if (firstFrame != null && firstFrame.exists()) {
-                val bmp = BitmapFactory.decodeFile(firstFrame.path)
+            if (antiSpoofSource != null && antiSpoofSource.exists()) {
+                val bmp = BitmapFactory.decodeFile(antiSpoofSource.path)
                 if (bmp != null) {
                     try {
                         DocumentAntiSpoofChecker.analyse(bmp)
@@ -1407,12 +1521,13 @@ private suspend fun verifyAndHandleResult(
 
     localAntiSpoofResult?.let {
         Log.d("DocumentCapture", "Local anti-spoof: physical=${it.isPhysicalDocument}, " +
-                "moire=${it.moireScore}, texture=${it.textureScore}, conf=${it.confidence}")
+                "moire=${it.moireScore}, texture=${it.textureScore}, conf=${it.confidence} " +
+                "(source=${if (highResFile?.exists() == true) "high-res" else "preview"})")
     }
 
     val result = mlRepository.verifyBurst(
-        sessionId = "android-antispoof-${System.currentTimeMillis()}",
-        frames = frames,
+        sessionId = antiSpoofSessionId,
+        frames = burstFrames,
         docTypeExpected = docTypeExpected,
         sideExpected = sideExpected
     )
