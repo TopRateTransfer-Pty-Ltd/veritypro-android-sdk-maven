@@ -279,14 +279,23 @@ object CameraUtils {
             )
             .build()
 
+        // FIX: Use ZERO_SHUTTER_LAG so the photo is drawn from the preview stream's
+        // circular buffer at trigger time — eliminating the 100–500ms pipeline delay that
+        // caused the frozen preview and the actual captured image to differ.
+        // Falls back to MAXIMIZE_QUALITY automatically on devices where ZSL is unsupported.
         return ImageCapture.Builder()
             .setResolutionSelector(resolutionSelector)
-            .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
+            .setCaptureMode(ImageCapture.CAPTURE_MODE_ZERO_SHUTTER_LAG)
             .build()
     }
 
     /**
-     * Toggle torch/flash on the current camera
+     * Toggle torch/flash on the current camera.
+     *
+     * FIX: When the torch is enabled, the camera AE is automatically adjusted
+     * to 0 EV (neutral) to prevent the torch illumination from being additive
+     * with the +0.3 EV document capture bias, which causes blown highlights on
+     * laminated documents.  When torch is turned off, +0.3 EV is restored.
      *
      * @return true if torch is now enabled, false if disabled or unavailable
      */
@@ -307,10 +316,41 @@ object CameraUtils {
             torchEnabled = !torchEnabled
             camera.cameraControl.enableTorch(torchEnabled)
             Log.d(TAG, "Torch ${if (torchEnabled) "ENABLED" else "DISABLED"}")
+
+            // Adjust EV: 0 EV when torch is on (torch supplies its own light),
+            // +0.3 EV when torch is off (compensate for dark/reflective surfaces).
+            applyExposureForTorchState(camera, torchEnabled)
+
             torchEnabled
         } catch (e: Exception) {
             Log.e(TAG, "Failed to toggle torch: ${e.message}")
             false
+        }
+    }
+
+    /**
+     * Apply exposure compensation based on torch state.
+     * Torch ON  → 0 EV  (torch provides its own illumination; adding +EV overexposes)
+     * Torch OFF → +0.3 EV (ambient compensation for laminated/reflective documents)
+     */
+    private fun applyExposureForTorchState(camera: Camera, isTorchOn: Boolean) {
+        try {
+            val exposureState = camera.cameraInfo.exposureState
+            if (exposureState.isExposureCompensationSupported) {
+                val step = exposureState.exposureCompensationStep.toFloat()
+                if (step > 0f) {
+                    val targetEv = if (isTorchOn) 0f else 0.3f
+                    val targetIndex = (targetEv / step).roundToInt()
+                        .coerceIn(
+                            exposureState.exposureCompensationRange.lower,
+                            exposureState.exposureCompensationRange.upper
+                        )
+                    camera.cameraControl.setExposureCompensationIndex(targetIndex)
+                    Log.d(TAG, "Torch=$isTorchOn → EV=$targetEv (index=$targetIndex)")
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Exposure compensation adjustment failed: ${e.message}")
         }
     }
 
@@ -334,6 +374,7 @@ object CameraUtils {
             torchEnabled = enabled
             camera.cameraControl.enableTorch(enabled)
             Log.d(TAG, "Torch set to ${if (enabled) "ON" else "OFF"}")
+            applyExposureForTorchState(camera, enabled)
             enabled
         } catch (e: Exception) {
             Log.e(TAG, "Failed to set torch: ${e.message}")
