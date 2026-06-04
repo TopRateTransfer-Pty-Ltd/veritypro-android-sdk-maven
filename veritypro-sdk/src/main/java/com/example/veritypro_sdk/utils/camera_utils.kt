@@ -222,20 +222,15 @@ object CameraUtils {
             Log.w(TAG, "Focus metering not supported on this device: ${e.message}")
         }
 
-        // 2. Exposure compensation: target ~+0.3 EV
+        // 2. Exposure compensation: neutral 0 EV
+        // CameraX AE correctly exposes for white/cream document backgrounds without a boost.
+        // +0.3 EV caused overexposed (blown) images in office/daylight environments.
+        // Reset to index 0 (neutral) so the AE algorithm is not biased.
         try {
             val exposureState = camera.cameraInfo.exposureState
             if (exposureState.isExposureCompensationSupported) {
-                val step = exposureState.exposureCompensationStep.toFloat()
-                if (step > 0f) {
-                    val targetIndex = (0.3f / step).roundToInt()
-                        .coerceIn(
-                            exposureState.exposureCompensationRange.lower,
-                            exposureState.exposureCompensationRange.upper
-                        )
-                    camera.cameraControl.setExposureCompensationIndex(targetIndex)
-                    Log.d(TAG, "Applied exposure compensation: index=$targetIndex (step=${step}EV, ~+0.3EV)")
-                }
+                camera.cameraControl.setExposureCompensationIndex(0)
+                Log.d(TAG, "Applied exposure compensation: index=0 (neutral, 0 EV)")
             }
         } catch (e: Exception) {
             Log.w(TAG, "Exposure compensation not supported on this device: ${e.message}")
@@ -330,24 +325,18 @@ object CameraUtils {
 
     /**
      * Apply exposure compensation based on torch state.
-     * Torch ON  → 0 EV  (torch provides its own illumination; adding +EV overexposes)
-     * Torch OFF → +0.3 EV (ambient compensation for laminated/reflective documents)
+     * Both states use 0 EV — CameraX AE correctly exposes for document backgrounds.
+     * Previous +0.3 EV for torch-off caused overexposed frames in office/daylight.
+     * Torch ON  → 0 EV (torch provides illumination; +EV would overexpose)
+     * Torch OFF → 0 EV (AE handles ambient correctly; +EV blows white backgrounds)
      */
     private fun applyExposureForTorchState(camera: Camera, isTorchOn: Boolean) {
         try {
             val exposureState = camera.cameraInfo.exposureState
             if (exposureState.isExposureCompensationSupported) {
-                val step = exposureState.exposureCompensationStep.toFloat()
-                if (step > 0f) {
-                    val targetEv = if (isTorchOn) 0f else 0.3f
-                    val targetIndex = (targetEv / step).roundToInt()
-                        .coerceIn(
-                            exposureState.exposureCompensationRange.lower,
-                            exposureState.exposureCompensationRange.upper
-                        )
-                    camera.cameraControl.setExposureCompensationIndex(targetIndex)
-                    Log.d(TAG, "Torch=$isTorchOn → EV=$targetEv (index=$targetIndex)")
-                }
+                // Always neutral — do not bias AE in either torch state
+                camera.cameraControl.setExposureCompensationIndex(0)
+                Log.d(TAG, "Torch=$isTorchOn → EV=0 (neutral, AE handles exposure)")
             }
         } catch (e: Exception) {
             Log.w(TAG, "Exposure compensation adjustment failed: ${e.message}")
