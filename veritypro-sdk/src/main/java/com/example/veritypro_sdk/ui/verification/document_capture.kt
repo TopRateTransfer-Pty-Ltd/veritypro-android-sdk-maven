@@ -722,21 +722,15 @@ fun DocumentCaptureScreen(
                                                 Log.w("DocumentCapture", "Auto-capture: sharpening failed, using original: ${e.message}")
                                             }
 
-                                            // FIX: Update frozenBitmap to a thumbnail of the actual
-                                            // captured image so the processing overlay shows the
-                                            // same content as the preview/confirmation screen.
-                                            try {
-                                                val opts = android.graphics.BitmapFactory.Options().apply { inSampleSize = 4 }
-                                                val thumb = android.graphics.BitmapFactory.decodeFile(highResFile.path, opts)
-                                                if (thumb != null) {
-                                                    withContext(Dispatchers.Main) {
-                                                        frozenBitmap?.recycle()
-                                                        frozenBitmap = thumb
-                                                    }
-                                                }
-                                            } catch (e: Exception) {
-                                                Log.w("DocumentCapture", "Auto-capture: frozen bitmap update skipped: ${e.message}")
-                                            }
+                                            // NOTE: frozenBitmap intentionally NOT replaced here.
+                                            // The freeze moment captures previewView.bitmap (natural,
+                                            // unprocessed frame). Replacing it with the sharpened
+                                            // high-res JPEG thumbnail caused a visible image switch
+                                            // — user sees the natural frame freeze, then it jumps
+                                            // to a different-looking processed image.
+                                            // The review screen (PreviewCapturedImageScreen) loads
+                                            // the high-res file directly, so the frozenBitmap is
+                                            // only visible during the brief processing overlay.
                                         }
 
                                         if (frames.size < 3) {
