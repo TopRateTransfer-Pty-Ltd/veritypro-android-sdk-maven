@@ -222,19 +222,21 @@ object CameraUtils {
             Log.w(TAG, "Focus metering not supported on this device: ${e.message}")
         }
 
-        // 2. Exposure compensation: target ~+0.3 EV
+        // 2. Exposure compensation: target ~+1.0 EV for glare-free low-light.
+        // Lifting the whole frame via exposure (not the torch) brightens documents
+        // evenly without the specular hotspot a co-axial LED creates on glossy pages.
         try {
             val exposureState = camera.cameraInfo.exposureState
             if (exposureState.isExposureCompensationSupported) {
                 val step = exposureState.exposureCompensationStep.toFloat()
                 if (step > 0f) {
-                    val targetIndex = (0.3f / step).roundToInt()
+                    val targetIndex = (1.0f / step).roundToInt()
                         .coerceIn(
                             exposureState.exposureCompensationRange.lower,
                             exposureState.exposureCompensationRange.upper
                         )
                     camera.cameraControl.setExposureCompensationIndex(targetIndex)
-                    Log.d(TAG, "Applied exposure compensation: index=$targetIndex (step=${step}EV, ~+0.3EV)")
+                    Log.d(TAG, "Applied exposure compensation: index=$targetIndex (step=${step}EV, ~+1.0EV glare-free)")
                 }
             }
         } catch (e: Exception) {
@@ -331,7 +333,7 @@ object CameraUtils {
     /**
      * Apply exposure compensation based on torch state.
      * Torch ON  → 0 EV  (torch provides its own illumination; adding +EV overexposes)
-     * Torch OFF → +0.3 EV (ambient compensation for laminated/reflective documents)
+     * Torch OFF → +1.0 EV (glare-free ambient boost for laminated/reflective documents)
      */
     private fun applyExposureForTorchState(camera: Camera, isTorchOn: Boolean) {
         try {
@@ -339,7 +341,7 @@ object CameraUtils {
             if (exposureState.isExposureCompensationSupported) {
                 val step = exposureState.exposureCompensationStep.toFloat()
                 if (step > 0f) {
-                    val targetEv = if (isTorchOn) 0f else 0.3f
+                    val targetEv = if (isTorchOn) 0f else 1.0f
                     val targetIndex = (targetEv / step).roundToInt()
                         .coerceIn(
                             exposureState.exposureCompensationRange.lower,
