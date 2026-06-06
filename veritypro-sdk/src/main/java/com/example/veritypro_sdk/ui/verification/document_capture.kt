@@ -345,6 +345,10 @@ fun DocumentCaptureScreen(
                     // Save dimensions before bitmap.recycle() in finally block
                     val bitmapW = bitmap.width.toFloat()
                     val bitmapH = bitmap.height.toFloat()
+                    // GLARE GATE (Onfido/Jumio/BlinkID approach): detect specular
+                    // blowout on-device before deciding to lock. Computed now, before
+                    // the bitmap is recycled in the predict finally block.
+                    val hasGlareLocal = detectGlare(bitmap)
                     Log.d("DocumentCapture", "ML Live: Got bitmap ${bitmap.width}x${bitmap.height}, calling predict...")
                     withContext(Dispatchers.Default) {
                         val result = try {
@@ -362,27 +366,32 @@ fun DocumentCaptureScreen(
                             when (result) {
                                 is Resource.Success -> {
                                     val response = result.data
-                                    mlPassed = response.docOk
-                                    mlConfidence = response.confidence ?: 0f
-                                    // Show hint from ML backend, sanitized for readability
-                                    mlHint = if (!response.docOk) sanitizeMLHint(response.hint ?: "") else ""
-                                    Log.d("DocumentCapture", "ML Live SUCCESS: docOk=${response.docOk}, conf=$mlConfidence, hint=${response.hint}, bbox=${response.bbox}")
-
-                                    // FIX: Auto-turn-off torch when ML hints glare — torch is the
-                                    // most common cause of "Too much glare" on laminated documents.
                                     val hintLc = (response.hint ?: "").lowercase()
-                                    if (torchEnabled && (hintLc.contains("glare") || hintLc.contains("reflect"))) {
+                                    // Glare from the on-device detector OR the API hint.
+                                    val glarePresent = hasGlareLocal ||
+                                        hintLc.contains("glare") || hintLc.contains("reflect")
+
+                                    // GLARE GATE: a glared frame is never locked — capturing
+                                    // it would yield an unreadable document. Block the lock
+                                    // and keep guiding the user until the frame reads cleanly.
+                                    mlPassed = response.docOk && !glarePresent
+                                    mlConfidence = response.confidence ?: 0f
+                                    mlHint = if (!response.docOk) sanitizeMLHint(response.hint ?: "") else ""
+                                    Log.d("DocumentCapture", "ML Live SUCCESS: docOk=${response.docOk}, glare=$glarePresent, conf=$mlConfidence")
+
+                                    if (glarePresent && torchEnabled) {
+                                        // Torch is the usual culprit — kill it.
                                         CameraUtils.setTorch(false)
                                         torchEnabled = false
-                                        mlHint = "Flash turned off — tilt document slightly to reduce reflection"
-                                        Log.d("DocumentCapture", "Torch auto-disabled due to glare hint")
+                                        mlHint = "Flash off — tilt the document to remove the glare"
+                                        Log.d("DocumentCapture", "Torch auto-disabled due to glare")
+                                    } else if (glarePresent) {
+                                        // Ambient glare (window/lamp) — guide repositioning.
+                                        mlHint = "Glare detected — tilt the document or move from the light"
                                     }
 
-                                    // Distance guidance: ML backend docOk=true means it validated
-                                    // the document is captured well. The backend returns a fixed
-                                    // placeholder bbox (always 0.05,0.05,0.9,0.9) that doesn't
-                                    // reflect actual distance, so we trust docOk as the gate.
-                                    distanceGuidance = if (response.docOk) {
+                                    // Distance guidance: docOk AND glare-free means ready.
+                                    distanceGuidance = if (response.docOk && !glarePresent) {
                                         DistanceGuidance(
                                             state = DistanceState.PERFECT,
                                             frameCoverage = GuidanceConfig.OPTIMAL_COVERAGE_TARGET,
@@ -1580,3 +1589,38 @@ private suspend fun verifyAndHandleResult(
     }
 }
 
+
+/**
+ * On-device glare detection — the Onfido/Jumio/BlinkID strategy.
+ *
+ * Detects a specular hotspot (blown-out highlight) — the bright "dent" a torch or
+ * window reflection leaves on a glossy/laminated document. Downsamples the bitmap
+ * and counts near-white, desaturated pixels; a concentrated cluster above the
+ * threshold means glare is present, so capture is blocked until the frame reads
+ * cleanly. Never flashes; guides the user to reposition instead.
+ */
+private fun detectGlare(bitmap: Bitmap): Boolean {
+    val w = 64
+    val h = 48
+    val scaled = try {
+        Bitmap.createScaledBitmap(bitmap, w, h, false)
+    } catch (e: Exception) {
+        return false
+    }
+    val pixels = IntArray(w * h)
+    scaled.getPixels(pixels, 0, w, 0, 0, w, h)
+    if (scaled != bitmap) scaled.recycle()
+
+    var blownOut = 0
+    for (p in pixels) {
+        val r = (p shr 16) and 0xFF
+        val g = (p shr 8) and 0xFF
+        val b = p and 0xFF
+        val mn = minOf(r, g, b)
+        val mx = maxOf(r, g, b)
+        // Bright AND desaturated = specular blowout (achromatic highlight).
+        if (mn >= 240 && (mx - mn) <= 18) blownOut++
+    }
+    // >3.5% of the frame as concentrated blowout = glare.
+    return blownOut.toDouble() / pixels.size > 0.035
+}
