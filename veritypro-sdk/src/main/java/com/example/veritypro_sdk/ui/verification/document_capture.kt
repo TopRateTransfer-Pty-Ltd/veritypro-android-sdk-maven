@@ -1326,27 +1326,9 @@ fun DocumentCaptureScreen(
             )
         }
 
-        // Floating torch button (top-right)
-        if (CameraUtils.isTorchAvailable()) {
-            IconButton(
-                onClick = { torchEnabled = CameraUtils.toggleTorch() },
-                modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .statusBarsPadding()
-                    .padding(end = 16.dp, top = 8.dp)
-                    .size(40.dp)
-                    .background(
-                        if (torchEnabled) Color(0xFFFFC107) else Color.Black.copy(alpha = 0.3f),
-                        CircleShape
-                    )
-            ) {
-                Icon(
-                    imageVector = if (torchEnabled) Icons.Default.FlashOn else Icons.Default.FlashOff,
-                    contentDescription = if (torchEnabled) "Turn off flash" else "Turn on flash",
-                    tint = if (torchEnabled) Color.Black else Color.White
-                )
-            }
-        }
+        // Torch button removed — like Onfido/Jumio/BlinkID we never light a glossy
+        // document (it causes specular glare). Low light is handled by the +1.0 EV
+        // exposure boost and the on-device glare gate.
 
         // Screen recording warning banner (iOS parity)
         if (screenRecordingDetected) {
