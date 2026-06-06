@@ -20,6 +20,7 @@ import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.drawscope.DrawScope
@@ -81,6 +82,21 @@ fun DocumentDetectionOverlay(
         ),
         label = "pulseAlpha"
     )
+
+    // Scan line sweep (0 = top → 1 = bottom). Faster sweep when a document is
+    // detected. Communicates "actively scanning" while waiting for a green lock.
+    val isScanning = state == DetectionState.SEARCHING || state == DetectionState.DETECTING
+    val sweepDuration = if (state == DetectionState.DETECTING) 1000 else 1800
+    val scanSweep by infiniteTransition.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = sweepDuration),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "scanSweep"
+    )
+    val scanColor = if (state == DetectionState.DETECTING) GuidanceConfig.STATE_AMBER else GuidanceConfig.STATE_GREEN
 
     val showFrameBorder = state == DetectionState.LOCKED || state == DetectionState.SUCCESS
     val showGlow = state == DetectionState.LOCKED
@@ -169,16 +185,43 @@ fun DocumentDetectionOverlay(
                     pathEffect = if (isDashed) dashEffect else null)
                 drawLine(effectiveColor, Offset(w - inset, h - inset), Offset(w - inset, h - inset - cSize), strokeWidthPx,
                     pathEffect = if (isDashed) dashEffect else null)
+
+                // Animated scan line (SEARCHING / DETECTING only)
+                if (isScanning) {
+                    val lineY = inset + scanSweep * (h - 2 * inset)
+                    val lineInsetX = w * 0.08f
+                    // Soft glow trail around the line
+                    drawRect(
+                        color = scanColor.copy(alpha = 0.18f),
+                        topLeft = Offset(lineInsetX, lineY - 24f),
+                        size = Size(w - 2 * lineInsetX, 48f)
+                    )
+                    // Bright scan line with horizontal fade
+                    drawLine(
+                        brush = Brush.horizontalGradient(
+                            colors = listOf(
+                                scanColor.copy(alpha = 0f),
+                                scanColor.copy(alpha = 0.95f),
+                                scanColor.copy(alpha = 0f)
+                            ),
+                            startX = lineInsetX,
+                            endX = w - lineInsetX
+                        ),
+                        start = Offset(lineInsetX, lineY),
+                        end = Offset(w - lineInsetX, lineY),
+                        strokeWidth = with(density) { 2.5.dp.toPx() }
+                    )
+                }
             }
     ) {
         // Status badge at bottom-center
         val (badgeText, badgeBgColor) = when (state) {
-            DetectionState.SEARCHING -> "Position your document in the frame" to Color.Black.copy(alpha = 0.6f)
-            DetectionState.DETECTING -> "Hold steady..." to GuidanceConfig.STATE_AMBER.copy(alpha = 0.9f)
-            DetectionState.LOCKED -> "Capturing..." to GuidanceConfig.STATE_GREEN.copy(alpha = 0.9f)
-            DetectionState.CAPTURING -> "Verifying document..." to Color.Black.copy(alpha = 0.6f)
+            DetectionState.SEARCHING -> "Scanning… position your document" to Color.Black.copy(alpha = 0.6f)
+            DetectionState.DETECTING -> "Align the document — hold steady" to GuidanceConfig.STATE_AMBER.copy(alpha = 0.9f)
+            DetectionState.LOCKED -> "Hold still — capturing now" to GuidanceConfig.STATE_GREEN.copy(alpha = 0.9f)
+            DetectionState.CAPTURING -> "Capturing…" to Color.Black.copy(alpha = 0.6f)
             DetectionState.SUCCESS -> "Captured successfully!" to GuidanceConfig.STATE_GREEN.copy(alpha = 0.9f)
-            DetectionState.FAILED -> "Please try again" to GuidanceConfig.STATE_ERROR.copy(alpha = 0.9f)
+            DetectionState.FAILED -> "Let's try that again" to GuidanceConfig.STATE_ERROR.copy(alpha = 0.9f)
         }
 
         Box(
