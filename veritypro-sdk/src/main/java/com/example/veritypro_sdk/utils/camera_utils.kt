@@ -40,6 +40,9 @@ import java.io.File
 import kotlin.math.min
 import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 
 /**
  * Smart Camera Utilities for KYC Document Capture
@@ -59,9 +62,14 @@ object CameraUtils {
     @Volatile
     private var currentCamera: Camera? = null
 
-    // Current torch state
+    // Current torch state — backing field for internal reads (no allocation)
     @Volatile
     private var torchEnabled: Boolean = false
+
+    // H-2: StateFlow so Composables can observe torch state reactively instead of
+    // keeping a duplicate local var that can go out of sync with CameraUtils.
+    private val _torchStateFlow = MutableStateFlow(false)
+    val torchStateFlow: StateFlow<Boolean> = _torchStateFlow.asStateFlow()
     fun hasCameraPermissions(context: Context): Boolean {
         return ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
                 PackageManager.PERMISSION_GRANTED
@@ -204,8 +212,9 @@ object CameraUtils {
      *
      * - Center AF/AE/AWB metering: ensures camera exposes and focuses on the
      *   document center rather than the background or edges.
-     * - Exposure compensation (~+0.3 EV): prevents dark images on laminated or
-     *   reflective ID surfaces (industry standard: Jumio +0.3 EV, Onfido +0.5 EV).
+     * - Exposure compensation: neutral 0 EV (index=0). CameraX AE algorithm
+     *   correctly exposes for white/cream document backgrounds without a bias.
+     *   A +0.3 EV offset caused overexposed images in bright environments.
      */
     private fun applyDocumentCaptureSettings(camera: Camera) {
         // 1. Center focus + auto exposure + auto white balance metering point
@@ -278,19 +287,25 @@ object CameraUtils {
         // circular buffer at trigger time — eliminating the 100–500ms pipeline delay that
         // caused the frozen preview and the actual captured image to differ.
         // Falls back to MAXIMIZE_QUALITY automatically on devices where ZSL is unsupported.
+        //
+        // FIX: Force FLASH_MODE_OFF to prevent CameraX from auto-firing the strobe flash.
+        // FLASH_MODE_AUTO (the default) triggers an AE pre-capture sequence and fires the
+        // flash when AE=FLASH_REQUIRED, causing harsh specular reflections on holographic
+        // security laminates (Nigerian passport, etc.) that produce dark, purple-tinted,
+        // grain-blown images. The torch (enableTorch) is the preferred illumination path —
+        // it is a continuous, diffuse source that the user can tilt-to-angle to avoid glare.
         return ImageCapture.Builder()
             .setResolutionSelector(resolutionSelector)
             .setCaptureMode(ImageCapture.CAPTURE_MODE_ZERO_SHUTTER_LAG)
+            .setFlashMode(ImageCapture.FLASH_MODE_OFF)
             .build()
     }
 
     /**
      * Toggle torch/flash on the current camera.
      *
-     * FIX: When the torch is enabled, the camera AE is automatically adjusted
-     * to 0 EV (neutral) to prevent the torch illumination from being additive
-     * with the +0.3 EV document capture bias, which causes blown highlights on
-     * laminated documents.  When torch is turned off, +0.3 EV is restored.
+     * EV is always set to 0 (neutral) regardless of torch state.
+     * CameraX AE correctly exposes for document backgrounds in both modes.
      *
      * @return true if torch is now enabled, false if disabled or unavailable
      */
@@ -309,6 +324,7 @@ object CameraUtils {
             }
 
             torchEnabled = !torchEnabled
+            _torchStateFlow.value = torchEnabled
             camera.cameraControl.enableTorch(torchEnabled)
             Log.d(TAG, "Torch ${if (torchEnabled) "ENABLED" else "DISABLED"}")
 
@@ -361,6 +377,7 @@ object CameraUtils {
             }
 
             torchEnabled = enabled
+            _torchStateFlow.value = enabled
             camera.cameraControl.enableTorch(enabled)
             Log.d(TAG, "Torch set to ${if (enabled) "ON" else "OFF"}")
             applyExposureForTorchState(camera, enabled)
@@ -686,6 +703,7 @@ object CameraUtils {
         currentCamera = null
         val wasTorchEnabled = torchEnabled
         torchEnabled = false
+        _torchStateFlow.value = false
 
         // Disable torch synchronously if possible (fast, no contention)
         if (wasTorchEnabled && cameraRef != null) {

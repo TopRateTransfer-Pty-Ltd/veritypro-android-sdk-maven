@@ -25,6 +25,17 @@ object ImageSharpeningUtils {
     private const val TAG = "ImageSharpening"
 
     /**
+     * Maximum long-edge pixel count before the sharpening pipeline runs.
+     *
+     * M-1: The unsharp mask allocates 4 IntArrays at full sensor resolution.
+     * A 12MP frame (4000×3000) = 4 × 4000×3000×4 bytes ≈ 192 MB peak.
+     * Capping at 2048px on the long edge reduces peak to ~25 MB — well under the
+     * typical Android app heap headroom — while preserving all OCR-relevant detail
+     * (document text is clearly legible at 2048px on an A4/credit-card crop).
+     */
+    private const val MAX_LONG_EDGE = 2048
+
+    /**
      * Apply the balanced 3-stage enhancement pipeline to a bitmap.
      * Returns a new bitmap — the original is not modified.
      */
@@ -32,7 +43,9 @@ object ImageSharpeningUtils {
         return try {
             Log.d(TAG, "Starting enhancement pipeline: ${bitmap.width}x${bitmap.height}")
 
-            var result = bitmap
+            // M-1: Downsample to MAX_LONG_EDGE before pixel-level processing to
+            // cap IntArray allocations in the unsharp mask stage.
+            var result = downsampleIfNeeded(bitmap)
 
             // Stage 1: Moderate contrast only (no brightness/saturation change)
             result = applyContrastEnhancement(result)
@@ -49,6 +62,24 @@ object ImageSharpeningUtils {
             Log.e(TAG, "Enhancement pipeline failed, returning original", e)
             bitmap
         }
+    }
+
+    /**
+     * M-1: Scales bitmap so the longest edge does not exceed [MAX_LONG_EDGE].
+     * Returns the original bitmap unchanged if it already fits.
+     * Uses [Bitmap.createScaledBitmap] with [filter]=true for bilinear filtering.
+     */
+    private fun downsampleIfNeeded(src: Bitmap): Bitmap {
+        val longEdge = maxOf(src.width, src.height)
+        if (longEdge <= MAX_LONG_EDGE) return src
+
+        val scale = MAX_LONG_EDGE.toFloat() / longEdge
+        val newW = (src.width * scale).toInt().coerceAtLeast(1)
+        val newH = (src.height * scale).toInt().coerceAtLeast(1)
+        val scaled = Bitmap.createScaledBitmap(src, newW, newH, true)
+        Log.d(TAG, "Downsampled ${src.width}x${src.height} → ${newW}x${newH} (scale=%.2f)".format(scale))
+        if (scaled !== src) src.recycle()
+        return scaled
     }
 
     /**

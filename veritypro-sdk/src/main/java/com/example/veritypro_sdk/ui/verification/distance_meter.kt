@@ -3,6 +3,7 @@ package com.example.veritypro_sdk.ui.verification
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -48,6 +49,7 @@ fun DistanceMeterBar(
         DetectionState.SEARCHING -> 96.dp
         DetectionState.DETECTING -> 180.dp
         DetectionState.LOCKED -> 220.dp
+        DetectionState.CAPTURING -> 220.dp  // hold height during capture — don't collapse mid-action
         else -> 96.dp
     }
 
@@ -127,28 +129,45 @@ fun DistanceMeterBar(
                 CheckRow(label = "No glare detected", checked = noGlare)
             }
 
-            // Countdown bar shown during LOCKED state
+            // Countdown bar + label shown during LOCKED state.
+            // Uses snap() so the bar tracks the 60fps autoCaptureProgress precisely —
+            // tween(300ms) was causing visible lag and jitter.
             if (detectionState == DetectionState.LOCKED) {
                 Spacer(modifier = Modifier.height(12.dp))
 
-                val animatedCountdown by animateFloatAsState(
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(
+                        text = "Taking photo — hold still",
+                        color = GuidanceConfig.STATE_GREEN,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(6.dp))
+
+                val snappedCountdown by animateFloatAsState(
                     targetValue = countdownProgress.coerceIn(0f, 1f),
-                    animationSpec = tween(durationMillis = GuidanceConfig.BAR_FILL_MS),
+                    animationSpec = snap(),
                     label = "countdownProgress"
                 )
 
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(4.dp)
-                        .clip(RoundedCornerShape(2.dp))
+                        .height(8.dp)
+                        .clip(RoundedCornerShape(4.dp))
                         .background(GuidanceConfig.BAR_TRACK)
                 ) {
                     Box(
                         modifier = Modifier
-                            .fillMaxWidth(fraction = animatedCountdown)
-                            .height(4.dp)
-                            .clip(RoundedCornerShape(2.dp))
+                            .fillMaxWidth(fraction = snappedCountdown)
+                            .height(8.dp)
+                            .clip(RoundedCornerShape(4.dp))
                             .background(GuidanceConfig.STATE_GREEN)
                     )
                 }

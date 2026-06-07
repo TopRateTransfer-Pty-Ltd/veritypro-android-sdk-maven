@@ -134,6 +134,23 @@ object BurstCaptureUtils {
         }
     }
 
+    /**
+     * H-3: Full lifecycle reset — stop buffering loop and clear all frames.
+     *
+     * Call from [DisposableEffect.onDispose] in the Composable so that when the
+     * document-capture screen is re-created (back navigation, rotation, etc.) the
+     * singleton is in a clean state and [startBuffering] can restart normally.
+     *
+     * Without this, [isBuffering] stays `true` from the previous screen instance,
+     * causing the guard in [startBuffering] to return immediately and leaving the
+     * new screen with an empty, non-filling buffer.
+     */
+    fun resetState() {
+        isBuffering = false
+        clearBuffer()
+        Log.d(TAG, "BurstCaptureUtils state reset (ready for next screen instance)")
+    }
+
     // ── Legacy File-Based Capture (kept for backward compatibility) ──
 
     /**

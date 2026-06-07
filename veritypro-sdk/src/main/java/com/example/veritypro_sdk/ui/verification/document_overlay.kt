@@ -175,8 +175,8 @@ fun DocumentDetectionOverlay(
         val (badgeText, badgeBgColor) = when (state) {
             DetectionState.SEARCHING -> "Position your document in the frame" to Color.Black.copy(alpha = 0.6f)
             DetectionState.DETECTING -> "Hold steady..." to GuidanceConfig.STATE_AMBER.copy(alpha = 0.9f)
-            DetectionState.LOCKED -> "Capturing..." to GuidanceConfig.STATE_GREEN.copy(alpha = 0.9f)
-            DetectionState.CAPTURING -> "Verifying document..." to Color.Black.copy(alpha = 0.6f)
+            DetectionState.LOCKED -> "Hold still..." to GuidanceConfig.STATE_GREEN.copy(alpha = 0.9f)
+            DetectionState.CAPTURING -> "Captured! Verifying..." to GuidanceConfig.STATE_GREEN.copy(alpha = 0.9f)
             DetectionState.SUCCESS -> "Captured successfully!" to GuidanceConfig.STATE_GREEN.copy(alpha = 0.9f)
             DetectionState.FAILED -> "Please try again" to GuidanceConfig.STATE_ERROR.copy(alpha = 0.9f)
         }
