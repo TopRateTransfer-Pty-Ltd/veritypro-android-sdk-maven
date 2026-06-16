@@ -154,6 +154,7 @@ class ApiRepository {
                     DocumentBack = data.DocumentBack,
                     LivenessId = data.LivenessId.toRequestBody(),
                     SecurityAssessmentJson = data.SecurityAssessmentJson?.toRequestBody(),
+                    PortraitVideo = data.PortraitVideo,
                     apiKey = apiKey
                 )
 

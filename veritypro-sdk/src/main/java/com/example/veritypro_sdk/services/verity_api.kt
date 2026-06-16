@@ -34,6 +34,7 @@ interface VerityApiService {
         @Part("LivenessId") LivenessId: RequestBody,
         @Part DocumentBack: MultipartBody.Part?,
         @Part("SecurityAssessmentJson") SecurityAssessmentJson: RequestBody? = null,
+        @Part PortraitVideo: MultipartBody.Part? = null,
         @Header("x-api-key") apiKey: String
     ): ApiResponse<String>
 

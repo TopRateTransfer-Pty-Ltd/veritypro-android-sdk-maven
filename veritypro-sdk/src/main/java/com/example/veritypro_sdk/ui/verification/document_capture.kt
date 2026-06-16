@@ -62,6 +62,10 @@ import com.example.veritypro_sdk.utils.GuidanceConfig
 import com.example.veritypro_sdk.utils.CaptureRuntimeData
 import com.example.veritypro_sdk.utils.MotionAnalysisCollector
 import com.example.veritypro_sdk.utils.SecurityAssessmentCollector
+import com.example.veritypro_sdk.utils.VerityVideoModule
+import com.example.veritypro_sdk.utils.VerityVideoRecorder
+import androidx.camera.video.Recorder
+import androidx.camera.video.VideoCapture
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -80,7 +84,8 @@ fun DocumentCaptureScreen(
     // making backend correlation of anti-spoof checks to KYC submissions impossible.
     kycSessionId: String = "",
     onBack: () -> Unit,
-    onDocumentCaptured: (List<File>) -> Unit
+    onDocumentCaptured: (List<File>) -> Unit,
+    onVideoRecorded: ((File?) -> Unit)? = null
 ) {
     val context = LocalContext.current
     val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
@@ -109,6 +114,10 @@ fun DocumentCaptureScreen(
 
     // Use smart image capture with optimal resolution for documents
     val imageCapture = remember { CameraUtils.createSmartImageCapture(context) }
+
+    // Per-module session video recording: rear camera, 720p HD, 3 min / 30 MB cap
+    val videoRecorder = remember { VerityVideoRecorder(context) }
+    val videoCapture: VideoCapture<Recorder> = remember { videoRecorder.buildVideoCapture() }
 
     val capturedFiles = remember { mutableStateListOf<File>() }
 
@@ -265,7 +274,8 @@ fun DocumentCaptureScreen(
                 cameraErrorMessage = errorMsg
                 cameraReady = false
                 Log.e("DocumentCapture", "Camera error: $errorMsg")
-            }
+            },
+            videoCapture = videoCapture
         )
         // Fallback if callback doesn't fire — extended to 5s so we don't
         // silently mark camera ready when it's actually still binding (H-5).
@@ -296,19 +306,35 @@ fun DocumentCaptureScreen(
 
     // Start burst frame buffer and motion collection when camera is ready (iOS-matching pattern).
     // Continuously captures preview bitmaps so they're available instantly on tap.
+    // Also starts per-module session video recording for the document module.
     LaunchedEffect(cameraReady) {
         if (!cameraReady) return@LaunchedEffect
         BurstCaptureUtils.startBuffering(previewView)
         motionCollector.start()
         captureStartTimeMs = System.currentTimeMillis()
+        // Start ambient video recording for the document capture module.
+        // Recording is fire-and-forget: errors are logged but never surface to the user.
+        videoRecorder.startRecording(
+            videoCapture = videoCapture,
+            module = VerityVideoModule.DOCUMENT,
+            sessionId = kycSessionId.ifBlank { "unknown" },
+            onStopped = { videoFile ->
+                onVideoRecorded?.invoke(videoFile)
+            }
+        )
+        Log.d("DocumentCapture", "Session video recording started (module=DOCUMENT, session=$kycSessionId)")
     }
 
-    // Stop buffering, motion collection and free memory when leaving the screen
+    // Stop buffering, motion collection, video recording and free memory when leaving the screen
     DisposableEffect(Unit) {
         onDispose {
             motionCollector.stop()
             BurstCaptureUtils.stopBuffering()
             BurstCaptureUtils.clearBuffer()
+            // Stop video recording if the screen is dismissed without a document capture
+            // (e.g. user taps Back). The onStopped callback fires asynchronously and
+            // forwards the file to onVideoRecorded — same path as a normal capture exit.
+            videoRecorder.stopRecording()
         }
     }
 
@@ -575,6 +601,9 @@ fun DocumentCaptureScreen(
                                 )
                             )
 
+                            // Stop session video recording now that the document has been captured
+                            videoRecorder.stopRecording()
+
                             // callback with persistent files
                             onDocumentCaptured(finalFiles)
                         } catch (t: Throwable) {
@@ -627,6 +656,9 @@ fun DocumentCaptureScreen(
                                     motionScore = twoSideMotion.motionScore,
                                 )
                             )
+
+                            // Stop session video recording now that both document sides are captured
+                            videoRecorder.stopRecording()
 
                             onDocumentCaptured(finalFiles)
                         } else {

@@ -36,6 +36,8 @@ import com.google.mlkit.vision.face.FaceDetection
 import com.google.mlkit.vision.face.FaceDetectorOptions
 import androidx.camera.core.FocusMeteringAction
 import androidx.camera.core.SurfaceOrientedMeteringPointFactory
+import androidx.camera.video.Recorder
+import androidx.camera.video.VideoCapture
 import java.io.File
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -113,7 +115,8 @@ object CameraUtils {
         useDetection: Boolean = false,
         onFacesDetected: ((List<Rect>) -> Unit)? = null,
         onCameraReady: ((CameraCapabilityReport) -> Unit)? = null,
-        onCameraError: ((String) -> Unit)? = null
+        onCameraError: ((String) -> Unit)? = null,
+        videoCapture: VideoCapture<Recorder>? = null
     ) {
         val cameraProviderFuture = ProcessCameraProvider.getInstance(context)
 
@@ -145,6 +148,11 @@ object CameraUtils {
                         context, previewView, cameraSelector, onFacesDetected
                     )
                     useCases.add(imageAnalyzer)
+                }
+
+                // Add VideoCapture if provided (for per-module session recording)
+                if (videoCapture != null) {
+                    useCases.add(videoCapture)
                 }
 
                 previewView.post {
