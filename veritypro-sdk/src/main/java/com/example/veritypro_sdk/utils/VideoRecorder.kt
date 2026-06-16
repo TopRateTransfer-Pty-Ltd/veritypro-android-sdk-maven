@@ -53,8 +53,7 @@ class VerityVideoRecorder(private val context: Context) {
 
         activeRecording = videoCapture.output
             .prepareRecording(context, outputOptions)
-            .withAudioDisabled()
-            .start(ContextCompat.getMainExecutor(context)) { event ->
+            .start(ContextCompat.getMainExecutor(context)) { event: VideoRecordEvent ->
                 when (event) {
                     is VideoRecordEvent.Finalize -> {
                         if (event.hasError() && file.length() == 0L) {

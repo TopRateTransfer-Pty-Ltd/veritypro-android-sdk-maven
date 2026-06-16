@@ -56,6 +56,9 @@ import com.example.veritypro_sdk.ui.verification.flow.ProcessExplainerScreen
 import com.example.veritypro_sdk.ui.verification.flow.ThankYouScreen
 import com.example.veritypro_sdk.services.MLRepository
 import kotlinx.coroutines.launch
+import okhttp3.MediaType.Companion.toMediaTypeOrNull
+import okhttp3.MultipartBody
+import okhttp3.RequestBody.Companion.asRequestBody
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -97,6 +100,7 @@ fun VerificationScreen(
     var locationCountryCode: String? by remember { mutableStateOf(null) }
     var documentFrontPage: File? by remember { mutableStateOf(null) }
     var documentBackPage: File? by remember { mutableStateOf(null) }
+    var documentVideoFile: File? by remember { mutableStateOf(null) }
     var sessionId: String? by remember { mutableStateOf(null) }
     var livenessId: String? by remember { mutableStateOf(null) }
     var addressDocFile: File? by remember { mutableStateOf(null) }
@@ -377,6 +381,7 @@ fun VerificationScreen(
                     // Clear captured data when going back from RESULT to prevent stale resubmission
                     documentFrontPage = null
                     documentBackPage = null
+                    documentVideoFile = null
                     addressDocFile = null
                     addressDocType = null
                     eddDocFile = null
@@ -531,7 +536,8 @@ fun VerificationScreen(
                                             sessionId = viewModel.getSessionId()
                                         )
                                         stage = viewModel.flowRouter.nextStage(stage) ?: VerificationStage.RESULT
-                                    }
+                                    },
+                                    onVideoRecorded = { file -> documentVideoFile = file }
                                 )
                             }
 
@@ -635,7 +641,14 @@ fun VerificationScreen(
                                                                         DocumentFront = documentFrontPage?.toMultipartBodyPart("DocumentFront"),
                                                                         DocumentBack = documentBackPage?.toMultipartBodyPart("DocumentBack"),
                                                                         LivenessId = livenessId ?: "",
-                                                                        SecurityAssessmentJson = securityJson
+                                                                        SecurityAssessmentJson = securityJson,
+                                                                        PortraitVideo = documentVideoFile?.takeIf { it.length() > 0L }?.let { file ->
+                                                                            MultipartBody.Part.createFormData(
+                                                                                "PortraitVideo",
+                                                                                file.name,
+                                                                                file.asRequestBody("video/mp4".toMediaTypeOrNull())
+                                                                            )
+                                                                        }
                                                                     ),
                                                                 )
                                                             } else {
@@ -747,6 +760,7 @@ fun VerificationScreen(
                                         stage = VerificationStage.INTRO
                                         documentFrontPage = null
                                         documentBackPage = null
+                                        documentVideoFile = null
                                         addressDocFile = null
                                         addressDocType = null
                                         eddDocFile = null
@@ -794,7 +808,14 @@ fun VerificationScreen(
                                             IpLocation = locationText ?: "",
                                             DocumentFront = documentFrontPage?.toMultipartBodyPart("DocumentFront"),
                                             DocumentBack = documentBackPage?.toMultipartBodyPart("DocumentBack"),
-                                            SecurityAssessmentJson = securityJson
+                                            SecurityAssessmentJson = securityJson,
+                                            PortraitVideo = documentVideoFile?.takeIf { it.length() > 0L }?.let { file ->
+                                                MultipartBody.Part.createFormData(
+                                                    "PortraitVideo",
+                                                    file.name,
+                                                    file.asRequestBody("video/mp4".toMediaTypeOrNull())
+                                                )
+                                            }
                                         )
                                     )
                                 } else {
