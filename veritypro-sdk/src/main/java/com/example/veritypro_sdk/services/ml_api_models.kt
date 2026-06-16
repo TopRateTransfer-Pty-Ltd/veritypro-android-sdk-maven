@@ -59,6 +59,31 @@ data class MLConfidence(
 )
 
 /**
+ * C-2: Structured quality signals from the ML backend.
+ *
+ * Replaces fragile free-text hint substring matching (e.g. hint.contains("glare"))
+ * with explicit boolean fields. Backwards-compatible: all fields default to `true`
+ * (assume good quality) when the backend omits the object (older server versions).
+ */
+data class MLQualitySignals(
+    /** Lighting is sufficient for accurate detection */
+    @SerializedName("goodLighting")
+    val goodLighting: Boolean = true,
+
+    /** No specular glare on document surface */
+    @SerializedName("noGlare")
+    val noGlare: Boolean = true,
+
+    /** Document is at the correct distance from the camera */
+    @SerializedName("distanceOk")
+    val distanceOk: Boolean = true,
+
+    /** A document was detected in the frame */
+    @SerializedName("docDetected")
+    val docDetected: Boolean = false
+)
+
+/**
  * Response for single frame prediction
  */
 data class MLPredictResponse(
@@ -85,6 +110,10 @@ data class MLPredictResponse(
 
 //    @SerializedName("confidence")
 //    val confidence: MLConfidence? = null,
+
+    /** C-2: Structured quality signals. Null when served by an older backend version. */
+    @SerializedName("qualitySignals")
+    val qualitySignals: MLQualitySignals? = null,
 
     @SerializedName("latencyMs")
     val latencyMs: Float

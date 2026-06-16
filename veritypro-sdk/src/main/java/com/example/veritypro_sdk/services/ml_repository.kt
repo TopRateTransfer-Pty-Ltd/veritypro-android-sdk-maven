@@ -202,7 +202,9 @@ class MLRepository {
     }
 
     /**
-     * Verify document authenticity using burst of bitmaps
+     * Verify document authenticity using burst of bitmaps.
+     * Used by VerityProViewModel.mlVerifyBurstBitmaps for SDK callers that supply
+     * raw Bitmap objects instead of pre-saved File objects.
      */
     suspend fun verifyBurstBitmaps(
         sessionId: String,

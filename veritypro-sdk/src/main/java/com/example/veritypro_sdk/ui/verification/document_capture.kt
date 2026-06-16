@@ -43,6 +43,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import com.example.veritypro_sdk.services.MLDecision
 import com.example.veritypro_sdk.services.MLDocumentType
+import com.example.veritypro_sdk.services.MLQualitySignals
 import com.example.veritypro_sdk.services.MLRepository
 import com.example.veritypro_sdk.services.MLSpoofType
 import com.example.veritypro_sdk.services.Resource
@@ -61,6 +62,10 @@ import com.example.veritypro_sdk.utils.GuidanceConfig
 import com.example.veritypro_sdk.utils.CaptureRuntimeData
 import com.example.veritypro_sdk.utils.MotionAnalysisCollector
 import com.example.veritypro_sdk.utils.SecurityAssessmentCollector
+import com.example.veritypro_sdk.utils.VerityVideoModule
+import com.example.veritypro_sdk.utils.VerityVideoRecorder
+import androidx.camera.video.Recorder
+import androidx.camera.video.VideoCapture
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -79,7 +84,8 @@ fun DocumentCaptureScreen(
     // making backend correlation of anti-spoof checks to KYC submissions impossible.
     kycSessionId: String = "",
     onBack: () -> Unit,
-    onDocumentCaptured: (List<File>) -> Unit
+    onDocumentCaptured: (List<File>) -> Unit,
+    onVideoRecorded: ((File?) -> Unit)? = null
 ) {
     val context = LocalContext.current
     val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
@@ -108,6 +114,10 @@ fun DocumentCaptureScreen(
 
     // Use smart image capture with optimal resolution for documents
     val imageCapture = remember { CameraUtils.createSmartImageCapture(context) }
+
+    // Per-module session video recording: rear camera, 720p HD, 3 min / 30 MB cap
+    val videoRecorder = remember { VerityVideoRecorder(context) }
+    val videoCapture: VideoCapture<Recorder> = remember { videoRecorder.buildVideoCapture() }
 
     val capturedFiles = remember { mutableStateListOf<File>() }
 
@@ -138,7 +148,9 @@ fun DocumentCaptureScreen(
 
     // Smart camera state
     var capabilityReport by remember { mutableStateOf<CameraCapabilityReport?>(null) }
-    var torchEnabled by remember { mutableStateOf(false) }
+    // H-2: Observe CameraUtils.torchStateFlow instead of keeping a duplicate local var.
+    // CameraUtils.setTorch() / toggleTorch() are the single source of truth.
+    val torchEnabled by CameraUtils.torchStateFlow.collectAsState()
     var distanceGuidance by remember { mutableStateOf<DistanceGuidance?>(null) }
     var cameraErrorMessage by remember { mutableStateOf<String?>(null) }
 
@@ -202,6 +214,8 @@ fun DocumentCaptureScreen(
     var mlPassed by remember { mutableStateOf(false) }
     var mlConfidence by remember { mutableStateOf(0f) }
     var mlHint by remember { mutableStateOf("") }
+    // C-2: structured quality signals from the latest ML predict response
+    var mlQualitySignals by remember { mutableStateOf<MLQualitySignals?>(null) }
     var isAnalyzing by remember { mutableStateOf(false) }
 
     // Forensic tracking: motion, capture timing, burst score
@@ -260,13 +274,15 @@ fun DocumentCaptureScreen(
                 cameraErrorMessage = errorMsg
                 cameraReady = false
                 Log.e("DocumentCapture", "Camera error: $errorMsg")
-            }
+            },
+            videoCapture = videoCapture
         )
-        // Fallback if callback doesn't fire
-        delay(2000)
+        // Fallback if callback doesn't fire — extended to 5s so we don't
+        // silently mark camera ready when it's actually still binding (H-5).
+        delay(5000)
         if (!cameraReady && cameraErrorMessage == null) {
-            cameraReady = true
-            Log.d("DocumentCapture", "Camera ready (fallback timeout)")
+            cameraErrorMessage = "Camera took too long to start. Please close and try again."
+            Log.e("DocumentCapture", "Camera ready callback never fired after 5s — reporting error")
         }
     }
 
@@ -290,19 +306,35 @@ fun DocumentCaptureScreen(
 
     // Start burst frame buffer and motion collection when camera is ready (iOS-matching pattern).
     // Continuously captures preview bitmaps so they're available instantly on tap.
+    // Also starts per-module session video recording for the document module.
     LaunchedEffect(cameraReady) {
         if (!cameraReady) return@LaunchedEffect
         BurstCaptureUtils.startBuffering(previewView)
         motionCollector.start()
         captureStartTimeMs = System.currentTimeMillis()
+        // Start ambient video recording for the document capture module.
+        // Recording is fire-and-forget: errors are logged but never surface to the user.
+        videoRecorder.startRecording(
+            videoCapture = videoCapture,
+            module = VerityVideoModule.DOCUMENT,
+            sessionId = kycSessionId.ifBlank { "unknown" },
+            onStopped = { videoFile ->
+                onVideoRecorded?.invoke(videoFile)
+            }
+        )
+        Log.d("DocumentCapture", "Session video recording started (module=DOCUMENT, session=$kycSessionId)")
     }
 
-    // Stop buffering, motion collection and free memory when leaving the screen
+    // Stop buffering, motion collection, video recording and free memory when leaving the screen
     DisposableEffect(Unit) {
         onDispose {
             motionCollector.stop()
             BurstCaptureUtils.stopBuffering()
             BurstCaptureUtils.clearBuffer()
+            // Stop video recording if the screen is dismissed without a document capture
+            // (e.g. user taps Back). The onStopped callback fires asynchronously and
+            // forwards the file to onVideoRecorded — same path as a normal capture exit.
+            videoRecorder.stopRecording()
         }
     }
 
@@ -330,6 +362,14 @@ fun DocumentCaptureScreen(
 
             if (previewPath != null) {
                 Log.d("DocumentCapture", "ML Live: Skipping - in preview mode")
+                continue
+            }
+
+            // FIX: Don't dispatch new ML calls while capture/processing is in progress.
+            // Prevents in-flight results from overwriting mlHint with stale error toasts
+            // after the state machine has already transitioned to CAPTURING.
+            if (isProcessing || isCapturing) {
+                Log.d("DocumentCapture", "ML Live: Skipping - capture in progress")
                 continue
             }
 
@@ -366,6 +406,16 @@ fun DocumentCaptureScreen(
                             when (result) {
                                 is Resource.Success -> {
                                     val response = result.data
+                                    // FIX: Discard in-flight ML results that completed after
+                                    // capture started. These are from frames captured before
+                                    // isProcessing/isCapturing was set, and may contain stale
+                                    // "Wrong document type" errors that would show confusing
+                                    // red toasts during an otherwise successful PASS capture.
+                                    if (isProcessing || isCapturing) {
+                                        Log.d("DocumentCapture", "ML Live SUCCESS: discarding stale result — capture in progress (isProcessing=$isProcessing, isCapturing=$isCapturing)")
+                                        return@withContext
+                                    }
+
                                     val hintLc = (response.hint ?: "").lowercase()
                                     // Glare from the on-device detector OR the API hint.
                                     val glarePresent = hasGlareLocal ||
@@ -376,13 +426,15 @@ fun DocumentCaptureScreen(
                                     // and keep guiding the user until the frame reads cleanly.
                                     mlPassed = response.docOk && !glarePresent
                                     mlConfidence = response.confidence ?: 0f
+                                    // C-2: store structured quality signals for checklist display
+                                    mlQualitySignals = response.qualitySignals
                                     mlHint = if (!response.docOk) sanitizeMLHint(response.hint ?: "") else ""
                                     Log.d("DocumentCapture", "ML Live SUCCESS: docOk=${response.docOk}, glare=$glarePresent, conf=$mlConfidence")
 
                                     if (glarePresent && torchEnabled) {
                                         // Torch is the usual culprit — kill it.
                                         CameraUtils.setTorch(false)
-                                        torchEnabled = false
+                                        // torchEnabled updates automatically via CameraUtils.torchStateFlow
                                         mlHint = "Flash off — tilt the document to remove the glare"
                                         Log.d("DocumentCapture", "Torch auto-disabled due to glare")
                                     } else if (glarePresent) {
@@ -464,6 +516,18 @@ fun DocumentCaptureScreen(
         }
     }
 
+    // H-4: Reset ML and distance state when switching document sides.
+    // Without this, a successful front-side scan leaves mlPassed=true, which
+    // immediately drives the back-side into LOCKED without any real detection.
+    LaunchedEffect(isBackSide) {
+        mlPassed = false
+        mlQualitySignals = null
+        distanceGuidance = null
+        autoCaptureProgress = 0f
+        verificationError = ""
+        Log.d("DocumentCapture", "Side changed (isBackSide=$isBackSide) — ML state reset")
+    }
+
     // Auto-dismiss verification error after 4 seconds
     LaunchedEffect(verificationError) {
         if (verificationError.isNotEmpty()) {
@@ -478,6 +542,9 @@ fun DocumentCaptureScreen(
     DisposableEffect(lifecycleOwner) {
         onDispose {
             CameraUtils.dispose(context)
+            // H-3: Reset singleton state so the next screen instance can call
+            // startBuffering() fresh without the isBuffering guard short-circuiting it.
+            BurstCaptureUtils.resetState()
             // Clean up any lingering burst files from cache
             BurstCaptureUtils.cleanupAllBurstFiles(context)
             // Recycle frozen bitmap to free native memory
@@ -543,6 +610,9 @@ fun DocumentCaptureScreen(
                                 )
                             )
 
+                            // Stop session video recording now that the document has been captured
+                            videoRecorder.stopRecording()
+
                             // callback with persistent files
                             onDocumentCaptured(finalFiles)
                         } catch (t: Throwable) {
@@ -595,6 +665,9 @@ fun DocumentCaptureScreen(
                                     motionScore = twoSideMotion.motionScore,
                                 )
                             )
+
+                            // Stop session video recording now that both document sides are captured
+                            videoRecorder.stopRecording()
 
                             onDocumentCaptured(finalFiles)
                         } else {
@@ -649,6 +722,10 @@ fun DocumentCaptureScreen(
             // Auto-capture: countdown when LOCKED, fire capture at 2 seconds
             LaunchedEffect(detectionState) {
                 if (detectionState == DetectionState.LOCKED) {
+                    // H-6: Don't start countdown while an error is still on-screen.
+                    // The error auto-dismisses after 4s; if the document is still
+                    // held correctly the next ML loop will re-enter LOCKED naturally.
+                    if (verificationError.isNotEmpty()) return@LaunchedEffect
                     view.performHapticFeedback(android.view.HapticFeedbackConstants.VIRTUAL_KEY)
                     val start = System.currentTimeMillis()
                     while (isActive) {
@@ -710,7 +787,7 @@ fun DocumentCaptureScreen(
                                         if (torchEnabled) {
                                             withContext(Dispatchers.Main) {
                                                 CameraUtils.setTorch(false)
-                                                torchEnabled = false
+                                                // torchEnabled updates automatically via CameraUtils.torchStateFlow
                                             }
                                         }
 
@@ -766,6 +843,24 @@ fun DocumentCaptureScreen(
                                                     frozenBitmap = null
                                                 }
                                                 return@launch
+                                            }
+                                            // L-4: Apply sharpening to fallback frames (ImageCapture
+                                            // frames miss the pipeline applied to ring-buffer path).
+                                            withContext(Dispatchers.IO) {
+                                                fallbackFrames.forEach { file ->
+                                                    try {
+                                                        val bmp = BitmapFactory.decodeFile(file.path)
+                                                        if (bmp != null) {
+                                                            val sharpened = ImageSharpeningUtils.applySharpeningPipeline(bmp)
+                                                            file.outputStream().use { out ->
+                                                                sharpened.compress(android.graphics.Bitmap.CompressFormat.JPEG, 95, out)
+                                                            }
+                                                            if (sharpened !== bmp) bmp.recycle()
+                                                        }
+                                                    } catch (e: Exception) {
+                                                        Log.w("DocumentCapture", "Auto-capture fallback: sharpening failed for ${file.name}: ${e.message}")
+                                                    }
+                                                }
                                             }
                                             verifyAndHandleResult(
                                                 frames = fallbackFrames,
@@ -824,6 +919,8 @@ fun DocumentCaptureScreen(
                                             isProcessing = false
                                             isCapturing = false
                                             processingStatus = ""
+                                            // M-2: recycle before nulling to release native bitmap memory immediately
+                                            frozenBitmap?.recycle()
                                             frozenBitmap = null
                                         }
                                     }
@@ -970,11 +1067,9 @@ fun DocumentCaptureScreen(
                                 fontWeight = FontWeight.W600
                             )
 
-                            // Sub-step progress indicators
-                            Spacer(modifier = Modifier.height(12.dp))
-                            ProcessingSubStep("Quality check", 1.0f)
-                            ProcessingSubStep("Reading text", if (verificationPassed) 1.0f else 0.8f)
-                            ProcessingSubStep("Verification", if (verificationPassed) 1.0f else 0.6f)
+                            // L-1: Removed fake static ProcessingSubStep indicators.
+                            // Static 80%/60% values were hardcoded and did not reflect
+                            // actual backend progress — misleading to users.
                         }
                     }
                 }
@@ -991,17 +1086,27 @@ fun DocumentCaptureScreen(
                 DetectionState.SEARCHING -> 0f
                 DetectionState.DETECTING -> (distanceGuidance?.frameCoverage ?: 0f).coerceIn(0f, 0.75f) / 0.75f * 0.75f
                 DetectionState.LOCKED -> 1f
+                // L-2: hold bar at 1f during capture/processing so it doesn't
+                // snap back to 0 while the upload spinner is running.
+                DetectionState.CAPTURING -> 1f
                 else -> 0f
             }
 
-            // Derive lighting and glare quality signals from the ML hint text.
-            // The backend sends hints like "Too much glare" or "Image too dark" when
-            // it detects quality problems in the live frame stream.
-            val hintLower = mlHint.lowercase()
-            val goodLighting = !hintLower.contains("dark") && !hintLower.contains("dim") &&
-                !hintLower.contains("bright") && !hintLower.contains("light")
-            val noGlare = !hintLower.contains("glare") && !hintLower.contains("reflect") &&
-                !hintLower.contains("shine")
+            // C-2: Use structured qualitySignals when the backend sends them.
+            // Fall back to fragile hint-text matching only for older backend versions
+            // that don't yet send the qualitySignals object.
+            val qualitySignals = mlQualitySignals
+            val goodLighting = qualitySignals?.goodLighting
+                ?: run {
+                    val h = mlHint.lowercase()
+                    !h.contains("dark") && !h.contains("dim") &&
+                        !h.contains("bright") && !h.contains("light")
+                }
+            val noGlare = qualitySignals?.noGlare
+                ?: run {
+                    val h = mlHint.lowercase()
+                    !h.contains("glare") && !h.contains("reflect") && !h.contains("shine")
+                }
 
             DistanceMeterBar(
                 detectionState = detectionState,
@@ -1160,7 +1265,7 @@ fun DocumentCaptureScreen(
                                 if (torchEnabled) {
                                     withContext(Dispatchers.Main) {
                                         CameraUtils.setTorch(false)
-                                        torchEnabled = false
+                                        // torchEnabled updates automatically via CameraUtils.torchStateFlow
                                     }
                                 }
 
@@ -1220,7 +1325,25 @@ fun DocumentCaptureScreen(
                                         }
                                         return@launch
                                     }
-                                    // Fallback frames are already full-resolution (from imageCapture)
+                                    // L-4: Apply sharpening to fallback frames — they bypass the
+                                    // ring-buffer bitmap pipeline where sharpening runs normally.
+                                    // Fallback frames are already full-resolution (from imageCapture).
+                                    withContext(Dispatchers.IO) {
+                                        fallbackFrames.forEach { file ->
+                                            try {
+                                                val bmp = BitmapFactory.decodeFile(file.path)
+                                                if (bmp != null) {
+                                                    val sharpened = ImageSharpeningUtils.applySharpeningPipeline(bmp)
+                                                    file.outputStream().use { out ->
+                                                        sharpened.compress(android.graphics.Bitmap.CompressFormat.JPEG, 95, out)
+                                                    }
+                                                    if (sharpened !== bmp) bmp.recycle()
+                                                }
+                                            } catch (e: Exception) {
+                                                Log.w("DocumentCapture", "Manual fallback: sharpening failed for ${file.name}: ${e.message}")
+                                            }
+                                        }
+                                    }
                                     verifyAndHandleResult(
                                         frames = fallbackFrames,
                                         documentType = documentType,
@@ -1283,6 +1406,8 @@ fun DocumentCaptureScreen(
                                     isProcessing = false
                                     isCapturing = false
                                     processingStatus = ""
+                                    // M-2: recycle before nulling to release native bitmap memory immediately
+                                    frozenBitmap?.recycle()
                                     frozenBitmap = null
                                 }
                             }
@@ -1382,50 +1507,6 @@ fun DocumentCaptureScreen(
 }
 
 /**
- * Processing sub-step indicator: label + progress bar
- */
-@Composable
-private fun ProcessingSubStep(label: String, progress: Float) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 3.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Text(
-            text = label,
-            color = Color.White.copy(alpha = 0.8f),
-            fontSize = 12.sp,
-            modifier = Modifier.width(100.dp)
-        )
-        Spacer(modifier = Modifier.width(8.dp))
-        Box(
-            modifier = Modifier
-                .weight(1f)
-                .height(6.dp)
-                .clip(RoundedCornerShape(3.dp))
-                .background(GuidanceConfig.BAR_TRACK)
-        ) {
-            Box(
-                modifier = Modifier
-                    .fillMaxHeight()
-                    .fillMaxWidth(fraction = progress.coerceIn(0f, 1f))
-                    .background(
-                        if (progress >= 1f) GuidanceConfig.STATE_GREEN else GuidanceConfig.STATE_AMBER,
-                        RoundedCornerShape(3.dp)
-                    )
-            )
-        }
-        Spacer(modifier = Modifier.width(8.dp))
-        Text(
-            text = "${(progress * 100).toInt()}%",
-            color = Color.White.copy(alpha = 0.6f),
-            fontSize = 11.sp
-        )
-    }
-}
-
-/**
  * Shared verification logic: sends burst frames to ML backend and invokes
  * the appropriate callback based on the result.
  *
@@ -1461,6 +1542,13 @@ private suspend fun verifyAndHandleResult(
     val mlRepository = MLRepository()
     val docTypeExpected = MLDocumentType.fromSdkType(documentType ?: 1)
 
+    // C-4: Warn loudly when caller passes no session ID — this breaks backend correlation.
+    // Callers must pass their KYC session ID when invoking the SDK.
+    if (kycSessionId.isBlank()) {
+        Log.e("DocumentCapture", "kycSessionId is blank — burst verification cannot be correlated " +
+                "to the originating KYC session on the backend. Pass a real session ID.")
+    }
+
     // FIX (Architectural): Combine the real KYC session ID with a per-call UUID suffix.
     // Format: "{kycSessionId}-{UUID}" when a real session ID is available, otherwise
     // just a UUID. This gives the backend two properties simultaneously:
@@ -1472,6 +1560,7 @@ private suspend fun verifyAndHandleResult(
     } else {
         java.util.UUID.randomUUID().toString()
     }
+
 
     // FIX: Append the high-res capture as the final frame in the burst payload when available.
     // The ring buffer contains preview-resolution bitmaps (~screen-size). Including the actual
@@ -1541,7 +1630,9 @@ private suspend fun verifyAndHandleResult(
                         Log.w("DocumentCapture", "Local anti-spoof WARNING: ${localAntiSpoofResult.message} " +
                                 "(spoofType=${localAntiSpoofResult.spoofType}). ML backend passed — trusting backend decision.")
                     }
-                    onPass(frames, response.confidence?.toDouble() ?: 0.0)
+                    // C-1: pass burstFrames (ring-buffer + high-res) so the caller receives
+                    // all frames that were sent to the backend, including the full-res capture.
+                    onPass(burstFrames, response.confidence?.toDouble() ?: 0.0)
                 } else {
                     val error = sanitizeMLHint(response.hint).ifEmpty {
                         MLSpoofType.toUserMessage(response.spoof.reason)
