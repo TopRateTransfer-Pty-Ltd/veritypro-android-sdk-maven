@@ -51,27 +51,37 @@ class VerityVideoRecorder(private val context: Context) {
             .setFileSizeLimit(maxFileSizeBytes)
             .build()
 
-        activeRecording = videoCapture.output
-            .prepareRecording(context, outputOptions)
-            .start(ContextCompat.getMainExecutor(context)) { event: VideoRecordEvent ->
-                when (event) {
-                    is VideoRecordEvent.Finalize -> {
-                        if (event.hasError() && file.length() == 0L) {
-                            Log.w("VerityVideoRecorder", "Recording error, empty file")
-                            onStopped(null)
-                        } else {
-                            onStopped(file)
+        try {
+            activeRecording = videoCapture.output
+                .prepareRecording(context, outputOptions)
+                .start(ContextCompat.getMainExecutor(context)) { event: VideoRecordEvent ->
+                    when (event) {
+                        is VideoRecordEvent.Start -> {
+                            Log.d("VerityVideoRecorder", "Recording started: ${file.name}")
                         }
-                    }
-                    is VideoRecordEvent.Status -> {
-                        val durationMs = event.recordingStats.recordedDurationNanos / 1_000_000
-                        if (durationMs >= maxDurationMs) {
-                            activeRecording?.stop()
+                        is VideoRecordEvent.Finalize -> {
+                            if (event.hasError()) {
+                                Log.w("VerityVideoRecorder", "Recording error: code=${event.error}, fileSize=${file.length()}")
+                                onStopped(if (file.length() > 0L) file else null)
+                            } else {
+                                Log.d("VerityVideoRecorder", "Recording finalized OK: ${file.name} (${file.length()} bytes)")
+                                onStopped(file)
+                            }
                         }
+                        is VideoRecordEvent.Status -> {
+                            val durationMs = event.recordingStats.recordedDurationNanos / 1_000_000
+                            if (durationMs >= maxDurationMs) {
+                                activeRecording?.stop()
+                            }
+                        }
+                        else -> {}
                     }
-                    else -> {}
                 }
-            }
+            Log.d("VerityVideoRecorder", "prepareRecording().start() succeeded — recording pending/active")
+        } catch (e: Exception) {
+            Log.e("VerityVideoRecorder", "startRecording failed: ${e.javaClass.simpleName}: ${e.message}", e)
+            activeRecording = null
+        }
     }
 
     fun stopRecording() {

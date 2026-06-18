@@ -283,11 +283,21 @@ object CameraUtils {
     /**
      * Create image capture with optimal resolution for documents
      */
-    fun createSmartImageCapture(context: Context): ImageCapture {
+    /**
+     * @param withVideoCapture Set to true when a VideoCapture use case will be bound in the same
+     * camera session. CAPTURE_MODE_ZERO_SHUTTER_LAG is incompatible with VideoCapture — it
+     * requires a ZSL ring-buffer surface that conflicts with the video encoder surface, causing
+     * CameraX to internally reset the recording via resetDirectly and never deliver
+     * VideoRecordEvent.Finalize. When withVideoCapture=true, we fall back to
+     * CAPTURE_MODE_MINIMIZE_LATENCY (the CameraX default) which is fully compatible with
+     * VideoCapture. When withVideoCapture=false (selfie, no concurrent video), ZSL is used to
+     * eliminate the 100–500ms pipeline delay between the frozen preview and the captured image.
+     */
+    fun createSmartImageCapture(context: Context, withVideoCapture: Boolean = false): ImageCapture {
         val report = CameraCapabilityAnalyzer.getCapabilityReport(context)
         val targetResolution = report.recommendedResolution
 
-        Log.d(TAG, "Creating ImageCapture with target resolution: ${targetResolution.width}x${targetResolution.height}")
+        Log.d(TAG, "Creating ImageCapture with target resolution: ${targetResolution.width}x${targetResolution.height}, withVideoCapture=$withVideoCapture")
 
         val resolutionSelector = ResolutionSelector.Builder()
             .setResolutionStrategy(
@@ -298,21 +308,25 @@ object CameraUtils {
             )
             .build()
 
-        // FIX: Use ZERO_SHUTTER_LAG so the photo is drawn from the preview stream's
-        // circular buffer at trigger time — eliminating the 100–500ms pipeline delay that
-        // caused the frozen preview and the actual captured image to differ.
-        // Falls back to MAXIMIZE_QUALITY automatically on devices where ZSL is unsupported.
-        //
         // FIX: Force FLASH_MODE_OFF to prevent CameraX from auto-firing the strobe flash.
         // FLASH_MODE_AUTO (the default) triggers an AE pre-capture sequence and fires the
         // flash when AE=FLASH_REQUIRED, causing harsh specular reflections on holographic
         // security laminates (Nigerian passport, etc.) that produce dark, purple-tinted,
         // grain-blown images. Low-light is handled by the +1.0 EV exposure boost.
-        return ImageCapture.Builder()
+        val builder = ImageCapture.Builder()
             .setResolutionSelector(resolutionSelector)
-            .setCaptureMode(ImageCapture.CAPTURE_MODE_ZERO_SHUTTER_LAG)
             .setFlashMode(ImageCapture.FLASH_MODE_OFF)
-            .build()
+
+        if (!withVideoCapture) {
+            // ZERO_SHUTTER_LAG draws from the preview stream's circular buffer at trigger
+            // time, eliminating the 100–500ms pipeline delay. Safe only when no VideoCapture
+            // use case is active in the same session.
+            builder.setCaptureMode(ImageCapture.CAPTURE_MODE_ZERO_SHUTTER_LAG)
+        }
+        // When withVideoCapture=true we leave the capture mode unset (defaults to
+        // MINIMIZE_LATENCY) — CameraX documents this as compatible with VideoCapture.
+
+        return builder.build()
     }
 
     /**
