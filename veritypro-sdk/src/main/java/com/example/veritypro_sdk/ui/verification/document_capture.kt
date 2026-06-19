@@ -71,6 +71,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -112,14 +114,24 @@ fun DocumentCaptureScreen(
         return
     }
 
-    // Use smart image capture with optimal resolution for documents
-    val imageCapture = remember { CameraUtils.createSmartImageCapture(context) }
+    // Use smart image capture with optimal resolution for documents.
+    // withVideoCapture=true: CAPTURE_MODE_ZERO_SHUTTER_LAG is incompatible with VideoCapture
+    // bound in the same session — it causes CameraX to reset the video recording via
+    // resetDirectly, dropping VideoRecordEvent.Finalize. MINIMIZE_LATENCY is used instead.
+    val imageCapture = remember { CameraUtils.createSmartImageCapture(context, withVideoCapture = true) }
 
     // Per-module session video recording: rear camera, 720p HD, 3 min / 30 MB cap
     val videoRecorder = remember { VerityVideoRecorder(context) }
     val videoCapture: VideoCapture<Recorder> = remember { videoRecorder.buildVideoCapture() }
 
     val capturedFiles = remember { mutableStateListOf<File>() }
+
+    // Deferred document files — set when the user confirms capture, cleared when
+    // CameraX delivers VideoRecordEvent.Finalize and onDocumentCaptured is forwarded.
+    // Keeping these here (rather than calling onDocumentCaptured immediately) ensures
+    // the camera lifecycle stays alive during async video finalisation so CameraX does
+    // not drop the Finalize event when the session closes.
+    var pendingDocumentFiles: List<File>? by remember { mutableStateOf(null) }
 
     var previewPath by rememberSaveable { mutableStateOf<String?>(null) }
     val previewFile = previewPath?.let { File(it) }
@@ -306,12 +318,40 @@ fun DocumentCaptureScreen(
 
     // Start burst frame buffer and motion collection when camera is ready (iOS-matching pattern).
     // Continuously captures preview bitmaps so they're available instantly on tap.
-    // Also starts per-module session video recording for the document module.
+    // Separated from video recording so burst/motion can restart on camera-ready changes
+    // without cancelling the in-flight recording coroutine.
     LaunchedEffect(cameraReady) {
         if (!cameraReady) return@LaunchedEffect
         BurstCaptureUtils.startBuffering(previewView)
         motionCollector.start()
         captureStartTimeMs = System.currentTimeMillis()
+    }
+
+    // Start per-module session video recording — single-shot, using LaunchedEffect(Unit).
+    //
+    // ROOT CAUSE of previous recording failure:
+    //   The recording was inside LaunchedEffect(cameraReady). CameraX binding can fire
+    //   onCameraReady (cameraReady=true) then briefly toggle the state again, causing the
+    //   LaunchedEffect to cancel its coroutine at the delay(500) suspension point BEFORE
+    //   startRecording() is ever reached. Since delay() is a cancellation point, the
+    //   coroutine is silently killed and no VerityVideoRecorder logs appear.
+    //
+    // FIX:
+    //   LaunchedEffect(Unit) runs exactly once and is NEVER cancelled by cameraReady changes.
+    //   snapshotFlow { cameraReady }.filter { it }.first() waits for camera-ready internally,
+    //   then delay(1000) lets the Recorder reach IDLING safely before startRecording() is called.
+    LaunchedEffect(Unit) {
+        // Wait until camera is fully initialised. snapshotFlow emits the current value
+        // immediately, so if cameraReady is already true this returns in the same frame.
+        snapshotFlow { cameraReady }
+            .filter { it }
+            .first()
+        Log.d("DocumentCapture", "Recording effect: camera ready — waiting for Recorder IDLING")
+        // Allow the CameraX Recorder to transition CONFIGURING → IDLING (~150ms typical;
+        // 1000ms gives safe margin on all devices). This delay cannot be cancelled by
+        // cameraReady changes because we are in a LaunchedEffect(Unit) scope.
+        delay(1000)
+        Log.d("DocumentCapture", "Recording effect: calling startRecording")
         // Start ambient video recording for the document capture module.
         // Recording is fire-and-forget: errors are logged but never surface to the user.
         videoRecorder.startRecording(
@@ -320,6 +360,14 @@ fun DocumentCaptureScreen(
             sessionId = kycSessionId.ifBlank { "unknown" },
             onStopped = { videoFile ->
                 onVideoRecorded?.invoke(videoFile)
+                // Forward the deferred document files to the parent — this is the
+                // point at which the camera lifecycle is still alive and CameraX has
+                // just confirmed the video file is fully flushed to disk.
+                val pending = pendingDocumentFiles
+                if (pending != null) {
+                    pendingDocumentFiles = null
+                    onDocumentCaptured(pending)
+                }
             }
         )
         Log.d("DocumentCapture", "Session video recording started (module=DOCUMENT, session=$kycSessionId)")
@@ -528,6 +576,24 @@ fun DocumentCaptureScreen(
         Log.d("DocumentCapture", "Side changed (isBackSide=$isBackSide) — ML state reset")
     }
 
+    // Timeout fallback: if CameraX never delivers VideoRecordEvent.Finalize
+    // (device under memory pressure, rare lifecycle edge case), advance the
+    // flow after 3 seconds so the user is never stuck on this screen.
+    LaunchedEffect(pendingDocumentFiles) {
+        val pending = pendingDocumentFiles ?: return@LaunchedEffect
+        delay(3_000)
+        if (pendingDocumentFiles != null) {
+            Log.w("DocumentCapture", "Video finalisation timeout — advancing without video file")
+            // BUG A-02 FIX: explicitly signal null video before advancing.
+            // Without this, documentVideoFile in VerificationScreen retains its
+            // previous value (stale file from a prior attempt) and gets submitted
+            // with the new documents — wrong video paired with wrong capture session.
+            onVideoRecorded?.invoke(null)
+            pendingDocumentFiles = null
+            onDocumentCaptured(pending)
+        }
+    }
+
     // Auto-dismiss verification error after 4 seconds
     LaunchedEffect(verificationError) {
         if (verificationError.isNotEmpty()) {
@@ -610,11 +676,14 @@ fun DocumentCaptureScreen(
                                 )
                             )
 
-                            // Stop session video recording now that the document has been captured
+                            // Stop session video recording now that the document has been captured.
+                            // Set pendingDocumentFiles BEFORE stopping so the onStopped callback
+                            // (which fires on VideoRecordEvent.Finalize) can forward the files once
+                            // the video is fully flushed. Calling onDocumentCaptured here directly
+                            // would advance the stage and remove this composable from composition,
+                            // causing the camera lifecycle to close before CameraX delivers Finalize.
+                            pendingDocumentFiles = finalFiles
                             videoRecorder.stopRecording()
-
-                            // callback with persistent files
-                            onDocumentCaptured(finalFiles)
                         } catch (t: Throwable) {
                             Log.e("DocumentCapture", "Failed to persist passport file", t)
                             // Reset to retake - file is corrupted
@@ -666,10 +735,11 @@ fun DocumentCaptureScreen(
                                 )
                             )
 
-                            // Stop session video recording now that both document sides are captured
+                            // Stop session video recording now that both document sides are captured.
+                            // Defer onDocumentCaptured via pendingDocumentFiles so the composable
+                            // stays alive until VideoRecordEvent.Finalize fires (see onStopped above).
+                            pendingDocumentFiles = finalFiles
                             videoRecorder.stopRecording()
-
-                            onDocumentCaptured(finalFiles)
                         } else {
                             // Only have front, UI will automatically switch to "Back" instructions
                             // because capturedFiles is no longer empty (isBackSide will be true)

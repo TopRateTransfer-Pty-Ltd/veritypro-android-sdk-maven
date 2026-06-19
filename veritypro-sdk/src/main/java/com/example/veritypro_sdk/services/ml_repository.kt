@@ -217,7 +217,15 @@ class MLRepository {
                 return Resource.Error("At least 3 frames required for verification")
             }
 
-            val base64Frames = bitmaps.map { bitmapToBase64(it) }
+            // BUG A-03 FIX: Process bitmaps sequentially to match the fix already applied
+            // to verifyBurst(frames: List<File>). Parallel .map { } allocates all compressed
+            // JPEG byte arrays simultaneously — ~42 MB peak on 6 HD frames. Sequential
+            // buildList lets each frame's ByteArrayOutputStream be GC'd before the next.
+            val base64Frames = buildList {
+                for (bitmap in bitmaps) {
+                    add(bitmapToBase64(bitmap))
+                }
+            }
 
             val request = MLVerifyBurstRequest(
                 sessionId = sessionId,

@@ -381,6 +381,7 @@ fun VerificationScreen(
                     // Clear captured data when going back from RESULT to prevent stale resubmission
                     documentFrontPage = null
                     documentBackPage = null
+                    documentVideoFile?.delete()  // BUG A-04 FIX: delete file, not just null the ref
                     documentVideoFile = null
                     addressDocFile = null
                     addressDocType = null
@@ -535,9 +536,26 @@ fun VerificationScreen(
                                             confidence = 0.95f,
                                             sessionId = viewModel.getSessionId()
                                         )
+                                        // onDocumentCaptured fires only after onVideoRecorded
+                                        // (pendingDocumentFiles pattern in document_capture.kt),
+                                        // so documentVideoFile is already populated at this point.
                                         stage = viewModel.flowRouter.nextStage(stage) ?: VerificationStage.RESULT
                                     },
-                                    onVideoRecorded = { file -> documentVideoFile = file }
+                                    onVideoRecorded = { file ->
+                                        // BUG A-04 FIX: delete the previous partial video before
+                                        // replacing the reference. On back-navigation + re-capture,
+                                        // the old recording is superseded by the new one. Without
+                                        // deletion, partial MP4s accumulate in context.cacheDir
+                                        // indefinitely (OS only cleans cacheDir under storage pressure).
+                                        documentVideoFile?.let { old ->
+                                            if (old != file && old.exists()) {
+                                                old.delete()
+                                                Log.d("Verity", "Deleted superseded video: ${old.name}")
+                                            }
+                                        }
+                                        documentVideoFile = file
+                                        Log.d("Verity", "Video finalised: ${file?.name ?: "null"} (${file?.length() ?: 0} bytes)")
+                                    }
                                 )
                             }
 
@@ -630,27 +648,33 @@ fun VerificationScreen(
                                                                     captureDurationSeconds = captureDurationSeconds,
                                                                     captureAttempts = captureAttemptCount,
                                                                 ))
-                                                                viewModel.updateKyc(
-                                                                    VerificationRequestMultipart(
-                                                                        SessionId = sessionId ?: "",
-                                                                        DocumentType = selectedDocumentType!!,
-                                                                        PlatformUsed = "android",
-                                                                        DeviceAndBrowser = DeviceUtils.getDevicePlatform(),
-                                                                        IpAddress = ipAddress ?: "",
-                                                                        IpLocation = locationText ?: "",
-                                                                        DocumentFront = documentFrontPage?.toMultipartBodyPart("DocumentFront"),
-                                                                        DocumentBack = documentBackPage?.toMultipartBodyPart("DocumentBack"),
-                                                                        LivenessId = livenessId ?: "",
-                                                                        SecurityAssessmentJson = securityJson,
-                                                                        PortraitVideo = documentVideoFile?.takeIf { it.length() > 0L }?.let { file ->
-                                                                            MultipartBody.Part.createFormData(
-                                                                                "PortraitVideo",
-                                                                                file.name,
-                                                                                file.asRequestBody("video/mp4".toMediaTypeOrNull())
-                                                                            )
-                                                                        }
-                                                                    ),
-                                                                )
+                                                                // documentVideoFile is already populated: onDocumentCaptured
+                                                                // is only invoked from document_capture.kt after
+                                                                // VideoRecordEvent.Finalize has fired (pendingDocumentFiles
+                                                                // pattern), so no wait loop is needed here.
+                                                                coroutineScope.launch {
+                                                                    viewModel.updateKyc(
+                                                                        VerificationRequestMultipart(
+                                                                            SessionId = sessionId ?: "",
+                                                                            DocumentType = selectedDocumentType!!,
+                                                                            PlatformUsed = "android",
+                                                                            DeviceAndBrowser = DeviceUtils.getDevicePlatform(),
+                                                                            IpAddress = ipAddress ?: "",
+                                                                            IpLocation = locationText ?: "",
+                                                                            DocumentFront = documentFrontPage?.toMultipartBodyPart("DocumentFront"),
+                                                                            DocumentBack = documentBackPage?.toMultipartBodyPart("DocumentBack"),
+                                                                            LivenessId = livenessId ?: "",
+                                                                            SecurityAssessmentJson = securityJson,
+                                                                            DocumentVideo = documentVideoFile?.takeIf { it.length() > 0L }?.let { file ->
+                                                                                MultipartBody.Part.createFormData(
+                                                                                    "DocumentVideo",
+                                                                                    file.name,
+                                                                                    file.asRequestBody("video/mp4".toMediaTypeOrNull())
+                                                                                )
+                                                                            }
+                                                                        ),
+                                                                    )
+                                                                }
                                                             } else {
                                                                 // LIVENESS_ONLY mode: no documents captured, skip updateKyc.
                                                                 // Liveness result is already stored server-side via the
@@ -760,6 +784,7 @@ fun VerificationScreen(
                                         stage = VerificationStage.INTRO
                                         documentFrontPage = null
                                         documentBackPage = null
+                                        documentVideoFile?.delete()  // BUG A-04 FIX: delete file
                                         documentVideoFile = null
                                         addressDocFile = null
                                         addressDocType = null
@@ -809,9 +834,9 @@ fun VerificationScreen(
                                             DocumentFront = documentFrontPage?.toMultipartBodyPart("DocumentFront"),
                                             DocumentBack = documentBackPage?.toMultipartBodyPart("DocumentBack"),
                                             SecurityAssessmentJson = securityJson,
-                                            PortraitVideo = documentVideoFile?.takeIf { it.length() > 0L }?.let { file ->
+                                            DocumentVideo = documentVideoFile?.takeIf { it.length() > 0L }?.let { file ->
                                                 MultipartBody.Part.createFormData(
-                                                    "PortraitVideo",
+                                                    "DocumentVideo",
                                                     file.name,
                                                     file.asRequestBody("video/mp4".toMediaTypeOrNull())
                                                 )
