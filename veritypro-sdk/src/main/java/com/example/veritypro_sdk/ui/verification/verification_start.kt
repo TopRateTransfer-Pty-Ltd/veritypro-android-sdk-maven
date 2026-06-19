@@ -665,9 +665,9 @@ fun VerificationScreen(
                                                                             DocumentBack = documentBackPage?.toMultipartBodyPart("DocumentBack"),
                                                                             LivenessId = livenessId ?: "",
                                                                             SecurityAssessmentJson = securityJson,
-                                                                            PortraitVideo = documentVideoFile?.takeIf { it.length() > 0L }?.let { file ->
+                                                                            DocumentVideo = documentVideoFile?.takeIf { it.length() > 0L }?.let { file ->
                                                                                 MultipartBody.Part.createFormData(
-                                                                                    "PortraitVideo",
+                                                                                    "DocumentVideo",
                                                                                     file.name,
                                                                                     file.asRequestBody("video/mp4".toMediaTypeOrNull())
                                                                                 )
@@ -834,9 +834,9 @@ fun VerificationScreen(
                                             DocumentFront = documentFrontPage?.toMultipartBodyPart("DocumentFront"),
                                             DocumentBack = documentBackPage?.toMultipartBodyPart("DocumentBack"),
                                             SecurityAssessmentJson = securityJson,
-                                            PortraitVideo = documentVideoFile?.takeIf { it.length() > 0L }?.let { file ->
+                                            DocumentVideo = documentVideoFile?.takeIf { it.length() > 0L }?.let { file ->
                                                 MultipartBody.Part.createFormData(
-                                                    "PortraitVideo",
+                                                    "DocumentVideo",
                                                     file.name,
                                                     file.asRequestBody("video/mp4".toMediaTypeOrNull())
                                                 )
