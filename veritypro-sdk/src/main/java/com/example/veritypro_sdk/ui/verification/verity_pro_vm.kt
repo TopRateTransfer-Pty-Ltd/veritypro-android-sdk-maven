@@ -246,7 +246,17 @@ class VerityProViewModel(
                 CountryDocumentItem(id = 1, documentType = "ID Card")
             lower == "passport" ->
                 CountryDocumentItem(id = 2, documentType = "Passport")
-            lower in listOf("drivers license", "driver's license", "driverslicense", "drivers_license", "driving license", "driverlicense", "driver_license", "driver license") ->
+            lower in listOf(
+                // American spellings
+                "drivers license", "driver's license", "driverslicense", "drivers_license",
+                "driving license", "driverlicense", "driver_license", "driver license",
+                // British spellings ("licence") — additive so a host passing the
+                // AU/NZ/UK/IE spelling is recognised instead of silently dropped
+                // (which forced the all-types default). Does not affect any host
+                // already passing an American spelling.
+                "drivers licence", "driver's licence", "driverslicence", "drivers_licence",
+                "driving licence", "driverlicence", "driver_licence", "driver licence"
+            ) ->
                 CountryDocumentItem(id = 3, documentType = "Driver's License")
             else -> null
         }
