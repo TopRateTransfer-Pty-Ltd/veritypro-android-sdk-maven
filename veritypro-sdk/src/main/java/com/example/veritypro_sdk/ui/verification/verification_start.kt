@@ -551,13 +551,21 @@ fun VerificationScreen(
                                         // once — using the SAME multipart construction as the
                                         // biometric / RESULT-retry call sites.
                                         //
-                                        // Mode discriminator: BIOMETRIC-bearing flows (BIOMETRIC,
-                                        // COMBINED, legacy DOCUMENT+BIOMETRIC module sets) already
-                                        // upload after liveness, so we must NOT double-upload here —
-                                        // only when the BIOMETRIC module is absent from the flow.
-                                        val isDocumentOnly =
-                                            !viewModel.flowRouter.isModuleEnabled(VerificationModule.BIOMETRIC)
-                                        if (isDocumentOnly && !docOnlyUploadFired) {
+                                        // DEF-3: this flag means "the BIOMETRIC module is absent from
+                                        // the flow", NOT literally "DOCUMENT is the only module". It is
+                                        // also true for legacy biometric-absent multi-module flows such
+                                        // as DOCUMENT+ADDRESS and DOCUMENT+EDD — those have no liveness
+                                        // stage either, so the document upload must fire from here. The
+                                        // decision now lives in the (unit-tested) flow router method
+                                        // shouldAutoUploadDocument() so the discriminator is verifiable
+                                        // without a Compose/instrumentation harness. Behaviour is
+                                        // identical to the previous inline isModuleEnabled(BIOMETRIC)
+                                        // negation. The inner documentFrontPage null-guard below ensures
+                                        // document-less biometric-absent flows (ADDRESS-only, EDD-only)
+                                        // never actually upload.
+                                        val shouldAutoUploadDocument =
+                                            viewModel.flowRouter.shouldAutoUploadDocument()
+                                        if (shouldAutoUploadDocument && !docOnlyUploadFired) {
                                             val hasValidDocType =
                                                 selectedDocumentType != null && selectedDocumentType!! > 0
                                             if (documentFrontPage != null && hasValidDocType) {
