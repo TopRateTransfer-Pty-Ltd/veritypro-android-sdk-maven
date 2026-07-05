@@ -39,6 +39,8 @@ class ApiRepositoryPollLivenessTest {
 
     private lateinit var repository: ApiRepository
 
+    private val apiKey = "test-api-key"
+
     @Before
     fun setUp() {
         repository = spyk(ApiRepository())
@@ -49,10 +51,12 @@ class ApiRepositoryPollLivenessTest {
         status: String = "SUCCEEDED"
     ): LivenessResultResponse {
         return LivenessResultResponse(
-            confidence = confidence,
+            id = "liveness-result-1",
+            awsSessionId = "aws-session-1",
             status = status,
-            auditImages = null,
-            referenceImage = null
+            livenessPassed = status.equals("SUCCEEDED", ignoreCase = true),
+            confidence = confidence,
+            updatedAt = "2025-12-31T23:59:59Z"
         )
     }
 
@@ -63,22 +67,22 @@ class ApiRepositoryPollLivenessTest {
     @Test
     fun `pollLivenessResult returns success immediately when first poll succeeds`() = runTest {
         val successResp = makeSuccessResponse()
-        coEvery { repository.getLivenessResult(any()) } returns Resource.Success(successResp)
+        coEvery { repository.getLivenessResult(any(), any()) } returns Resource.Success(successResp)
 
-        val result = repository.pollLivenessResult("session-123")
+        val result = repository.pollLivenessResult("session-123", apiKey)
 
         assertTrue("Result should be Success, was $result", result is Resource.Success)
         assertEquals(successResp, (result as Resource.Success).data)
-        coVerify(exactly = 1) { repository.getLivenessResult("session-123") }
+        coVerify(exactly = 1) { repository.getLivenessResult("session-123", apiKey) }
     }
 
     @Test
     fun `pollLivenessResult passes awsSessionId to getLivenessResult`() = runTest {
-        coEvery { repository.getLivenessResult(any()) } returns Resource.Success(makeSuccessResponse())
+        coEvery { repository.getLivenessResult(any(), any()) } returns Resource.Success(makeSuccessResponse())
 
-        repository.pollLivenessResult("my-aws-session-42")
+        repository.pollLivenessResult("my-aws-session-42", apiKey)
 
-        coVerify { repository.getLivenessResult("my-aws-session-42") }
+        coVerify { repository.getLivenessResult("my-aws-session-42", apiKey) }
     }
 
     // ========================================================================
@@ -88,33 +92,33 @@ class ApiRepositoryPollLivenessTest {
     @Test
     fun `pollLivenessResult retries on Loading and eventually succeeds`() = runTest {
         val successResp = makeSuccessResponse()
-        coEvery { repository.getLivenessResult(any()) } returnsMany listOf(
+        coEvery { repository.getLivenessResult(any(), any()) } returnsMany listOf(
             Resource.Loading("Liveness still processing: IN_PROGRESS"),
             Resource.Loading("Liveness still processing: IN_PROGRESS"),
             Resource.Loading("Liveness still processing: CREATED"),
             Resource.Success(successResp)
         )
 
-        val result = repository.pollLivenessResult("session-456")
+        val result = repository.pollLivenessResult("session-456", apiKey)
 
         assertTrue("Result should be Success, was $result", result is Resource.Success)
         assertEquals(successResp, (result as Resource.Success).data)
-        coVerify(exactly = 4) { repository.getLivenessResult("session-456") }
+        coVerify(exactly = 4) { repository.getLivenessResult("session-456", apiKey) }
     }
 
     @Test
     fun `pollLivenessResult succeeds after single Loading response`() = runTest {
         val successResp = makeSuccessResponse(confidence = 87.2)
-        coEvery { repository.getLivenessResult(any()) } returnsMany listOf(
+        coEvery { repository.getLivenessResult(any(), any()) } returnsMany listOf(
             Resource.Loading("Processing"),
             Resource.Success(successResp)
         )
 
-        val result = repository.pollLivenessResult("session-single-retry")
+        val result = repository.pollLivenessResult("session-single-retry", apiKey)
 
         assertTrue(result is Resource.Success)
-        assertEquals(87.2, (result as Resource.Success).data.confidence, 0.01)
-        coVerify(exactly = 2) { repository.getLivenessResult(any()) }
+        assertEquals(87.2, (result as Resource.Success).data.confidence!!, 0.01)
+        coVerify(exactly = 2) { repository.getLivenessResult(any(), any()) }
     }
 
     // ========================================================================
@@ -123,41 +127,41 @@ class ApiRepositoryPollLivenessTest {
 
     @Test
     fun `pollLivenessResult stops immediately on terminal error`() = runTest {
-        coEvery { repository.getLivenessResult(any()) } returns
+        coEvery { repository.getLivenessResult(any(), any()) } returns
                 Resource.Error("Liveness check failed: FAILED")
 
-        val result = repository.pollLivenessResult("session-err")
+        val result = repository.pollLivenessResult("session-err", apiKey)
 
         assertTrue("Result should be Error, was $result", result is Resource.Error)
         assertEquals("Liveness check failed: FAILED", (result as Resource.Error).message)
-        coVerify(exactly = 1) { repository.getLivenessResult(any()) }
+        coVerify(exactly = 1) { repository.getLivenessResult(any(), any()) }
     }
 
     @Test
     fun `pollLivenessResult returns error without retrying on first-attempt failure`() = runTest {
-        coEvery { repository.getLivenessResult(any()) } returns
+        coEvery { repository.getLivenessResult(any(), any()) } returns
                 Resource.Error("HTTP 500: Internal Server Error")
 
-        val result = repository.pollLivenessResult("session-500")
+        val result = repository.pollLivenessResult("session-500", apiKey)
 
         assertTrue(result is Resource.Error)
         assertEquals("HTTP 500: Internal Server Error", (result as Resource.Error).message)
-        coVerify(exactly = 1) { repository.getLivenessResult(any()) }
+        coVerify(exactly = 1) { repository.getLivenessResult(any(), any()) }
     }
 
     @Test
     fun `pollLivenessResult stops on error even after Loading responses`() = runTest {
-        coEvery { repository.getLivenessResult(any()) } returnsMany listOf(
+        coEvery { repository.getLivenessResult(any(), any()) } returnsMany listOf(
             Resource.Loading("Processing"),
             Resource.Loading("Processing"),
             Resource.Error("Liveness check failed: EXPIRED")
         )
 
-        val result = repository.pollLivenessResult("session-late-fail")
+        val result = repository.pollLivenessResult("session-late-fail", apiKey)
 
         assertTrue(result is Resource.Error)
         assertEquals("Liveness check failed: EXPIRED", (result as Resource.Error).message)
-        coVerify(exactly = 3) { repository.getLivenessResult(any()) }
+        coVerify(exactly = 3) { repository.getLivenessResult(any(), any()) }
     }
 
     // ========================================================================
@@ -166,42 +170,44 @@ class ApiRepositoryPollLivenessTest {
 
     @Test
     fun `pollLivenessResult returns timeout error when max attempts exhausted`() = runTest {
-        coEvery { repository.getLivenessResult(any()) } returns Resource.Loading("Still processing")
+        coEvery { repository.getLivenessResult(any(), any()) } returns Resource.Loading("Still processing")
 
-        val result = repository.pollLivenessResult("session-timeout")
+        val result = repository.pollLivenessResult("session-timeout", apiKey)
 
         assertTrue("Result should be Error for timeout, was $result", result is Resource.Error)
         val errorMsg = (result as Resource.Error).message
         assertTrue("Error message should mention timeout: $errorMsg", errorMsg.contains("timed out"))
         assertTrue("Error message should mention 12 attempts: $errorMsg", errorMsg.contains("12"))
-        coVerify(exactly = 12) { repository.getLivenessResult(any()) }
+        coVerify(exactly = 12) { repository.getLivenessResult(any(), any()) }
     }
 
     @Test
     fun `pollLivenessResult respects custom maxAttempts parameter`() = runTest {
-        coEvery { repository.getLivenessResult(any()) } returns Resource.Loading("Processing")
+        coEvery { repository.getLivenessResult(any(), any()) } returns Resource.Loading("Processing")
 
         val result = repository.pollLivenessResult(
-            awsSessionId = "session-custom-max",
+            livenessId = "session-custom-max",
+            apiKey = apiKey,
             maxAttempts = 5
         )
 
         assertTrue(result is Resource.Error)
         assertTrue((result as Resource.Error).message.contains("timed out"))
-        coVerify(exactly = 5) { repository.getLivenessResult(any()) }
+        coVerify(exactly = 5) { repository.getLivenessResult(any(), any()) }
     }
 
     @Test
     fun `pollLivenessResult with maxAttempts of 1 makes exactly one attempt`() = runTest {
-        coEvery { repository.getLivenessResult(any()) } returns Resource.Loading("Processing")
+        coEvery { repository.getLivenessResult(any(), any()) } returns Resource.Loading("Processing")
 
         val result = repository.pollLivenessResult(
-            awsSessionId = "session-single",
+            livenessId = "session-single",
+            apiKey = apiKey,
             maxAttempts = 1
         )
 
         assertTrue(result is Resource.Error)
-        coVerify(exactly = 1) { repository.getLivenessResult(any()) }
+        coVerify(exactly = 1) { repository.getLivenessResult(any(), any()) }
     }
 
     // ========================================================================
@@ -266,23 +272,24 @@ class ApiRepositoryPollLivenessTest {
     @Test
     fun `pollLivenessResult handles CompletedSuccess by converting to Success`() = runTest {
         val resp = makeSuccessResponse()
-        coEvery { repository.getLivenessResult(any()) } returns
+        coEvery { repository.getLivenessResult(any(), any()) } returns
                 Resource.CompletedSuccess(resp)
 
-        val result = repository.pollLivenessResult("session-completed")
+        val result = repository.pollLivenessResult("session-completed", apiKey)
 
         assertTrue("CompletedSuccess should be converted to Success, was $result", result is Resource.Success)
-        assertEquals(resp.confidence, (result as Resource.Success).data.confidence, 0.01)
-        coVerify(exactly = 1) { repository.getLivenessResult(any()) }
+        assertEquals(resp.confidence!!, (result as Resource.Success).data.confidence!!, 0.01)
+        coVerify(exactly = 1) { repository.getLivenessResult(any(), any()) }
     }
 
     @Test
     fun `pollLivenessResult with custom parameters succeeds on first attempt`() = runTest {
         val resp = makeSuccessResponse(confidence = 95.0)
-        coEvery { repository.getLivenessResult(any()) } returns Resource.Success(resp)
+        coEvery { repository.getLivenessResult(any(), any()) } returns Resource.Success(resp)
 
         val result = repository.pollLivenessResult(
-            awsSessionId = "session-custom",
+            livenessId = "session-custom",
+            apiKey = apiKey,
             initialDelayMs = 500,
             multiplier = 2.0,
             maxDelayMs = 5000,
@@ -290,7 +297,7 @@ class ApiRepositoryPollLivenessTest {
         )
 
         assertTrue(result is Resource.Success)
-        assertEquals(95.0, (result as Resource.Success).data.confidence, 0.01)
-        coVerify(exactly = 1) { repository.getLivenessResult("session-custom") }
+        assertEquals(95.0, (result as Resource.Success).data.confidence!!, 0.01)
+        coVerify(exactly = 1) { repository.getLivenessResult("session-custom", apiKey) }
     }
 }

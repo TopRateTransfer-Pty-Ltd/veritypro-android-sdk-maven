@@ -300,81 +300,76 @@ class BeginLivenessModelTest {
     fun `LivenessResultResponse deserializes with all fields`() {
         val json = """
         {
-            "Confidence": 99.8,
-            "Status": "SUCCEEDED",
-            "AuditImages": [
-                {
-                    "S3Object": {"Bucket": "my-bucket", "Name": "audit-1.jpg"},
-                    "BoundingBox": {"Width": 0.5, "Height": 0.5, "Left": 0.25, "Top": 0.25}
-                }
-            ],
-            "ReferenceImage": {
-                "S3Object": {"Bucket": "ref-bucket", "Name": "reference.jpg"},
-                "BoundingBox": {"Width": 0.6, "Height": 0.6, "Left": 0.2, "Top": 0.2}
-            }
+            "id": "liveness-result-123",
+            "aws_session_id": "aws-sess-456",
+            "status": "SUCCEEDED",
+            "liveness_passed": true,
+            "confidence": 99.8,
+            "updated_at": "2025-06-15T12:00:00Z"
         }
         """.trimIndent()
 
         val response = gson.fromJson(json, LivenessResultResponse::class.java)
 
-        assertEquals(99.8, response.confidence, 0.01)
+        assertEquals("liveness-result-123", response.id)
+        assertEquals("aws-sess-456", response.awsSessionId)
         assertEquals("SUCCEEDED", response.status)
-        assertNotNull(response.auditImages)
-        assertEquals(1, response.auditImages!!.size)
-        assertEquals("my-bucket", response.auditImages[0].s3Object?.bucket)
-        assertEquals("audit-1.jpg", response.auditImages[0].s3Object?.name)
-        assertNotNull(response.referenceImage)
-        assertEquals("ref-bucket", response.referenceImage!!.s3Object?.bucket)
+        assertEquals(true, response.livenessPassed)
+        assertEquals(99.8, response.confidence!!, 0.01)
+        assertEquals("2025-06-15T12:00:00Z", response.updatedAt)
     }
 
     @Test
-    fun `LivenessResultResponse handles null audit images and reference image`() {
+    fun `LivenessResultResponse handles missing optional fields as null`() {
+        // Only status is required; livenessPassed, confidence, updatedAt, id and
+        // awsSessionId are optional and must default to null when absent.
         val json = """
         {
-            "Confidence": 85.5,
-            "Status": "SUCCEEDED",
-            "AuditImages": null,
-            "ReferenceImage": null
+            "status": "SUCCEEDED"
         }
         """.trimIndent()
 
         val response = gson.fromJson(json, LivenessResultResponse::class.java)
 
-        assertEquals(85.5, response.confidence, 0.01)
         assertEquals("SUCCEEDED", response.status)
-        assertNull(response.auditImages)
-        assertNull(response.referenceImage)
+        assertNull(response.id)
+        assertNull(response.awsSessionId)
+        assertNull(response.livenessPassed)
+        assertNull(response.confidence)
+        assertNull(response.updatedAt)
     }
 
     @Test
-    fun `LivenessResultResponse with empty audit images list`() {
+    fun `LivenessResultResponse deserializes liveness_passed false`() {
         val json = """
         {
-            "Confidence": 90.0,
-            "Status": "SUCCEEDED",
-            "AuditImages": [],
-            "ReferenceImage": null
+            "id": "liveness-failed",
+            "aws_session_id": "aws-sess-fail",
+            "status": "FAILED",
+            "liveness_passed": false,
+            "confidence": 12.0
         }
         """.trimIndent()
 
         val response = gson.fromJson(json, LivenessResultResponse::class.java)
 
-        assertNotNull(response.auditImages)
-        assertTrue("Audit images should be empty list", response.auditImages!!.isEmpty())
+        assertEquals("FAILED", response.status)
+        assertEquals(false, response.livenessPassed)
+        assertEquals(12.0, response.confidence!!, 0.01)
     }
 
     @Test
     fun `LivenessResultResponse with FAILED status`() {
         val json = """
         {
-            "Confidence": 12.3,
-            "Status": "FAILED"
+            "status": "FAILED",
+            "confidence": 12.3
         }
         """.trimIndent()
 
         val response = gson.fromJson(json, LivenessResultResponse::class.java)
 
-        assertEquals(12.3, response.confidence, 0.01)
+        assertEquals(12.3, response.confidence!!, 0.01)
         assertEquals("FAILED", response.status)
     }
 

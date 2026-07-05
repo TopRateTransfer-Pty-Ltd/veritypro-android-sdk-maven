@@ -115,6 +115,12 @@ fun VerificationScreen(
     var captureDurationSeconds by remember { mutableStateOf<Double?>(null) }
     var captureAttemptCount by remember { mutableStateOf(0) }
 
+    // BUG FIX (doc-only auto-upload): In VerityMode.DOCUMENT there is no liveness
+    // stage, so the biometric-path updateKyc (fired after SELFIE_CAPTURE) never
+    // runs and the document is never uploaded (backend sees hasDocuments:false).
+    // This guard ensures the document-only auto-upload fires exactly once.
+    var docOnlyUploadFired by remember { mutableStateOf(false) }
+
     LaunchedEffect(state) {
         if (state is Resource.Success) {
             val sessionData = (state as Resource.Success<*>).data as SessionData
@@ -389,6 +395,7 @@ fun VerificationScreen(
                     eddDocType = null
                     selectedDocumentType = null
                     lastResult = null
+                    docOnlyUploadFired = false  // allow re-upload on re-capture
                     stage = VerificationStage.INTRO
                 } else {
                     val prev = viewModel.flowRouter.previousStage(stage)
@@ -536,6 +543,93 @@ fun VerificationScreen(
                                             confidence = 0.95f,
                                             sessionId = viewModel.getSessionId()
                                         )
+
+                                        // ── Document-only auto-upload ─────────────────────────────
+                                        // In VerityMode.DOCUMENT (document-only) there is NO liveness
+                                        // stage, so the biometric-path updateKyc (fired after
+                                        // SELFIE_CAPTURE) never runs. Fire the upload here — exactly
+                                        // once — using the SAME multipart construction as the
+                                        // biometric / RESULT-retry call sites.
+                                        //
+                                        // Mode discriminator: BIOMETRIC-bearing flows (BIOMETRIC,
+                                        // COMBINED, legacy DOCUMENT+BIOMETRIC module sets) already
+                                        // upload after liveness, so we must NOT double-upload here —
+                                        // only when the BIOMETRIC module is absent from the flow.
+                                        val isDocumentOnly =
+                                            !viewModel.flowRouter.isModuleEnabled(VerificationModule.BIOMETRIC)
+                                        if (isDocumentOnly && !docOnlyUploadFired) {
+                                            val hasValidDocType =
+                                                selectedDocumentType != null && selectedDocumentType!! > 0
+                                            if (documentFrontPage != null && hasValidDocType) {
+                                                docOnlyUploadFired = true
+
+                                                // Stop motion collection and compute capture duration,
+                                                // mirroring the biometric path so the anti-spoof
+                                                // security assessment fields are populated.
+                                                val mr = motionCollector?.stop()
+                                                motionResult = mr
+                                                motionCollector = null
+                                                captureDurationSeconds = if (captureStartTimeMs > 0)
+                                                    (System.currentTimeMillis() - captureStartTimeMs) / 1000.0
+                                                else null
+
+                                                val securityJson = SecurityAssessmentCollector.collectJson(context, CaptureRuntimeData(
+                                                    latitude = locationLatitude,
+                                                    longitude = locationLongitude,
+                                                    locationAccuracy = locationAccuracy,
+                                                    locationString = locationText,
+                                                    locationTimestamp = locationTimestamp,
+                                                    locationSource = if (locationLatitude != null) "gps" else "none",
+                                                    countryCode = locationCountryCode,
+                                                    // Motion analysis fields
+                                                    motionDurationMs = motionResult?.durationMs,
+                                                    motionSampleCount = motionResult?.sampleCount,
+                                                    accelStdDev = motionResult?.accelStdDev,
+                                                    gyroStdDev = motionResult?.gyroStdDev,
+                                                    motionScore = motionResult?.motionScore,
+                                                    // Capture timing fields
+                                                    captureDurationSeconds = captureDurationSeconds,
+                                                    captureAttempts = captureAttemptCount,
+                                                ))
+                                                // documentVideoFile is already populated: onDocumentCaptured
+                                                // is only invoked after VideoRecordEvent.Finalize fired
+                                                // (pendingDocumentFiles pattern in document_capture.kt).
+                                                coroutineScope.launch {
+                                                    viewModel.updateKyc(
+                                                        VerificationRequestMultipart(
+                                                            SessionId = sessionId ?: "",
+                                                            DocumentType = selectedDocumentType!!,
+                                                            PlatformUsed = "android",
+                                                            DeviceAndBrowser = DeviceUtils.getDevicePlatform(),
+                                                            IpAddress = ipAddress ?: "",
+                                                            IpLocation = locationText ?: "",
+                                                            DocumentFront = documentFrontPage?.toMultipartBodyPart("DocumentFront"),
+                                                            DocumentBack = documentBackPage?.toMultipartBodyPart("DocumentBack"),
+                                                            // Document-only: no liveness session exists.
+                                                            LivenessId = "",
+                                                            SecurityAssessmentJson = securityJson,
+                                                            DocumentVideo = documentVideoFile?.takeIf { it.length() > 0L }?.let { file ->
+                                                                MultipartBody.Part.createFormData(
+                                                                    "DocumentVideo",
+                                                                    file.name,
+                                                                    file.asRequestBody("video/mp4".toMediaTypeOrNull())
+                                                                )
+                                                            }
+                                                        ),
+                                                    )
+                                                }
+                                            } else {
+                                                // Observable failure — do NOT swallow. A weak-camera
+                                                // device (e.g. low-end Unisoc) may genuinely produce a
+                                                // null still; we must SEE that, not silently skip the
+                                                // upload and let the session time out to auto-decline.
+                                                Log.e("VerificationScreen",
+                                                    "doc-only capture reached RESULT with null document — " +
+                                                    "updateKyc NOT fired (front=${documentFrontPage != null}, " +
+                                                    "docType=$selectedDocumentType)")
+                                            }
+                                        }
+
                                         // onDocumentCaptured fires only after onVideoRecorded
                                         // (pendingDocumentFiles pattern in document_capture.kt),
                                         // so documentVideoFile is already populated at this point.
@@ -791,6 +885,7 @@ fun VerificationScreen(
                                         eddDocFile = null
                                         eddDocType = null
                                         selectedDocumentType = null
+                                        docOnlyUploadFired = false  // allow re-upload on re-capture
                                         viewModel.createKyc(options)
                                     }
                                     VerificationStage.HEALTH_CHECK,
