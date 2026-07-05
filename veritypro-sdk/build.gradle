@@ -161,7 +161,9 @@ afterEvaluate {
 
                 groupId = "com.example.veritypro"
                 artifactId = "veritypro-sdk"
-                version = "1.1.0"
+                // DEF-4: bumped 1.1.0 -> 1.1.1 so a publish does not collide with the
+                // already-published 1.1.0 artifact. Bump on every publishable change.
+                version = "1.1.1"
             }
         }
     }

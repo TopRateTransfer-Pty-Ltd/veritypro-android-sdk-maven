@@ -49,6 +49,24 @@ class VerificationFlowRouter private constructor(
     /** Checks whether a given [module] is enabled. */
     fun isModuleEnabled(module: VerificationModule): Boolean = module in enabledModules
 
+    /**
+     * True when the active flow has NO [VerificationModule.BIOMETRIC] stage.
+     *
+     * This is the discriminator for the Bug 2 (doc-only auto-upload) fix in
+     * `verification_start.kt`. BIOMETRIC-bearing flows (BIOMETRIC, COMBINED, and the
+     * legacy DOCUMENT+BIOMETRIC module set) upload the captured document as part of
+     * the post-liveness `updateKyc` call, so the document-capture/RESULT path must NOT
+     * upload again — that would double-upload. When BIOMETRIC is absent (DOCUMENT, and
+     * legacy DOCUMENT+ADDRESS / DOCUMENT+EDD sets) there is no liveness stage, so the
+     * document-capture path is the only opportunity to fire the upload.
+     *
+     * Note: this returns true for biometric-absent, document-less flows too
+     * (ADDRESS-only, EDD-only). That is intentional and matches the legacy behaviour —
+     * the call site guards the actual upload behind a `documentFrontPage != null`
+     * check, so no document means no upload even though this returns true.
+     */
+    fun shouldAutoUploadDocument(): Boolean = !isModuleEnabled(VerificationModule.BIOMETRIC)
+
     /** Returns the first content stage after INTRO (the first module-specific stage). */
     fun firstContentStage(): VerificationStage =
         orderedStages.firstOrNull { it != VerificationStage.HEALTH_CHECK && it != VerificationStage.INTRO }
