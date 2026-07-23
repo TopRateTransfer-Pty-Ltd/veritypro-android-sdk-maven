@@ -14,13 +14,13 @@ data class VerityColors(
     val borderSubtle: Color,
     val brandDefault: Color,
     val brandHover: Color,
-    val brandOnsubtle: Color,
+    val brandOnSubtle: Color,
     val brandPressed: Color,
     val brandSubtle: Color,
     val cameraFrame: Color,
-    val cameraFrameshadow: Color,
-    val cameraGuidancebg: Color,
-    val cameraGuidancetext: Color,
+    val cameraFrameShadow: Color,
+    val cameraGuidanceBg: Color,
+    val cameraGuidanceText: Color,
     val cameraScrim: Color,
     val captureQualityBlur: Color,
     val captureQualityGlare: Color,
@@ -35,12 +35,12 @@ data class VerityColors(
     val livenessRingFail: Color,
     val livenessRingIdle: Color,
     val livenessRingSuccess: Color,
-    val overlayOnimage: Color,
+    val overlayOnImage: Color,
     val overlayScrim: Color,
     val progressFill: Color,
-    val progressStepcurrent: Color,
-    val progressStepdone: Color,
-    val progressSteptodo: Color,
+    val progressStepCurrent: Color,
+    val progressStepDone: Color,
+    val progressStepTodo: Color,
     val progressTrack: Color,
     val stateErrorBg: Color,
     val stateErrorFg: Color,
@@ -68,8 +68,8 @@ data class VerityColors(
     val surfaceSunken: Color,
     val textDisabled: Color,
     val textLink: Color,
-    val textOnbrand: Color,
-    val textOninverse: Color,
+    val textOnBrand: Color,
+    val textOnInverse: Color,
     val textPrimary: Color,
     val textSecondary: Color,
     val textTertiary: Color
@@ -84,13 +84,13 @@ val VerityLightColors = VerityColors(
     borderSubtle = Color(0xFFEEF0F4),
     brandDefault = Color(0xFF0400E5),
     brandHover = Color(0xFF0400B8),
-    brandOnsubtle = Color(0xFF0400B8),
+    brandOnSubtle = Color(0xFF0400B8),
     brandPressed = Color(0xFF05028F),
     brandSubtle = Color(0xFFEFEFFE),
     cameraFrame = Color(red = 1.0000f, green = 1.0000f, blue = 1.0000f, alpha = 0.92f),
-    cameraFrameshadow = Color(red = 0.0000f, green = 0.0000f, blue = 0.0000f, alpha = 0.4f),
-    cameraGuidancebg = Color(red = 0.0314f, green = 0.0353f, blue = 0.0471f, alpha = 0.72f),
-    cameraGuidancetext = Color(0xFFFFFFFF),
+    cameraFrameShadow = Color(red = 0.0000f, green = 0.0000f, blue = 0.0000f, alpha = 0.4f),
+    cameraGuidanceBg = Color(red = 0.0314f, green = 0.0353f, blue = 0.0471f, alpha = 0.72f),
+    cameraGuidanceText = Color(0xFFFFFFFF),
     cameraScrim = Color(red = 0.0000f, green = 0.0000f, blue = 0.0000f, alpha = 0.55f),
     captureQualityBlur = Color(0xFFDC2626),
     captureQualityGlare = Color(0xFFD97706),
@@ -105,12 +105,12 @@ val VerityLightColors = VerityColors(
     livenessRingFail = Color(0xFFDC2626),
     livenessRingIdle = Color(red = 1.0000f, green = 1.0000f, blue = 1.0000f, alpha = 0.6f),
     livenessRingSuccess = Color(0xFF16A34A),
-    overlayOnimage = Color(red = 0.0314f, green = 0.0353f, blue = 0.0471f, alpha = 0.35f),
+    overlayOnImage = Color(red = 0.0314f, green = 0.0353f, blue = 0.0471f, alpha = 0.35f),
     overlayScrim = Color(red = 0.0314f, green = 0.0353f, blue = 0.0471f, alpha = 0.55f),
     progressFill = Color(0xFF0400E5),
-    progressStepcurrent = Color(0xFF0400E5),
-    progressStepdone = Color(0xFF0400E5),
-    progressSteptodo = Color(0xFFCDD1DB),
+    progressStepCurrent = Color(0xFF0400E5),
+    progressStepDone = Color(0xFF0400E5),
+    progressStepTodo = Color(0xFFCDD1DB),
     progressTrack = Color(0xFFE1E4EA),
     stateErrorBg = Color(0xFFFEE2E2),
     stateErrorFg = Color(0xFFB91C1C),
@@ -138,8 +138,8 @@ val VerityLightColors = VerityColors(
     surfaceSunken = Color(0xFFF7F8FA),
     textDisabled = Color(0xFFA4ABB9),
     textLink = Color(0xFF0400E5),
-    textOnbrand = Color(0xFFFFFFFF),
-    textOninverse = Color(0xFFFFFFFF),
+    textOnBrand = Color(0xFFFFFFFF),
+    textOnInverse = Color(0xFFFFFFFF),
     textPrimary = Color(0xFF171A21),
     textSecondary = Color(0xFF565D6B),
     textTertiary = Color(0xFF79808F)
@@ -154,13 +154,13 @@ val VerityDarkColors = VerityColors(
     borderSubtle = Color(0xFF262A33),
     brandDefault = Color(0xFF4B45EE),
     brandHover = Color(0xFF6E6AF4),
-    brandOnsubtle = Color(0xFF9391F8),
+    brandOnSubtle = Color(0xFF9391F8),
     brandPressed = Color(0xFF2E22E9),
     brandSubtle = Color(red = 0.2941f, green = 0.2706f, blue = 0.9333f, alpha = 0.16f),
     cameraFrame = Color(red = 1.0000f, green = 1.0000f, blue = 1.0000f, alpha = 0.92f),
-    cameraFrameshadow = Color(red = 0.0000f, green = 0.0000f, blue = 0.0000f, alpha = 0.4f),
-    cameraGuidancebg = Color(red = 0.0314f, green = 0.0353f, blue = 0.0471f, alpha = 0.72f),
-    cameraGuidancetext = Color(0xFFFFFFFF),
+    cameraFrameShadow = Color(red = 0.0000f, green = 0.0000f, blue = 0.0000f, alpha = 0.4f),
+    cameraGuidanceBg = Color(red = 0.0314f, green = 0.0353f, blue = 0.0471f, alpha = 0.72f),
+    cameraGuidanceText = Color(0xFFFFFFFF),
     cameraScrim = Color(red = 0.0000f, green = 0.0000f, blue = 0.0000f, alpha = 0.55f),
     captureQualityBlur = Color(0xFFF87171),
     captureQualityGlare = Color(0xFFFBBF24),
@@ -175,12 +175,12 @@ val VerityDarkColors = VerityColors(
     livenessRingFail = Color(0xFFF87171),
     livenessRingIdle = Color(red = 1.0000f, green = 1.0000f, blue = 1.0000f, alpha = 0.6f),
     livenessRingSuccess = Color(0xFF4ADE80),
-    overlayOnimage = Color(red = 0.0000f, green = 0.0000f, blue = 0.0000f, alpha = 0.45f),
+    overlayOnImage = Color(red = 0.0000f, green = 0.0000f, blue = 0.0000f, alpha = 0.45f),
     overlayScrim = Color(red = 0.0000f, green = 0.0000f, blue = 0.0000f, alpha = 0.65f),
     progressFill = Color(0xFF6E6AF4),
-    progressStepcurrent = Color(0xFF6E6AF4),
-    progressStepdone = Color(0xFF6E6AF4),
-    progressSteptodo = Color(0xFF565D6B),
+    progressStepCurrent = Color(0xFF6E6AF4),
+    progressStepDone = Color(0xFF6E6AF4),
+    progressStepTodo = Color(0xFF565D6B),
     progressTrack = Color(0xFF3B414D),
     stateErrorBg = Color(red = 0.8627f, green = 0.1490f, blue = 0.1490f, alpha = 0.18f),
     stateErrorFg = Color(0xFFF87171),
@@ -208,26 +208,26 @@ val VerityDarkColors = VerityColors(
     surfaceSunken = Color(0xFF0E1015),
     textDisabled = Color(0xFF565D6B),
     textLink = Color(0xFF9391F8),
-    textOnbrand = Color(0xFFFFFFFF),
-    textOninverse = Color(0xFF171A21),
+    textOnBrand = Color(0xFFFFFFFF),
+    textOnInverse = Color(0xFF171A21),
     textPrimary = Color(0xFFF7F8FA),
     textSecondary = Color(0xFFCDD1DB),
     textTertiary = Color(0xFFA4ABB9)
 )
 
 object VerityDim {
-    val fontLineheightBody = 24.dp
-    val fontLineheightBodylg = 26.dp
-    val fontLineheightBodysm = 20.dp
-    val fontLineheightButton = 20.dp
-    val fontLineheightCaption = 16.dp
-    val fontLineheightDisplay = 40.dp
-    val fontLineheightH1 = 34.dp
-    val fontLineheightH2 = 28.dp
-    val fontLineheightTitle = 26.dp
+    val fontLineHeightBody = 24.dp
+    val fontLineHeightBodyLg = 26.dp
+    val fontLineHeightBodySm = 20.dp
+    val fontLineHeightButton = 20.dp
+    val fontLineHeightCaption = 16.dp
+    val fontLineHeightDisplay = 40.dp
+    val fontLineHeightH1 = 34.dp
+    val fontLineHeightH2 = 28.dp
+    val fontLineHeightTitle = 26.dp
     val fontSizeBody = 16.dp
-    val fontSizeBodylg = 18.dp
-    val fontSizeBodysm = 14.dp
+    val fontSizeBodyLg = 18.dp
+    val fontSizeBodySm = 14.dp
     val fontSizeButton = 16.dp
     val fontSizeCaption = 12.dp
     val fontSizeDisplay = 34.dp
@@ -243,15 +243,15 @@ object VerityDim {
     val radiusNone = 0.dp
     val radiusSm = 8.dp
     val radiusXl = 24.dp
-    val sizeControlButtonheight = 56.dp
-    val sizeControlMintarget = 44.dp
+    val sizeControlButtonHeight = 56.dp
+    val sizeControlMinTarget = 44.dp
     val sizeIconLg = 24.dp
     val sizeIconMd = 20.dp
     val sizeIconSm = 16.dp
     val sizeIconXl = 32.dp
-    val sizeStrokewidthFrame = 3.dp
-    val sizeStrokewidthIcon = 1.75.dp
-    val sizeStrokewidthRing = 6.dp
+    val sizeStrokeWidthFrame = 3.dp
+    val sizeStrokeWidthIcon = 1.75.dp
+    val sizeStrokeWidthRing = 6.dp
     val space0 = 0.dp
     val space1 = 4.dp
     val space10 = 40.dp
