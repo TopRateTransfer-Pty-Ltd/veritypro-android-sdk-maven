@@ -26,8 +26,11 @@ import com.example.veritypro_sdk.ui.redesign.screens.VerityDocOption
 import com.example.veritypro_sdk.ui.redesign.screens.VerityDocumentCaptureScreen
 import com.example.veritypro_sdk.ui.redesign.screens.VerityDocumentPreviewScreen
 import com.example.veritypro_sdk.ui.redesign.screens.VerityDocumentTypeScreen
+import com.example.veritypro_sdk.ui.redesign.screens.VerityLivenessRingState
+import com.example.veritypro_sdk.ui.redesign.screens.VerityLivenessScreen
 import com.example.veritypro_sdk.ui.redesign.screens.VerityResultScreen
 import com.example.veritypro_sdk.ui.redesign.screens.VeritySelfieIntroScreen
+import com.example.veritypro_sdk.ui.redesign.screens.VerityUploadScreen
 import com.example.veritypro_sdk.ui.redesign.screens.VerityWelcomeScreen
 import com.example.veritypro_sdk.ui.redesign.state.VerityEvent
 import com.example.veritypro_sdk.ui.redesign.state.VerityFlowState
@@ -103,7 +106,7 @@ fun VerityFlowHost(
                 onRetake = { dispatch(VerityEvent.Retake) }
             )
 
-        VerityFlowState.Uploading -> Processing("Uploading your ID…")
+        VerityFlowState.Uploading -> VerityUploadScreen(progress = 0.7f)
         VerityFlowState.ProcessingDocument -> Processing("Reading your document…")
 
         VerityFlowState.AwaitingSelfie ->
@@ -112,7 +115,12 @@ fun VerityFlowHost(
                 onBack = { dispatch(VerityEvent.Cancel) }
             )
 
-        VerityFlowState.AwaitingLiveness -> Processing("Face check…")
+        VerityFlowState.AwaitingLiveness ->
+            VerityLivenessScreen(
+                ringState = VerityLivenessRingState.Active,
+                guidance = "Center your face in the ring",
+                onClose = { dispatch(VerityEvent.Cancel) }
+            )
         VerityFlowState.ProcessingBiometrics,
         VerityFlowState.RunningRiskChecks -> Processing("Finishing your verification…")
         VerityFlowState.NetworkInterrupted -> Processing("Reconnecting…")
