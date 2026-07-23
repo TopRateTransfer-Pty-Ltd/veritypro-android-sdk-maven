@@ -14,6 +14,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.material3.MaterialTheme
+import com.example.veritypro_sdk.ui.redesign.analytics.LogcatVerityAnalytics
+import com.example.veritypro_sdk.ui.redesign.analytics.VerityAnalytics
+import com.example.veritypro_sdk.ui.redesign.analytics.VerityAnalyticsEvent
 import com.example.veritypro_sdk.ui.redesign.components.VerityErrorCard
 import com.example.veritypro_sdk.ui.redesign.components.VerityStatusCard
 import com.example.veritypro_sdk.ui.redesign.components.VerityStatusKind
@@ -41,10 +44,24 @@ import com.example.veritypro_sdk.ui.theme.verityColors
 fun VerityFlowHost(
     documentOptions: List<VerityDocOption>,
     onFinished: (VerityFlowState) -> Unit,
-    initial: VerityFlowState = VerityFlowState.AwaitingConsent
+    initial: VerityFlowState = VerityFlowState.AwaitingConsent,
+    analytics: VerityAnalytics = LogcatVerityAnalytics()
 ) {
     var state by remember { mutableStateOf(initial) }
     val dispatch: (VerityEvent) -> Unit = { state = VerityStateMachine.next(state, it) }
+
+    // D3 §4: drop-off-per-state + terminal outcome (no PII).
+    LaunchedEffect(state) {
+        analytics.track(VerityAnalyticsEvent.stateEntered(state.name))
+        when (state) {
+            VerityFlowState.Approved -> analytics.track(VerityAnalyticsEvent.verificationCompleted("approved"))
+            VerityFlowState.Rejected -> analytics.track(VerityAnalyticsEvent.verificationCompleted("rejected"))
+            VerityFlowState.PendingManualReview -> analytics.track(VerityAnalyticsEvent.verificationCompleted("review"))
+            VerityFlowState.Cancelled, VerityFlowState.Failed ->
+                analytics.track(VerityAnalyticsEvent.verificationAbandoned(state.name))
+            else -> {}
+        }
+    }
 
     when (state) {
         VerityFlowState.Initializing ->
