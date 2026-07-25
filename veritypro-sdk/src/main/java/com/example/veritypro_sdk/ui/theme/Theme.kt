@@ -104,6 +104,15 @@ val MaterialTheme.customColors: CustomColors
     @ReadOnlyComposable
     get() = LocalCustomColors.current
 
+// Verification-SDK redesign (B1): generated design-token colors (D1). New screens bind to
+// MaterialTheme.verityColors; legacy screens keep using customColors during convergence.
+val LocalVerityColors = staticCompositionLocalOf { VerityLightColors }
+
+val MaterialTheme.verityColors: VerityColors
+    @Composable
+    @ReadOnlyComposable
+    get() = LocalVerityColors.current
+
 @Composable
 fun VerityProTheme(
     mode: ThemeMode = ThemeMode.SYSTEM,
@@ -126,6 +135,8 @@ fun VerityProTheme(
     }
 
     val customColors = if (useDarkTheme) DarkCustomColors else LightCustomColors
+    // B1: generated verification-SDK token colors, theme-selected.
+    val verityColors = if (useDarkTheme) VerityDarkColors else VerityLightColors
 
     val view = LocalView.current
     if (!view.isInEditMode) {
@@ -142,7 +153,8 @@ fun VerityProTheme(
         shapes = Shapes,
         content = {
             CompositionLocalProvider(
-                LocalCustomColors provides customColors
+                LocalCustomColors provides customColors,
+                LocalVerityColors provides verityColors
             ) {
                 content()
             }

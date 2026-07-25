@@ -16,3 +16,4 @@ rootProject.name = "Veritypro-android"
 include ':app'
 include ':veritypro-android-sdk'
 include ':veritypro-sdk'
+include ':verity-device-sdk'
