@@ -242,7 +242,7 @@ fun ServerDrivenScreen(
                     "EDD_UPLOAD" -> {
                         EddVerificationScreen(
                             options = options,
-                            onFinish = { success ->
+                            onFinish = { success, _ ->
                                 if (success) {
                                     completeStep(action.step)
                                 } else {

@@ -53,7 +53,7 @@ fun EddUploadScreen(
     fileName: String,
     docType: EddDocType,
     options: VerityOption?,
-    onComplete: (success: Boolean, error: String?) -> Unit
+    onComplete: (success: Boolean, error: String?, caseId: String?) -> Unit
 ) {
     var uploadProgress by remember { mutableFloatStateOf(0f) }
     var isUploading by remember { mutableStateOf(true) }
@@ -92,13 +92,20 @@ fun EddUploadScreen(
                 return@launch
             }
 
+            // Use authToken for EDD auth if provided; fall back to apiKey
+            val eddApiKey = opts.authToken?.takeIf { it.isNotBlank() } ?: opts.apiKey
+
             val result = repository.createEddCase(
                 subjectId = opts.vendorData,
                 subjectName = "${opts.firstName} ${opts.lastName}",
                 file = file,
                 documentType = docType.id,
-                apiKey = opts.apiKey,
-                context = context
+                apiKey = eddApiKey,
+                context = context,
+                integrationId = opts.integrationId,
+                city = opts.city,
+                stateOrProvince = opts.stateOrProvince,
+                postalCode = opts.postalCode
             )
 
             when (result) {
@@ -106,7 +113,7 @@ fun EddUploadScreen(
                     uploadProgress = 1f
                     isUploading = false
                     Log.d("EddUpload", "EDD case created via KYC Integration API: ${result.data.caseId}")
-                    onComplete(true, null)
+                    onComplete(true, null, result.data.caseId)
                 }
                 is Resource.Error -> {
                     isUploading = false
@@ -247,7 +254,7 @@ fun EddUploadScreen(
             Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(12.dp)))
 
             OutlinedButton(
-                onClick = { onComplete(false, errorMessage) },
+                onClick = { onComplete(false, errorMessage, null) },
                 shape = RoundedCornerShape(ScaleUtil.scaleWidth(4.dp)),
                 modifier = Modifier
                     .fillMaxWidth()

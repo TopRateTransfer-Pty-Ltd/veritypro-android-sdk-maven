@@ -46,6 +46,18 @@ data class VerityOption(
     val preCreatedSessionId: String? = null,
     /** Country-filtered document types from the backend (e.g. ["Passport", "ID Card"]). */
     val allowedDocumentTypes: List<String>? = null,
+    /**
+     * Bearer token for EDD API authentication.
+     * When provided, this is used instead of [apiKey] for EDD requests.
+     * Falls back to [apiKey] if null or blank.
+     */
+    val authToken: String? = null,
+    /** City component of the subject's address (forwarded to EDD multipart as "City"). */
+    val city: String? = null,
+    /** State or province component of the subject's address (forwarded as "StateOrProvince"). */
+    val stateOrProvince: String? = null,
+    /** Postal/ZIP code of the subject's address (forwarded as "PostalCode"). */
+    val postalCode: String? = null,
 ) : Parcelable {
     /** Resolved [VerityMode] from the serialized [mode] string. */
     val verityMode: VerityMode

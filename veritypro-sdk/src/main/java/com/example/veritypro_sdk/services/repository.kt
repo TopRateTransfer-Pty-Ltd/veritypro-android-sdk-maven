@@ -526,7 +526,11 @@ class ApiRepository {
         file: File,
         documentType: Int,
         apiKey: String,
-        context: android.content.Context? = null
+        context: android.content.Context? = null,
+        integrationId: String? = null,
+        city: String? = null,
+        stateOrProvince: String? = null,
+        postalCode: String? = null
     ): Resource<EddCaseResponse> {
         return try {
             // Detect MIME type based on file extension — support PDFs alongside images
@@ -563,12 +567,16 @@ class ApiRepository {
                 subjectName = subjectName.toRequestBody(),
                 documentType = documentType.toString().toRequestBody(),
                 file = filePart,
+                integrationId = integrationId?.takeIf { it.isNotBlank() }?.toRequestBody(),
                 idempotencyKey = idempotencyKey.toRequestBody(),
                 platformUsed = platform.toRequestBody(),
                 deviceAndBrowser = deviceBrowser.toRequestBody(),
                 ipAddress = ipAddress.toRequestBody(),
                 ipLocation = "".toRequestBody(), // Backend resolves location from IP server-side
                 securityAssessmentJson = if (securityJson.isNotEmpty()) securityJson.toRequestBody() else null,
+                city = city?.takeIf { it.isNotBlank() }?.toRequestBody(),
+                stateOrProvince = stateOrProvince?.takeIf { it.isNotBlank() }?.toRequestBody(),
+                postalCode = postalCode?.takeIf { it.isNotBlank() }?.toRequestBody(),
                 apiKey = apiKey
             )
 

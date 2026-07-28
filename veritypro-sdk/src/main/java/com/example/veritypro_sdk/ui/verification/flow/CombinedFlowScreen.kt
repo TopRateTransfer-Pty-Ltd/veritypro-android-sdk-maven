@@ -269,7 +269,7 @@ fun CombinedFlowScreen(
             // Pass options so EDD creates case with vendorData as subjectId
             EddVerificationScreen(
                 options = options,
-                onFinish = { success ->
+                onFinish = { success, _ ->
                     if (success) {
                         advanceAfterEdd()
                     } else {
