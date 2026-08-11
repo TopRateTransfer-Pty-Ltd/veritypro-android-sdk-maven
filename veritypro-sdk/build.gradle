@@ -161,9 +161,11 @@ afterEvaluate {
 
                 groupId = "com.example.veritypro"
                 artifactId = "veritypro-sdk"
-                // DEF-4: bumped 1.1.0 -> 1.1.1 so a publish does not collide with the
-                // already-published 1.1.0 artifact. Bump on every publishable change.
-                version = "1.1.1"
+                // DEF-4: bump on every publishable change so publishes never collide.
+                // 1.2.0: capture-quality release — scene-adaptive exposure, post-capture
+                // quality gate (exposure/blur/portrait/back-slot), EXIF rotation baked
+                // into pixels. GATED ON PHYSICAL-DEVICE QA before host apps adopt.
+                version = "1.2.0"
             }
         }
     }
