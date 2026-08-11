@@ -54,6 +54,7 @@ import com.example.veritypro_sdk.utils.LocationHelper
 import com.example.veritypro_sdk.utils.*
 import com.example.veritypro_sdk.ui.verification.flow.ProcessExplainerScreen
 import com.example.veritypro_sdk.ui.verification.flow.ThankYouScreen
+import com.example.veritypro_sdk.ui.verification.edd.EddVerificationScreen
 import com.example.veritypro_sdk.services.MLRepository
 import kotlinx.coroutines.launch
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
@@ -829,14 +830,23 @@ fun VerificationScreen(
                                 }
                             )
 
-                            VerificationStage.EDD_DOCUMENT -> EddDocumentScreen(
-                                onBack = {
-                                    stage = viewModel.flowRouter.previousStage(stage) ?: VerificationStage.INTRO
-                                },
-                                onDocumentCaptured = { file, docType ->
-                                    eddDocFile = file
-                                    eddDocType = docType
+                            VerificationStage.EDD_DOCUMENT -> EddVerificationScreen(
+                                options = options,
+                                onFinish = { success, caseId ->
+                                    // Update lastResult with eddCaseId so THANK_YOU can include
+                                    // it in the final LivenessResult returned to the host app.
+                                    lastResult = (lastResult ?: LivenessResult(
+                                        success = success,
+                                        completedModules = listOf(VerityMode.EDD.name),
+                                        sessionId = viewModel.getSessionId()
+                                    )).copy(
+                                        success = success,
+                                        eddCaseId = caseId
+                                    )
                                     stage = viewModel.flowRouter.nextStage(stage) ?: VerificationStage.RESULT
+                                },
+                                onCancel = {
+                                    stage = viewModel.flowRouter.previousStage(stage) ?: VerificationStage.INTRO
                                 }
                             )
 

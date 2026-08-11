@@ -41,13 +41,14 @@ fun EddVerificationScreen(
     options: VerityOption? = null,
     authToken: String? = null,
     apiBaseUrl: String? = null,
-    onFinish: (Boolean) -> Unit,
+    onFinish: (success: Boolean, eddCaseId: String?) -> Unit,
     onCancel: () -> Unit
 ) {
     var stage by remember { mutableStateOf(EddVerificationStage.INTRO) }
     var selectedDocType by remember { mutableStateOf<EddDocType?>(null) }
     var capturedFile by remember { mutableStateOf<File?>(null) }
     var capturedFileName by remember { mutableStateOf("") }
+    var completedCaseId by remember { mutableStateOf<String?>(null) }
 
     when (stage) {
         EddVerificationStage.INTRO -> {
@@ -95,8 +96,9 @@ fun EddVerificationScreen(
                     fileName = capturedFileName,
                     docType = selectedDocType ?: EddDocType.SOURCE_OF_FUNDS,
                     options = options,
-                    onComplete = { success, error ->
+                    onComplete = { success, error, caseId ->
                         if (success) {
+                            completedCaseId = caseId
                             stage = EddVerificationStage.COMPLETE
                         } else {
                             capturedFile = null
@@ -112,7 +114,7 @@ fun EddVerificationScreen(
 
         EddVerificationStage.COMPLETE -> {
             EddCompleteScreen(
-                onFinish = { onFinish(true) }
+                onFinish = { onFinish(true, completedCaseId) }
             )
         }
     }

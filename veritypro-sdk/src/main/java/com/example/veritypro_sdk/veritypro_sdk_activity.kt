@@ -102,6 +102,11 @@ class VerityProSdkActivity : AppCompatActivity() {
                             val enriched = result.copy(deviceToken = token)
                             val resultIntent = Intent().apply {
                                 putExtra("verification_result", enriched)
+                                // Convenience extra for EDD flows — host app can read edd_case_id
+                                // directly without unparcelling LivenessResult.
+                                if (!enriched.eddCaseId.isNullOrBlank()) {
+                                    putExtra("edd_case_id", enriched.eddCaseId)
+                                }
                             }
                             setResult(RESULT_OK, resultIntent)
                             finish()

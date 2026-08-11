@@ -109,12 +109,16 @@ interface VerityApiService {
         @Part("SubjectName") subjectName: RequestBody,
         @Part("DocumentType") documentType: RequestBody,
         @Part file: MultipartBody.Part,
+        @Part("IntegrationId") integrationId: RequestBody? = null,
         @Part("IdempotencyKey") idempotencyKey: RequestBody? = null,
         @Part("PlatformUsed") platformUsed: RequestBody? = null,
         @Part("DeviceAndBrowser") deviceAndBrowser: RequestBody? = null,
         @Part("IpAddress") ipAddress: RequestBody? = null,
         @Part("IpLocation") ipLocation: RequestBody? = null,
         @Part("SecurityAssessmentJson") securityAssessmentJson: RequestBody? = null,
+        @Part("City") city: RequestBody? = null,
+        @Part("StateOrProvince") stateOrProvince: RequestBody? = null,
+        @Part("PostalCode") postalCode: RequestBody? = null,
         @Header("x-api-key") apiKey: String
     ): EddCaseResponse
 
