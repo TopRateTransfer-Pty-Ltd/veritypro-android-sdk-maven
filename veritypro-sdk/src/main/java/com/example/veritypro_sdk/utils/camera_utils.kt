@@ -239,21 +239,54 @@ object CameraUtils {
             Log.w(TAG, "Focus metering not supported on this device: ${e.message}")
         }
 
-        // 2. Exposure compensation: target ~+1.0 EV for glare-free low-light.
-        // Lifting the whole frame via exposure (not the torch) brightens documents
-        // evenly without the specular hotspot a co-axial LED creates on glossy pages.
+        // 2. Exposure compensation: NEUTRAL 0 EV at bind time.
+        // The previous unconditional +1.0 EV boost blew out captures in normal
+        // and bright light (session 76bc252d: washed-out licence, crushed
+        // portrait, high-ISO grain — the applicant was falsely declined). The
+        // frame analyzer now measures the actual scene (median luma + highlight
+        // clipping) and drives EV adaptively via updateSceneExposure(): boost
+        // ONLY in genuinely low light, and never while highlights are clipping.
+        lastSceneEvTarget = 0f
+        applyEv(camera, 0f, "bind-neutral")
+    }
+
+    /** Last EV target chosen by scene analysis — restored when the torch turns off. */
+    private var lastSceneEvTarget: Float = 0f
+
+    /**
+     * Scene-adaptive exposure, fed by the preview frame analyzer.
+     *
+     * @param medianLuma median luma (0–255) of the downsampled preview frame
+     * @param clipRatio  fraction of near-white pixels (luma ≥ 250)
+     */
+    fun updateSceneExposure(medianLuma: Int, clipRatio: Float) {
+        val camera = currentCamera ?: return
+        if (torchEnabled) return  // torch handler owns EV while the torch is on
+
+        val target = when {
+            clipRatio > 0.03f -> 0f     // highlights clipping — never add exposure
+            medianLuma < 55 -> 1.0f     // genuinely dark scene
+            medianLuma < 85 -> 0.5f     // dim scene
+            else -> 0f                  // adequate light — trust the AE
+        }
+        if (target == lastSceneEvTarget) return  // hysteresis: avoid AE churn
+        lastSceneEvTarget = target
+        applyEv(camera, target, "scene median=$medianLuma clip=$clipRatio")
+    }
+
+    private fun applyEv(camera: Camera, targetEv: Float, why: String) {
         try {
             val exposureState = camera.cameraInfo.exposureState
             if (exposureState.isExposureCompensationSupported) {
                 val step = exposureState.exposureCompensationStep.toFloat()
                 if (step > 0f) {
-                    val targetIndex = (1.0f / step).roundToInt()
+                    val targetIndex = (targetEv / step).roundToInt()
                         .coerceIn(
                             exposureState.exposureCompensationRange.lower,
                             exposureState.exposureCompensationRange.upper
                         )
                     camera.cameraControl.setExposureCompensationIndex(targetIndex)
-                    Log.d(TAG, "Applied exposure compensation: index=$targetIndex (step=${step}EV, ~+1.0EV glare-free)")
+                    Log.d(TAG, "EV=$targetEv (index=$targetIndex) — $why")
                 }
             }
         } catch (e: Exception) {
@@ -371,28 +404,13 @@ object CameraUtils {
 
     /**
      * Apply exposure compensation based on torch state.
-     * Torch ON  → 0 EV  (torch provides its own illumination; adding +EV overexposes)
-     * Torch OFF → +1.0 EV (glare-free ambient boost for laminated/reflective documents)
+     * Torch ON  → 0 EV (torch provides its own illumination; adding +EV overexposes)
+     * Torch OFF → restore the scene-adaptive EV target (was a fixed +1.0 EV,
+     *             which blew out captures in adequate light — session 76bc252d)
      */
     private fun applyExposureForTorchState(camera: Camera, isTorchOn: Boolean) {
-        try {
-            val exposureState = camera.cameraInfo.exposureState
-            if (exposureState.isExposureCompensationSupported) {
-                val step = exposureState.exposureCompensationStep.toFloat()
-                if (step > 0f) {
-                    val targetEv = if (isTorchOn) 0f else 1.0f
-                    val targetIndex = (targetEv / step).roundToInt()
-                        .coerceIn(
-                            exposureState.exposureCompensationRange.lower,
-                            exposureState.exposureCompensationRange.upper
-                        )
-                    camera.cameraControl.setExposureCompensationIndex(targetIndex)
-                    Log.d(TAG, "Torch=$isTorchOn → EV=$targetEv (index=$targetIndex)")
-                }
-            }
-        } catch (e: Exception) {
-            Log.w(TAG, "Exposure compensation adjustment failed: ${e.message}")
-        }
+        val targetEv = if (isTorchOn) 0f else lastSceneEvTarget
+        applyEv(camera, targetEv, "torch=$isTorchOn")
     }
 
     /**

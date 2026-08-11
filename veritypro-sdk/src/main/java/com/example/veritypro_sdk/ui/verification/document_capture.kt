@@ -50,6 +50,7 @@ import com.example.veritypro_sdk.services.Resource
 import com.example.veritypro_sdk.services.sanitizeMLHint
 import com.example.veritypro_sdk.utils.AutoZoomController
 import com.example.veritypro_sdk.utils.BurstCaptureUtils
+import com.example.veritypro_sdk.utils.CapturedImageValidator
 import com.example.veritypro_sdk.utils.ImageSharpeningUtils
 import com.example.veritypro_sdk.utils.CameraCapabilityAnalyzer
 import com.example.veritypro_sdk.utils.CameraCapabilityReport
@@ -437,6 +438,12 @@ fun DocumentCaptureScreen(
                     // blowout on-device before deciding to lock. Computed now, before
                     // the bitmap is recycled in the predict finally block.
                     val hasGlareLocal = detectGlare(bitmap)
+                    // SCENE-ADAPTIVE EXPOSURE: measure the actual scene and let
+                    // CameraUtils drive EV (boost only in genuine low light, never
+                    // while highlights clip). Replaces the unconditional +1.0 EV
+                    // that produced blown-out captures (session 76bc252d).
+                    val (sceneMedianLuma, sceneClipRatio) = analyseSceneExposure(bitmap)
+                    CameraUtils.updateSceneExposure(sceneMedianLuma, sceneClipRatio)
                     Log.d("DocumentCapture", "ML Live: Got bitmap ${bitmap.width}x${bitmap.height}, calling predict...")
                     withContext(Dispatchers.Default) {
                         val result = try {
@@ -892,6 +899,29 @@ fun DocumentCaptureScreen(
                                                 }
                                             } catch (e: Exception) {
                                                 Log.w("DocumentCapture", "Auto-capture: frozen bitmap update skipped: ${e.message}")
+                                            }
+                                        }
+
+                                        // POST-CAPTURE QUALITY GATE: validate the FINAL image that
+                                        // will be uploaded — preview-frame gates cannot vouch for it
+                                        // (session 76bc252d: rotated, blown-out, unreadable-portrait
+                                        // capture sailed through and caused a false hard-decline).
+                                        // Also bakes EXIF rotation into the pixels.
+                                        if (highResFile != null && highResFile.exists()) {
+                                            val verdict = CapturedImageValidator.normalizeAndValidate(
+                                                highResFile, isFrontSide = !isBackSide
+                                            )
+                                            if (!verdict.ok) {
+                                                Log.w("DocumentCapture", "Auto-capture rejected by post-capture gate: ${verdict.reason}")
+                                                highResFile.delete()
+                                                BurstCaptureUtils.cleanupBurstFiles(frames)
+                                                withContext(Dispatchers.Main) {
+                                                    verificationError = verdict.userMessage
+                                                    isProcessing = false
+                                                    isCapturing = false
+                                                    frozenBitmap = null
+                                                }
+                                                return@launch
                                             }
                                         }
 
@@ -1375,6 +1405,26 @@ fun DocumentCaptureScreen(
                                     }
                                 }
 
+                                // POST-CAPTURE QUALITY GATE (same as auto-capture path): validate
+                                // the FINAL image before upload and bake EXIF rotation into pixels.
+                                if (highResFile != null && highResFile.exists()) {
+                                    val verdict = CapturedImageValidator.normalizeAndValidate(
+                                        highResFile, isFrontSide = !isBackSide
+                                    )
+                                    if (!verdict.ok) {
+                                        Log.w("DocumentCapture", "Manual capture rejected by post-capture gate: ${verdict.reason}")
+                                        highResFile.delete()
+                                        BurstCaptureUtils.cleanupBurstFiles(frames)
+                                        withContext(Dispatchers.Main) {
+                                            verificationError = verdict.userMessage
+                                            isProcessing = false
+                                            isCapturing = false
+                                            frozenBitmap = null
+                                        }
+                                        return@launch
+                                    }
+                                }
+
                                 if (frames.size < 3) {
                                     // Not enough pre-buffered frames — fall back to live capture
                                     Log.w("DocumentCapture", "Buffer had ${frames.size} frames, falling back to ImageCapture")
@@ -1742,6 +1792,47 @@ private suspend fun verifyAndHandleResult(
  * threshold means glare is present, so capture is blocked until the frame reads
  * cleanly. Never flashes; guides the user to reposition instead.
  */
+/**
+ * Cheap scene exposure stats for the adaptive-EV loop: median luma and the
+ * fraction of near-white (clipped) pixels, from a 64×48 downsample. Feeds
+ * CameraUtils.updateSceneExposure() so the EV boost only applies in genuine
+ * low light and backs off the moment highlights start clipping.
+ */
+private fun analyseSceneExposure(bitmap: Bitmap): Pair<Int, Float> {
+    val w = 64
+    val h = 48
+    val scaled = try {
+        Bitmap.createScaledBitmap(bitmap, w, h, false)
+    } catch (e: Exception) {
+        return 128 to 0f  // neutral: no EV change
+    }
+    val pixels = IntArray(w * h)
+    scaled.getPixels(pixels, 0, w, 0, 0, w, h)
+    if (scaled != bitmap) scaled.recycle()
+
+    val histogram = IntArray(256)
+    var clipped = 0
+    for (p in pixels) {
+        val r = (p shr 16) and 0xFF
+        val g = (p shr 8) and 0xFF
+        val b = p and 0xFF
+        val luma = (r * 299 + g * 587 + b * 114) / 1000
+        histogram[luma]++
+        if (luma >= 250) clipped++
+    }
+    var median = 0
+    var cumulative = 0
+    val half = pixels.size / 2
+    for (i in 0..255) {
+        cumulative += histogram[i]
+        if (cumulative >= half) {
+            median = i
+            break
+        }
+    }
+    return median to clipped.toFloat() / pixels.size
+}
+
 private fun detectGlare(bitmap: Bitmap): Boolean {
     val w = 64
     val h = 48
