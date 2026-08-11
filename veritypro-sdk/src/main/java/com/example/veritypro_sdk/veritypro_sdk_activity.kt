@@ -7,6 +7,8 @@ import android.util.Log
 import android.view.WindowManager
 import androidx.appcompat.app.AppCompatActivity
 import androidx.activity.compose.setContent
+import androidx.lifecycle.lifecycleScope
+import com.example.veritypro_sdk.services.VpDeviceSessionService
 import com.example.veritypro_sdk.ui.verification.VerificationScreen
 import com.example.veritypro_sdk.utils.LivenessResult
 import com.example.veritypro_sdk.utils.VerityOption
@@ -14,10 +16,15 @@ import com.amplifyframework.core.Amplify
 import com.amplifyframework.auth.cognito.AWSCognitoAuthPlugin
 import com.example.veritypro_sdk.services.VeritySigningConfig
 import com.example.veritypro_sdk.ui.theme.ThemeMode
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.async
+import kotlinx.coroutines.withTimeoutOrNull
 
 class VerityProSdkActivity : AppCompatActivity() {
     private var options: VerityOption? = null
     private var themeMode: ThemeMode = ThemeMode.LIGHT
+    // Started concurrently at activity creation; awaited when the flow finishes.
+    private var deviceTokenDeferred: Deferred<String?>? = null
 
     companion object {
         @Volatile
@@ -50,6 +57,19 @@ class VerityProSdkActivity : AppCompatActivity() {
 
         VeritySigningConfig.initialize(options?.signingKey)
 
+        // Launch device signal collection concurrently so it completes while the
+        // user progresses through the intro / document capture steps.
+        options?.let { opts ->
+            deviceTokenDeferred = lifecycleScope.async {
+                VpDeviceSessionService.collectAndSubmit(
+                    context = applicationContext,
+                    apiKey = opts.apiKey,
+                    baseUrl = "https://api.skylinefare.com",
+                    integrationId = opts.integrationId
+                )
+            }
+        }
+
         if (options == null) {
             Log.e("VerityProSdkActivity", "Missing VerityOption - finishing")
             setResult(RESULT_CANCELED, Intent().putExtra("verification_result", LivenessResult(success = false, error = "missing_options")))
@@ -76,16 +96,21 @@ class VerityProSdkActivity : AppCompatActivity() {
             setContent {
                 VerificationScreen(
                     onFinish = { result ->
-                        val resultIntent = Intent().apply {
-                            putExtra("verification_result", result)
-                            // Convenience extra for EDD flows — host app can read edd_case_id
-                            // directly without unparcelling LivenessResult.
-                            if (!result.eddCaseId.isNullOrBlank()) {
-                                putExtra("edd_case_id", result.eddCaseId)
+                        lifecycleScope.async {
+                            // Await the device token with a 3s ceiling — it should be done by now.
+                            val token = withTimeoutOrNull(3_000) { deviceTokenDeferred?.await() }
+                            val enriched = result.copy(deviceToken = token)
+                            val resultIntent = Intent().apply {
+                                putExtra("verification_result", enriched)
+                                // Convenience extra for EDD flows — host app can read edd_case_id
+                                // directly without unparcelling LivenessResult.
+                                if (!enriched.eddCaseId.isNullOrBlank()) {
+                                    putExtra("edd_case_id", enriched.eddCaseId)
+                                }
                             }
+                            setResult(RESULT_OK, resultIntent)
+                            finish()
                         }
-                        setResult(RESULT_OK, resultIntent)
-                        finish()
                     },
                     options = options!!,
                     onCancel = {
