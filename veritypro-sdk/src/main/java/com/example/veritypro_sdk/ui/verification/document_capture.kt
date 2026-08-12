@@ -227,6 +227,9 @@ fun DocumentCaptureScreen(
     var mlPassed by remember { mutableStateOf(false) }
     var mlConfidence by remember { mutableStateOf(0f) }
     var mlHint by remember { mutableStateOf("") }
+    // Debounce for not-ok hints: a single soft preview frame can misclassify
+    // type/side and flash a confusing "wrong document" hint (device test E8).
+    var mlNotOkStreak by remember { mutableStateOf(0) }
     // C-2: structured quality signals from the latest ML predict response
     var mlQualitySignals by remember { mutableStateOf<MLQualitySignals?>(null) }
     var isAnalyzing by remember { mutableStateOf(false) }
@@ -483,7 +486,15 @@ fun DocumentCaptureScreen(
                                     mlConfidence = response.confidence ?: 0f
                                     // C-2: store structured quality signals for checklist display
                                     mlQualitySignals = response.qualitySignals
-                                    mlHint = if (!response.docOk) sanitizeMLHint(response.hint ?: "") else ""
+                                    // Hint debounce: only surface a not-ok hint after 2
+                                    // consecutive not-ok frames — one soft preview frame can
+                                    // misclassify and flash "wrong document" (device test E8).
+                                    mlNotOkStreak = if (!response.docOk) mlNotOkStreak + 1 else 0
+                                    mlHint = if (!response.docOk && mlNotOkStreak >= 2) {
+                                        sanitizeMLHint(response.hint ?: "")
+                                    } else {
+                                        ""
+                                    }
                                     Log.d("DocumentCapture", "ML Live SUCCESS: docOk=${response.docOk}, glare=$glarePresent, conf=$mlConfidence")
 
                                     if (glarePresent && torchEnabled) {
@@ -906,10 +917,12 @@ fun DocumentCaptureScreen(
                                         // will be uploaded — preview-frame gates cannot vouch for it
                                         // (session 76bc252d: rotated, blown-out, unreadable-portrait
                                         // capture sailed through and caused a false hard-decline).
-                                        // Also bakes EXIF rotation into the pixels.
+                                        // Also bakes EXIF rotation into the pixels, and silently
+                                        // retakes once after an AE kick if the HAL returned a black
+                                        // frame (wedged-precapture recovery, audit RC2).
                                         if (highResFile != null && highResFile.exists()) {
-                                            val verdict = CapturedImageValidator.normalizeAndValidate(
-                                                highResFile, isFrontSide = !isBackSide
+                                            val verdict = validateWithAeRecovery(
+                                                context, imageCapture, highResFile, isFrontSide = !isBackSide
                                             )
                                             if (!verdict.ok) {
                                                 Log.w("DocumentCapture", "Auto-capture rejected by post-capture gate: ${verdict.reason}")
@@ -1406,10 +1419,11 @@ fun DocumentCaptureScreen(
                                 }
 
                                 // POST-CAPTURE QUALITY GATE (same as auto-capture path): validate
-                                // the FINAL image before upload and bake EXIF rotation into pixels.
+                                // the FINAL image before upload, bake EXIF rotation into pixels,
+                                // and silently retake once after an AE kick on a black frame.
                                 if (highResFile != null && highResFile.exists()) {
-                                    val verdict = CapturedImageValidator.normalizeAndValidate(
-                                        highResFile, isFrontSide = !isBackSide
+                                    val verdict = validateWithAeRecovery(
+                                        context, imageCapture, highResFile, isFrontSide = !isBackSide
                                     )
                                     if (!verdict.ok) {
                                         Log.w("DocumentCapture", "Manual capture rejected by post-capture gate: ${verdict.reason}")
@@ -1792,6 +1806,64 @@ private suspend fun verifyAndHandleResult(
  * threshold means glare is present, so capture is blocked until the frame reads
  * cleanly. Never flashes; guides the user to reposition instead.
  */
+/**
+ * Validate the final capture with automatic AE-wedge recovery (audit RC2):
+ * on buggy LIMITED HALs a still taken in darkness wedges the AE precapture
+ * state, making every subsequent capture pure black while the preview stays
+ * healthy. When the validator reports UNDEREXPOSED, kick the AE, wait for
+ * re-convergence, retake ONCE silently (rewriting the ORIGINAL file so all
+ * downstream references stay valid), and re-validate. The user only sees an
+ * error if the recovery capture also fails.
+ */
+private suspend fun validateWithAeRecovery(
+    context: android.content.Context,
+    imageCapture: ImageCapture,
+    file: java.io.File,
+    isFrontSide: Boolean,
+): CapturedImageValidator.Verdict {
+    var verdict = CapturedImageValidator.normalizeAndValidate(file, isFrontSide)
+    if (verdict.ok || verdict.reason != "UNDEREXPOSED") return verdict
+
+    Log.w(
+        "DocumentCapture",
+        "UNDEREXPOSED capture — kicking AE and retaking once (wedged-precapture recovery)"
+    )
+    CameraUtils.kickAutoExposure()
+    kotlinx.coroutines.delay(450)
+
+    val retake = BurstCaptureUtils.captureBurst(
+        context = context, imageCapture = imageCapture, frameCount = 1, delayMs = 0
+    ).firstOrNull()
+    if (retake == null || !retake.exists()) return verdict
+
+    try {
+        // Sharpen the retake exactly like the original path, writing onto the
+        // ORIGINAL file path so highResFile references downstream stay valid.
+        val bmp = BitmapFactory.decodeFile(retake.path)
+        if (bmp != null) {
+            val sharpened = ImageSharpeningUtils.applySharpeningPipeline(bmp)
+            file.outputStream().use { out ->
+                sharpened.compress(android.graphics.Bitmap.CompressFormat.JPEG, 95, out)
+            }
+            if (sharpened !== bmp) bmp.recycle()
+        } else {
+            retake.copyTo(file, overwrite = true)
+        }
+    } catch (e: Exception) {
+        Log.w("DocumentCapture", "AE-recovery retake processing failed: ${e.message}")
+        return verdict
+    } finally {
+        retake.delete()
+    }
+
+    verdict = CapturedImageValidator.normalizeAndValidate(file, isFrontSide)
+    Log.w(
+        "DocumentCapture",
+        "AE-recovery retake verdict: ok=${verdict.ok} reason=${verdict.reason}"
+    )
+    return verdict
+}
+
 /**
  * Cheap scene exposure stats for the adaptive-EV loop: median luma and the
  * fraction of near-white (clipped) pixels, from a 64×48 downsample. Feeds
