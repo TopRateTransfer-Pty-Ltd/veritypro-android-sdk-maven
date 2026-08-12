@@ -175,11 +175,48 @@ object CameraUtils {
 
                     try {
                         cameraProvider.unbindAll()
-                        val camera = cameraProvider.bindToLifecycle(
+                        var camera = cameraProvider.bindToLifecycle(
                             lifecycleOwner,
                             cameraSelector,
                             useCaseGroup
                         )
+
+                        // IMAGE-QUALITY GUARD (device-test T442M, Aug 2026): on
+                        // limited-hardware devices the guaranteed stream combination
+                        // cannot fit Preview + Analysis + Video + full-res JPEG, so
+                        // CameraX silently collapses the ImageCapture to a tiny size
+                        // (observed 540×362 vs the 1920×1440 target). That starves
+                        // OCR, anti-spoof texture analysis, and classification — the
+                        // whole false-positive cluster. The document PHOTO is the
+                        // verification evidence; the session video is supplementary —
+                        // when the JPEG collapses, rebind WITHOUT video.
+                        val boundRes = imageCapture.resolutionInfo?.resolution
+                        val longEdge = boundRes?.let { maxOf(it.width, it.height) } ?: 0
+                        if (videoCapture != null && longEdge in 1 until 1280) {
+                            Log.w(
+                                TAG,
+                                "IMAGE_QUALITY_GUARD: JPEG collapsed to ${boundRes} with video bound — " +
+                                    "rebinding WITHOUT VideoCapture to restore document resolution"
+                            )
+                            val photoFirstGroup = UseCaseGroup.Builder()
+                                .setViewPort(viewPort)
+                                .apply {
+                                    useCases.filter { it !== videoCapture }.forEach { addUseCase(it) }
+                                }
+                                .build()
+                            cameraProvider.unbindAll()
+                            camera = cameraProvider.bindToLifecycle(
+                                lifecycleOwner,
+                                cameraSelector,
+                                photoFirstGroup
+                            )
+                            Log.i(
+                                TAG,
+                                "IMAGE_QUALITY_GUARD: rebound photo-first — JPEG now ${imageCapture.resolutionInfo?.resolution}"
+                            )
+                        } else {
+                            Log.i(TAG, "ImageCapture bound at ${boundRes} (video=${videoCapture != null})")
+                        }
 
                         // Store camera reference for torch/zoom control
                         currentCamera = camera
@@ -345,16 +382,23 @@ object CameraUtils {
         // FLASH_MODE_AUTO (the default) triggers an AE pre-capture sequence and fires the
         // flash when AE=FLASH_REQUIRED, causing harsh specular reflections on holographic
         // security laminates (Nigerian passport, etc.) that produce dark, purple-tinted,
-        // grain-blown images. Low-light is handled by the +1.0 EV exposure boost.
+        // grain-blown images. Low-light is handled by the scene-adaptive EV.
+        //
+        // CAPTURE MODE — MAXIMIZE_QUALITY, never ZERO_SHUTTER_LAG for documents.
+        // Device-test evidence (T442M, Aug 2026): with ZSL the takePicture JPEG came
+        // out 540×362 — SMALLER than the preview snapshots — because ZSL binds the
+        // capture to the reprocessing/preview stream on devices without full-res ZSL
+        // support. That single resolution collapse cascaded into the entire
+        // false-positive cluster: unreadable OCR detail, starved anti-spoof texture
+        // analysis (false RETRY), soft "blurry" captures, and misclassification.
+        // The 100–500ms ZSL latency win is irrelevant here: the auto-capture
+        // countdown holds the document steady for 2s before the shutter fires.
         val builder = ImageCapture.Builder()
             .setResolutionSelector(resolutionSelector)
             .setFlashMode(ImageCapture.FLASH_MODE_OFF)
 
         if (!withVideoCapture) {
-            // ZERO_SHUTTER_LAG draws from the preview stream's circular buffer at trigger
-            // time, eliminating the 100–500ms pipeline delay. Safe only when no VideoCapture
-            // use case is active in the same session.
-            builder.setCaptureMode(ImageCapture.CAPTURE_MODE_ZERO_SHUTTER_LAG)
+            builder.setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
         }
         // When withVideoCapture=true we leave the capture mode unset (defaults to
         // MINIMIZE_LATENCY) — CameraX documents this as compatible with VideoCapture.

@@ -36,10 +36,18 @@ class VerityProSdkActivity : AppCompatActivity() {
 
         // Prevent screen recording/screenshots during verification to protect PII
         // (identity documents, selfie images). Cleared automatically when activity finishes.
-        window.setFlags(
-            WindowManager.LayoutParams.FLAG_SECURE,
-            WindowManager.LayoutParams.FLAG_SECURE
-        )
+        // Debuggable-host builds only skip the flag so device QA can capture the
+        // screen (RELEASE-1.2.0-DEVICE-TEST.md); release/production hosts always secure.
+        val hostDebuggable =
+            (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
+        if (!hostDebuggable) {
+            window.setFlags(
+                WindowManager.LayoutParams.FLAG_SECURE,
+                WindowManager.LayoutParams.FLAG_SECURE
+            )
+        } else {
+            Log.w("VerityProSdkActivity", "DEBUG host build — FLAG_SECURE disabled for QA screenshots")
+        }
 
         options = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             intent.getParcelableExtra("verity_options", VerityOption::class.java)
