@@ -120,6 +120,21 @@ object CapturedImageValidator {
             )
         }
 
+        // BACK-SLOT GATE (session e404a002 class): a large portrait on a
+        // back-slot capture means the applicant photographed the FRONT again.
+        // The strict back-side detector (15% min face width) ignores ghost
+        // images and holographic security features, so a hit here is a
+        // genuine front-side portrait — reject before upload instead of
+        // letting the server abort the whole session with COH_007.
+        if (!isFrontSide && !DocumentFaceValidator.validateBackNoFace(bitmap)) {
+            Log.w(TAG, "REJECT front-side portrait detected in back-slot capture")
+            return Verdict(
+                false,
+                "This looks like the front of your document — please flip it over and capture the BACK.",
+                "FRONT_CAPTURED_IN_BACK_SLOT",
+            )
+        }
+
         Log.d(TAG, "PASS: median=${stats.medianLuma} clip=${stats.clipRatio} sharpness=$sharpness")
         return Verdict(true)
     }
