@@ -150,9 +150,26 @@ object CameraUtils {
                     useCases.add(imageAnalyzer)
                 }
 
-                // Add VideoCapture if provided (for per-module session recording)
+                // Add VideoCapture if provided (for per-module session recording) —
+                // ONLY on FULL/LEVEL_3 hardware. Camera2 guarantees full-resolution
+                // JPEG concurrent with a video stream only from FULL upward
+                // (LIMITED guarantees just PRIV/PREVIEW + PRIV/RECORD + JPEG/RECORD,
+                // capping the document photo at video size — observed 960×720 on a
+                // LIMITED device vs 2048×1373 without video). The document PHOTO is
+                // the verification evidence; the session video is supplementary, so
+                // it is skipped where the spec cannot guarantee both. This matches
+                // industry practice (no major KYC SDK records video concurrently
+                // with the document still on Android).
                 if (videoCapture != null) {
-                    useCases.add(videoCapture)
+                    if (isConcurrentVideoSafe(context)) {
+                        useCases.add(videoCapture)
+                    } else {
+                        Log.w(
+                            TAG,
+                            "VIDEO_SKIPPED_HW_LEVEL: camera hardware level below FULL — " +
+                                "session video disabled to guarantee full-resolution document capture"
+                        )
+                    }
                 }
 
                 previewView.post {
@@ -175,11 +192,48 @@ object CameraUtils {
 
                     try {
                         cameraProvider.unbindAll()
-                        val camera = cameraProvider.bindToLifecycle(
+                        var camera = cameraProvider.bindToLifecycle(
                             lifecycleOwner,
                             cameraSelector,
                             useCaseGroup
                         )
+
+                        // IMAGE-QUALITY GUARD (device-test T442M, Aug 2026): on
+                        // limited-hardware devices the guaranteed stream combination
+                        // cannot fit Preview + Analysis + Video + full-res JPEG, so
+                        // CameraX silently collapses the ImageCapture to a tiny size
+                        // (observed 540×362 vs the 1920×1440 target). That starves
+                        // OCR, anti-spoof texture analysis, and classification — the
+                        // whole false-positive cluster. The document PHOTO is the
+                        // verification evidence; the session video is supplementary —
+                        // when the JPEG collapses, rebind WITHOUT video.
+                        val boundRes = imageCapture.resolutionInfo?.resolution
+                        val longEdge = boundRes?.let { maxOf(it.width, it.height) } ?: 0
+                        if (videoCapture != null && longEdge in 1 until 1280) {
+                            Log.w(
+                                TAG,
+                                "IMAGE_QUALITY_GUARD: JPEG collapsed to ${boundRes} with video bound — " +
+                                    "rebinding WITHOUT VideoCapture to restore document resolution"
+                            )
+                            val photoFirstGroup = UseCaseGroup.Builder()
+                                .setViewPort(viewPort)
+                                .apply {
+                                    useCases.filter { it !== videoCapture }.forEach { addUseCase(it) }
+                                }
+                                .build()
+                            cameraProvider.unbindAll()
+                            camera = cameraProvider.bindToLifecycle(
+                                lifecycleOwner,
+                                cameraSelector,
+                                photoFirstGroup
+                            )
+                            Log.i(
+                                TAG,
+                                "IMAGE_QUALITY_GUARD: rebound photo-first — JPEG now ${imageCapture.resolutionInfo?.resolution}"
+                            )
+                        } else {
+                            Log.i(TAG, "ImageCapture bound at ${boundRes} (video=${videoCapture != null})")
+                        }
 
                         // Store camera reference for torch/zoom control
                         currentCamera = camera
@@ -252,6 +306,58 @@ object CameraUtils {
 
     /** Last EV target chosen by scene analysis — restored when the torch turns off. */
     private var lastSceneEvTarget: Float = 0f
+
+    /**
+     * True when the back camera's hardware level is FULL or LEVEL_3 — the only
+     * levels where Camera2 guarantees a maximum-size JPEG concurrent with a
+     * video stream (PRIV/PREVIEW + PRIV/PREVIEW + JPEG/MAXIMUM is a FULL row).
+     */
+    private fun isConcurrentVideoSafe(context: Context): Boolean {
+        return try {
+            val manager = context.getSystemService(Context.CAMERA_SERVICE)
+                as android.hardware.camera2.CameraManager
+            val backId = manager.cameraIdList.firstOrNull { id ->
+                manager.getCameraCharacteristics(id)
+                    .get(android.hardware.camera2.CameraCharacteristics.LENS_FACING) ==
+                    android.hardware.camera2.CameraMetadata.LENS_FACING_BACK
+            } ?: return false
+            val level = manager.getCameraCharacteristics(backId)
+                .get(android.hardware.camera2.CameraCharacteristics.INFO_SUPPORTED_HARDWARE_LEVEL)
+            val safe =
+                level == android.hardware.camera2.CameraMetadata.INFO_SUPPORTED_HARDWARE_LEVEL_FULL ||
+                level == android.hardware.camera2.CameraMetadata.INFO_SUPPORTED_HARDWARE_LEVEL_3
+            Log.i(TAG, "Back camera hardware level=$level — concurrentVideoSafe=$safe")
+            safe
+        } catch (e: Exception) {
+            Log.w(TAG, "Hardware level query failed (${e.message}) — treating as NOT video-safe")
+            false
+        }
+    }
+
+    /**
+     * Reset a wedged auto-exposure sequence. On buggy LIMITED HALs a capture
+     * taken in darkness can leave the AE precapture state stuck, making every
+     * subsequent still come out black while the preview stays healthy (device
+     * test T442M, audit RC2). Cancelling metering and re-applying the center
+     * AF/AE/AWB point restarts the 3A loop; the current scene EV is re-applied.
+     */
+    fun kickAutoExposure() {
+        val camera = currentCamera ?: return
+        try {
+            camera.cameraControl.cancelFocusAndMetering()
+            val factory = SurfaceOrientedMeteringPointFactory(1f, 1f)
+            val centerPoint = factory.createPoint(0.5f, 0.5f)
+            val action = FocusMeteringAction.Builder(
+                centerPoint,
+                FocusMeteringAction.FLAG_AF or FocusMeteringAction.FLAG_AE or FocusMeteringAction.FLAG_AWB
+            ).build()
+            camera.cameraControl.startFocusAndMetering(action)
+            applyEv(camera, if (torchEnabled) 0f else lastSceneEvTarget, "AE kick")
+            Log.w(TAG, "AE_KICK: metering cancelled and re-triggered (wedged-precapture recovery)")
+        } catch (e: Exception) {
+            Log.w(TAG, "AE kick failed: ${e.message}")
+        }
+    }
 
     /**
      * Scene-adaptive exposure, fed by the preview frame analyzer.
@@ -345,21 +451,24 @@ object CameraUtils {
         // FLASH_MODE_AUTO (the default) triggers an AE pre-capture sequence and fires the
         // flash when AE=FLASH_REQUIRED, causing harsh specular reflections on holographic
         // security laminates (Nigerian passport, etc.) that produce dark, purple-tinted,
-        // grain-blown images. Low-light is handled by the +1.0 EV exposure boost.
-        val builder = ImageCapture.Builder()
+        // grain-blown images. Low-light is handled by the scene-adaptive EV.
+        //
+        // CAPTURE MODE — MINIMIZE_LATENCY (the CameraX default), NEVER
+        // ZERO_SHUTTER_LAG and NOT MAXIMIZE_QUALITY, for documents:
+        // - ZSL binds the capture to the reprocessing/preview stream on budget
+        //   devices (device test T442M: 540×362 JPEG, smaller than the preview).
+        // - MAXIMIZE_QUALITY runs the full 3A/AE-precapture convergence, which is
+        //   the documented wedge point on buggy LIMITED HALs (black stills after a
+        //   precapture started in darkness — CameraX ships a whole quirk family
+        //   for this class; see Android-Camera-Capture-Audit-2026-08-12.md).
+        // MINIMIZE_LATENCY skips the fragile precapture sequence; exposure quality
+        // is governed by our scene-adaptive EV + the post-capture validator with
+        // AE-kick retry. Latency is irrelevant under the 2s auto-capture countdown.
+        return ImageCapture.Builder()
             .setResolutionSelector(resolutionSelector)
             .setFlashMode(ImageCapture.FLASH_MODE_OFF)
-
-        if (!withVideoCapture) {
-            // ZERO_SHUTTER_LAG draws from the preview stream's circular buffer at trigger
-            // time, eliminating the 100–500ms pipeline delay. Safe only when no VideoCapture
-            // use case is active in the same session.
-            builder.setCaptureMode(ImageCapture.CAPTURE_MODE_ZERO_SHUTTER_LAG)
-        }
-        // When withVideoCapture=true we leave the capture mode unset (defaults to
-        // MINIMIZE_LATENCY) — CameraX documents this as compatible with VideoCapture.
-
-        return builder.build()
+            .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
+            .build()
     }
 
     /**
