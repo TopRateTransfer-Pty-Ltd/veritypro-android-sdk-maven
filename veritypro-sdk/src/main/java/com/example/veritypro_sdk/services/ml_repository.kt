@@ -39,6 +39,18 @@ class MLRepository {
          * base64 payload from ~3-5MB to ~100-200KB per frame.
          */
         private const val MAX_LIVE_FRAME_DIMENSION = 640
+
+        /**
+         * Burst-verify upload cap (2026-08-14 fix): the burst previously uploaded
+         * 8 FULL-RESOLUTION frames (~3 MB each -> ~25-32 MB of base64 JSON in one
+         * POST). On slow uplinks the upload exceeded OkHttp's 60 s callTimeout,
+         * the client aborted mid-body and nginx logged `400 0` — verify-burst
+         * never reached the ML service ("keeps verifying then fails"). The
+         * backend downscales every frame anyway, so 1280 px keeps more detail
+         * than the server will ever use while cutting the payload to ~2-3 MB.
+         */
+        private const val MAX_BURST_FRAME_DIMENSION = 1280
+        private const val JPEG_QUALITY_BURST = 85
     }
 
     /**
@@ -165,9 +177,12 @@ class MLRepository {
             // all frame bytes + their base64 strings at the same time — on a device with
             // 6 × ~3 MB images that's ~18 MB raw + ~24 MB base64 = ~42 MB peak RAM, which
             // can trigger OOM on low-end devices with 512 MB RAM.
+            // 2026-08-14: frames are DOWNSCALED before upload (see
+            // MAX_BURST_FRAME_DIMENSION) — full-res frames made the payload
+            // ~25-32 MB and the upload blew the 60 s callTimeout on slow links.
             val base64Frames = buildList {
                 for (frame in frames) {
-                    add(fileToBase64(frame))
+                    add(fileToBase64Downscaled(frame))
                 }
             }
 
@@ -344,6 +359,40 @@ class MLRepository {
     private fun fileToBase64(file: File): String {
         val bytes = file.readBytes()
         return Base64.encodeToString(bytes, Base64.NO_WRAP)
+    }
+
+    /**
+     * Decode a captured frame file, downscale to [MAX_BURST_FRAME_DIMENSION]
+     * and re-encode at [JPEG_QUALITY_BURST] before base64. Memory-conscious:
+     * uses inSampleSize so the full-resolution bitmap is never fully decoded,
+     * and recycles intermediates. One frame at a time (caller iterates
+     * sequentially — see verifyBurst).
+     */
+    private fun fileToBase64Downscaled(file: File): String {
+        // Pass 1: bounds only — pick a power-of-two sample size close to target
+        val bounds = android.graphics.BitmapFactory.Options().apply {
+            inJustDecodeBounds = true
+        }
+        android.graphics.BitmapFactory.decodeFile(file.absolutePath, bounds)
+        var sampleSize = 1
+        var longEdge = maxOf(bounds.outWidth, bounds.outHeight)
+        while (longEdge / 2 >= MAX_BURST_FRAME_DIMENSION) {
+            sampleSize *= 2
+            longEdge /= 2
+        }
+
+        val opts = android.graphics.BitmapFactory.Options().apply {
+            inSampleSize = sampleSize
+        }
+        val decoded = android.graphics.BitmapFactory.decodeFile(file.absolutePath, opts)
+            ?: return fileToBase64(file) // undecodable → fall back to raw bytes
+
+        val scaled = downscaleBitmap(decoded, MAX_BURST_FRAME_DIMENSION)
+        val outputStream = ByteArrayOutputStream()
+        scaled.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY_BURST, outputStream)
+        if (scaled !== decoded) scaled.recycle()
+        decoded.recycle()
+        return Base64.encodeToString(outputStream.toByteArray(), Base64.NO_WRAP)
     }
 
     /**
