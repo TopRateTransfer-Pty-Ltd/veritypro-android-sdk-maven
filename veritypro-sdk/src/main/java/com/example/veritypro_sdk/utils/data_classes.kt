@@ -12,5 +12,7 @@ data class LivenessResult(
     val completedModules: List<String>? = null,
     val addressSessionId: String? = null,
     val eddCaseId: String? = null,
-    val sessionId: String? = null
+    val sessionId: String? = null,
+    /** vpds_* token minted by VpDeviceSessionService. Null when collection failed or timed out. */
+    val deviceToken: String? = null
 ) : Parcelable

@@ -7,17 +7,27 @@ import android.util.Log
 import android.view.WindowManager
 import androidx.appcompat.app.AppCompatActivity
 import androidx.activity.compose.setContent
+import androidx.lifecycle.lifecycleScope
 import com.example.veritypro_sdk.ui.verification.VerificationScreen
 import com.example.veritypro_sdk.utils.LivenessResult
 import com.example.veritypro_sdk.utils.VerityOption
+import com.example.veritypro_sdk.utils.VpDeviceSessionService
 import com.amplifyframework.core.Amplify
 import com.amplifyframework.auth.cognito.AWSCognitoAuthPlugin
 import com.example.veritypro_sdk.services.VeritySigningConfig
 import com.example.veritypro_sdk.ui.theme.ThemeMode
+import kotlinx.coroutines.Deferred
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 
 class VerityProSdkActivity : AppCompatActivity() {
     private var options: VerityOption? = null
     private var themeMode: ThemeMode = ThemeMode.LIGHT
+    // Deferred device-session token — collected in background during the KYC flow,
+    // awaited (max 3 s) before returning the result to the host app.
+    private var deviceTokenDeferred: Deferred<String?>? = null
 
     companion object {
         @Volatile
@@ -50,6 +60,18 @@ class VerityProSdkActivity : AppCompatActivity() {
 
         VeritySigningConfig.initialize(options?.signingKey)
 
+        // Start device-session collection in the background immediately so the
+        // token is ready (or close to it) by the time the KYC flow completes.
+        options?.let { opts ->
+            deviceTokenDeferred = lifecycleScope.async(Dispatchers.IO) {
+                VpDeviceSessionService.collectAndSubmit(
+                    context = applicationContext,
+                    apiKey = opts.apiKey,
+                    integrationId = opts.integrationId
+                )
+            }
+        }
+
         if (options == null) {
             Log.e("VerityProSdkActivity", "Missing VerityOption - finishing")
             setResult(RESULT_CANCELED, Intent().putExtra("verification_result", LivenessResult(success = false, error = "missing_options")))
@@ -76,11 +98,21 @@ class VerityProSdkActivity : AppCompatActivity() {
             setContent {
                 VerificationScreen(
                     onFinish = { result ->
-                        val resultIntent = Intent().apply {
-                            putExtra("verification_result", result)
+                        // Await the background device token (max 3 s extra).
+                        // KYC flow typically takes 30+ s, so the token is usually ready.
+                        lifecycleScope.launch {
+                            val deviceToken = try {
+                                withTimeoutOrNull(3_000L) { deviceTokenDeferred?.await() }
+                            } catch (e: Exception) {
+                                Log.w("VerityProSdkActivity", "deviceToken await error: ${e.message}")
+                                null
+                            }
+                            val resultIntent = Intent().apply {
+                                putExtra("verification_result", result.copy(deviceToken = deviceToken))
+                            }
+                            setResult(RESULT_OK, resultIntent)
+                            finish()
                         }
-                        setResult(RESULT_OK, resultIntent)
-                        finish()
                     },
                     options = options!!,
                     onCancel = {
