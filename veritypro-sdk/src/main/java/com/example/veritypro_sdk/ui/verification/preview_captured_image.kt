@@ -152,6 +152,7 @@ fun PreviewCapturedImageScreen(
     documentType: Int,
     isBackSide: Boolean = false,
     verificationAlreadyPassed: Boolean = false, // NEW: Skip verification if already done on capture screen
+    kycSessionId: String = "", // C0: real session id for server-side funnel correlation
     onContinue: (File) -> Unit
 ) {
 
@@ -206,7 +207,11 @@ fun PreviewCapturedImageScreen(
                         Log.d("PreviewScreen", "Anti-spoofing verification: ${burstFiles.size} frames")
 
                         val result = mlRepository.verifyBurst(
-                            sessionId = "android-antispoof-${System.currentTimeMillis()}",
+                            // C0: real KYC session id so server-side funnel events
+                            // correlate; synthetic fallback only without a session.
+                            sessionId = kycSessionId.ifBlank {
+                                "android-antispoof-${System.currentTimeMillis()}"
+                            },
                             frames = burstFiles,
                             docTypeExpected = docTypeExpected,
                             sideExpected = sideExpected

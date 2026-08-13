@@ -27,7 +27,15 @@ data class MLPredictRequest(
     val sideExpected: String? = null,
 
     @SerializedName("imageJpegBase64")
-    val imageJpegBase64: String
+    val imageJpegBase64: String,
+
+    /**
+     * C0 guidance tier (2026-08-14): "GUIDANCE" = cheap presence-only server
+     * verdict (~60ms) for live framing polls; "CAPTURE_MOMENT" = full pipeline
+     * (LLM type/side + tamper). Null = full pipeline (legacy behaviour).
+     */
+    @SerializedName("callPurpose")
+    val callPurpose: String? = null
 )
 
 /**

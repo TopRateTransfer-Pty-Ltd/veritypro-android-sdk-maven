@@ -451,10 +451,19 @@ fun DocumentCaptureScreen(
                     withContext(Dispatchers.Default) {
                         val result = try {
                             mlRepository.predict(
-                                sessionId = "android-live-${System.currentTimeMillis()}",
+                                // C0: real KYC session id (server-side funnel needs
+                                // correlatable calls); synthetic fallback only when
+                                // the host launched without a session.
+                                sessionId = kycSessionId.ifBlank {
+                                    "android-live-${System.currentTimeMillis()}"
+                                },
                                 bitmap = bitmap,
                                 docTypeExpected = docTypeExpected,
-                                sideExpected = currentSideExpected
+                                sideExpected = currentSideExpected,
+                                // C0: live framing polls only need presence — the
+                                // full LLM verdict fires once, inside the auto-
+                                // capture countdown (see countdown effect below).
+                                callPurpose = "GUIDANCE"
                             )
                         } finally {
                             bitmap.recycle() // Free native memory immediately
@@ -651,6 +660,7 @@ fun DocumentCaptureScreen(
                 documentType = documentType ?: 1,
                 isBackSide = isBackSide,
                 verificationAlreadyPassed = verificationPassed, // Pass verification status from capture screen
+                kycSessionId = kycSessionId, // C0: server-side funnel correlation
                 onRetake = {
                     BurstCaptureUtils.cleanupBurstFiles(burstFiles)
                     burstFiles = emptyList()
@@ -815,6 +825,55 @@ fun DocumentCaptureScreen(
                     // held correctly the next ML loop will re-enter LOCKED naturally.
                     if (verificationError.isNotEmpty()) return@LaunchedEffect
                     view.performHapticFeedback(android.view.HapticFeedbackConstants.VIRTUAL_KEY)
+
+                    // C0 countdown-overlapped CAPTURE_MOMENT verdict: the live
+                    // polling loop now runs on the cheap GUIDANCE tier, so the
+                    // one full-pipeline verdict (LLM type/side classification)
+                    // fires HERE — its ~1-2s round-trip hides inside the 2s
+                    // countdown. A wrong-side/wrong-type verdict cancels the
+                    // countdown (via the existing verificationError path) BEFORE
+                    // capture. On network failure or a late verdict, capture
+                    // proceeds — burst verify remains the accept authority
+                    // (fail toward the server, never silently accept).
+                    launch(Dispatchers.Default) {
+                        val verdictRepo = MLRepository()
+                        val verdictBitmap =
+                            withContext(Dispatchers.Main) { previewView.bitmap }
+                        if (verdictBitmap != null) {
+                            val verdict = try {
+                                verdictRepo.predict(
+                                    sessionId = kycSessionId.ifBlank {
+                                        "android-live-${System.currentTimeMillis()}"
+                                    },
+                                    bitmap = verdictBitmap,
+                                    docTypeExpected =
+                                        MLDocumentType.fromSdkType(documentType ?: 1),
+                                    sideExpected = if (isBackSide) "BACK" else "FRONT",
+                                    callPurpose = "CAPTURE_MOMENT"
+                                )
+                            } finally {
+                                verdictBitmap.recycle()
+                            }
+                            if (verdict is Resource.Success && !verdict.data.docOk) {
+                                withContext(Dispatchers.Main) {
+                                    if (!isProcessing && !isCapturing) {
+                                        Log.d(
+                                            "DocumentCapture",
+                                            "Countdown verdict REJECTED (${verdict.data.hint}) — cancelling auto-capture"
+                                        )
+                                        verificationError = verdict.data.hint
+                                        mlPassed = false
+                                    }
+                                }
+                            } else if (verdict is Resource.Success) {
+                                Log.d(
+                                    "DocumentCapture",
+                                    "Countdown verdict ACCEPTED — capture may proceed"
+                                )
+                            }
+                        }
+                    }
+
                     val start = System.currentTimeMillis()
                     while (isActive) {
                         val elapsed = System.currentTimeMillis() - start

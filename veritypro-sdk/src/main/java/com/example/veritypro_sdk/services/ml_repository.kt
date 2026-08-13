@@ -66,7 +66,8 @@ class MLRepository {
         sessionId: String,
         imageFile: File,
         docTypeExpected: String? = null,
-        sideExpected: String? = null
+        sideExpected: String? = null,
+        callPurpose: String? = null
     ): Resource<MLPredictResponse> {
         return try {
             val base64Image = fileToBase64(imageFile)
@@ -75,7 +76,8 @@ class MLRepository {
                 sessionId = sessionId,
                 docTypeExpected = docTypeExpected,
                 sideExpected = sideExpected,
-                imageJpegBase64 = base64Image
+                imageJpegBase64 = base64Image,
+                callPurpose = callPurpose
             )
 
             Log.d(TAG, "Predicting document: session=$sessionId, type=$docTypeExpected, side=$sideExpected")
@@ -117,7 +119,8 @@ class MLRepository {
         sessionId: String,
         bitmap: Bitmap,
         docTypeExpected: String? = null,
-        sideExpected: String? = null
+        sideExpected: String? = null,
+        callPurpose: String? = null
     ): Resource<MLPredictResponse> {
         return try {
             val base64Image = bitmapToBase64ForLiveFrame(bitmap)
@@ -126,7 +129,8 @@ class MLRepository {
                 sessionId = sessionId,
                 docTypeExpected = docTypeExpected,
                 sideExpected = sideExpected,
-                imageJpegBase64 = base64Image
+                imageJpegBase64 = base64Image,
+                callPurpose = callPurpose
             )
 
             Log.d(TAG, "Predicting document from bitmap: session=$sessionId")
