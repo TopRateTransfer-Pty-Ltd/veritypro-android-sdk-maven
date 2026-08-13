@@ -20,7 +20,7 @@ import java.util.concurrent.TimeUnit
 private const val TAG = "VpDeviceSession"
 private const val PREFS_NAME = "vp_device_prefs"
 private const val KEY_VISITOR_ID = "_vp_vid"
-private const val MINT_PATH = "/aml-intelligence/api/v1/device/sessions"
+private const val MINT_PATH = "/intelligence/api/v1/device/sessions"
 
 /**
  * Mints a vpds_* device-session token by POSTing mobile device signals to the
