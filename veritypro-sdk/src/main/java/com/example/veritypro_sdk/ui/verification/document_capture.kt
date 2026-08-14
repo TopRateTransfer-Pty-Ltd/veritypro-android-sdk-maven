@@ -882,207 +882,182 @@ fun DocumentCaptureScreen(
                             view.performHapticFeedback(android.view.HapticFeedbackConstants.CONFIRM)
                             // Auto-capture: drain buffer and verify (same flow as manual button)
                             if (!isCapturing && !isProcessing) {
-                                Log.d("DocumentCapture", "Auto-capture: countdown complete, draining buffer")
-                                frozenBitmap?.recycle()
-                                frozenBitmap = previewView.bitmap
+                                Log.d("DocumentCapture", "Auto-capture: countdown complete, capturing burst now")
+                                // TEMPORAL FIX (session ddb47290, device test 2026-08-15): the burst
+                                // MUST be captured the instant the countdown ends, while the user is
+                                // still holding the pose. The previous pipeline took 6 sequential
+                                // full-res photos AFTER freezing the UI (~2.5s each on the T442M HAL,
+                                // frames landing 4-20s post-lock) — by then users had lowered the
+                                // phone, so the server forensic gate was judging photos of the room
+                                // (BLURRY / SCREEN_REPLAY verdicts were accurate for that input).
+                                // Do NOT freeze the preview yet: the live view + "Hold still" badge
+                                // keep the user aiming through the ~3s capture window.
                                 isProcessing = true
                                 isCapturing = false
                                 captureAttemptCount++
-                                processingStatus = if (isBackSide) "Processing..." else "Verifying..."
-
-                                // FIX: Do NOT turn off torch here — leave it on during the capture
-                                // so the high-res photo is taken under the same lighting as the
-                                // frozen preview. Torch is turned off after highResCapture.await().
+                                processingStatus = "Hold still…"
 
                                 val bufferedBitmaps = BurstCaptureUtils.drainBuffer()
-                                Log.d("DocumentCapture", "Auto-capture: drained ${bufferedBitmaps.size} frames")
 
                                 coroutineScope.launch {
                                     try {
-                                        // High-res capture in parallel with burst frame saving
-                                        val highResCapture = async(Dispatchers.IO) {
-                                            BurstCaptureUtils.captureBurst(
-                                                context = context,
-                                                imageCapture = imageCapture,
-                                                frameCount = 1,
-                                                delayMs = 0
-                                            ).firstOrNull()
+                                        // Ring-buffer preview bitmaps (628x421) are never uploaded —
+                                        // the server gate flags them BLURRY. Recycle immediately.
+                                        withContext(Dispatchers.IO) {
+                                            bufferedBitmaps.forEach { runCatching { it.recycle() } }
                                         }
 
-                                        val frames = withContext(Dispatchers.IO) {
-                                            bufferedBitmaps.mapIndexedNotNull { index, bmp ->
-                                                try {
-                                                    val file = java.io.File(context.cacheDir, "burst_frame_${System.currentTimeMillis()}_$index.jpg")
-                                                    file.outputStream().use { out ->
-                                                        bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 95, out)
-                                                    }
-                                                    file
-                                                } catch (e: Exception) {
-                                                    Log.w("DocumentCapture", "Auto-capture: failed to save frame $index: ${e.message}")
-                                                    null
-                                                } finally {
-                                                    bmp.recycle()
-                                                }
-                                            }
+                                        // Capture the burst NOW. 3 frames = server minimum for
+                                        // verify-burst; delayMs=0 + MINIMIZE_LATENCY keeps the
+                                        // hold-still window ~3s on slow HALs.
+                                        val burst = BurstCaptureUtils.captureBurst(
+                                            context = context,
+                                            imageCapture = imageCapture,
+                                            frameCount = 3,
+                                            delayMs = 0
+                                        )
+                                        Log.d("DocumentCapture", "Auto-capture: burst complete (${burst.size} full-res frames)")
+
+                                        // Capture window over — release the user: freeze the preview
+                                        // and switch to the verifying overlay.
+                                        withContext(Dispatchers.Main) {
+                                            view.performHapticFeedback(android.view.HapticFeedbackConstants.CONFIRM)
+                                            processingStatus = if (isBackSide) "Processing..." else "Verifying..."
+                                            frozenBitmap?.recycle()
+                                            frozenBitmap = previewView.bitmap
                                         }
 
-                                        val highResFile = highResCapture.await()
-                                        Log.d("DocumentCapture", "Auto-capture high-res: ${highResFile?.name ?: "failed"}")
-
-                                        // FIX: Turn off torch AFTER capture so the captured image
-                                        // matches the lighting shown in the frozen preview.
+                                        // Torch off only after all frames are captured so lighting
+                                        // stays consistent across the burst.
                                         if (torchEnabled) {
                                             withContext(Dispatchers.Main) {
                                                 CameraUtils.setTorch(false)
-                                                // torchEnabled updates automatically via CameraUtils.torchStateFlow
                                             }
                                         }
 
-                                        // Apply 4-stage sharpening pipeline to high-res file (iOS parity).
-                                        // Mirrors iOS ManualCaptureCameraView.applySharpeningFilter().
-                                        if (highResFile != null && highResFile.exists()) {
-                                            try {
-                                                val bmp = BitmapFactory.decodeFile(highResFile.path)
-                                                if (bmp != null) {
-                                                    val sharpened = ImageSharpeningUtils.applySharpeningPipeline(bmp)
-                                                    highResFile.outputStream().use { out ->
-                                                        sharpened.compress(android.graphics.Bitmap.CompressFormat.JPEG, 95, out)
-                                                    }
-                                                    if (sharpened !== bmp) bmp.recycle()
-                                                    Log.d("DocumentCapture", "Auto-capture: sharpening applied")
-                                                }
-                                            } catch (e: Exception) {
-                                                Log.w("DocumentCapture", "Auto-capture: sharpening failed, using original: ${e.message}")
+                                        if (burst.size < 3) {
+                                            Log.w("DocumentCapture", "Auto-capture: only ${burst.size}/3 frames captured")
+                                            BurstCaptureUtils.cleanupBurstFiles(burst)
+                                            withContext(Dispatchers.Main) {
+                                                verificationError = "Failed to capture frames. Please try again."
+                                                isProcessing = false
+                                                isCapturing = false
+                                                frozenBitmap = null
                                             }
-
-                                            // FIX: Update frozenBitmap to a thumbnail of the actual
-                                            // captured image so the processing overlay shows the
-                                            // same content as the preview/confirmation screen.
-                                            try {
-                                                val opts = android.graphics.BitmapFactory.Options().apply { inSampleSize = 4 }
-                                                val thumb = android.graphics.BitmapFactory.decodeFile(highResFile.path, opts)
-                                                if (thumb != null) {
-                                                    withContext(Dispatchers.Main) {
-                                                        frozenBitmap?.recycle()
-                                                        frozenBitmap = thumb
-                                                    }
-                                                }
-                                            } catch (e: Exception) {
-                                                Log.w("DocumentCapture", "Auto-capture: frozen bitmap update skipped: ${e.message}")
-                                            }
-                                        }
-
-                                        // POST-CAPTURE QUALITY GATE: validate the FINAL image that
-                                        // will be uploaded — preview-frame gates cannot vouch for it
-                                        // (session 76bc252d: rotated, blown-out, unreadable-portrait
-                                        // capture sailed through and caused a false hard-decline).
-                                        // Also bakes EXIF rotation into the pixels, and silently
-                                        // retakes once after an AE kick if the HAL returned a black
-                                        // frame (wedged-precapture recovery, audit RC2).
-                                        if (highResFile != null && highResFile.exists()) {
-                                            val verdict = validateWithAeRecovery(
-                                                context, imageCapture, highResFile, isFrontSide = !isBackSide
-                                            )
-                                            if (!verdict.ok) {
-                                                Log.w("DocumentCapture", "Auto-capture rejected by post-capture gate: ${verdict.reason}")
-                                                highResFile.delete()
-                                                BurstCaptureUtils.cleanupBurstFiles(frames)
-                                                withContext(Dispatchers.Main) {
-                                                    verificationError = verdict.userMessage
-                                                    isProcessing = false
-                                                    isCapturing = false
-                                                    frozenBitmap = null
-                                                }
-                                                return@launch
-                                            }
-                                        }
-
-                                        // Preview ring-buffer frames are preview-resolution (628x421 observed
-                                        // on T442M) — the server blur/spoof gate rejects them as BLURRY on
-                                        // every attempt (C0 device test 2026-08-15). Always capture the
-                                        // anti-spoof burst at full resolution via ImageCapture; the buffered
-                                        // preview frames are discarded below.
-                                        run {
-                                            Log.i("DocumentCapture", "Auto-capture: discarding ${frames.size} preview-res buffer frames, bursting full-res via ImageCapture")
-                                            // keep highResFile: passed to verifyAndHandleResult as the final burst frame
-                                            BurstCaptureUtils.cleanupBurstFiles(frames)
-                                            val fallbackFrames = BurstCaptureUtils.captureBurst(
-                                                context = context,
-                                                imageCapture = imageCapture,
-                                                frameCount = 6,
-                                                delayMs = 50
-                                            )
-                                            if (fallbackFrames.isEmpty()) {
-                                                withContext(Dispatchers.Main) {
-                                                    verificationError = "Failed to capture frames. Please try again."
-                                                    isProcessing = false
-                                                    isCapturing = false
-                                                    frozenBitmap = null
-                                                }
-                                                return@launch
-                                            }
-                                            // L-4: Apply sharpening to fallback frames (ImageCapture
-                                            // frames miss the pipeline applied to ring-buffer path).
-                                            withContext(Dispatchers.IO) {
-                                                fallbackFrames.forEach { file ->
-                                                    try {
-                                                        val bmp = BitmapFactory.decodeFile(file.path)
-                                                        if (bmp != null) {
-                                                            val sharpened = ImageSharpeningUtils.applySharpeningPipeline(bmp)
-                                                            file.outputStream().use { out ->
-                                                                sharpened.compress(android.graphics.Bitmap.CompressFormat.JPEG, 95, out)
-                                                            }
-                                                            if (sharpened !== bmp) bmp.recycle()
-                                                        }
-                                                    } catch (e: Exception) {
-                                                        Log.w("DocumentCapture", "Auto-capture fallback: sharpening failed for ${file.name}: ${e.message}")
-                                                    }
-                                                }
-                                            }
-                                            BurstCaptureUtils.debugPersistLastBurst = (context.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
-                                            BurstCaptureUtils.debugSnapshotBurst(context, fallbackFrames + listOfNotNull(highResFile))
-                                            verifyAndHandleResult(
-                                                frames = fallbackFrames,
-                                                documentType = documentType,
-                                                capturedFiles = capturedFiles,
-                                                isBackSide = isBackSide,
-                                                kycSessionId = kycSessionId,
-                                                highResFile = highResFile,
-                                                onPass = { passedFrames, burstScore ->
-                                                    lastBurstScore = burstScore
-                                                    view.performHapticFeedback(android.view.HapticFeedbackConstants.CONFIRM)
-                                                    verificationPassed = true
-                                                    burstFiles = passedFrames
-                                                    previewPath = passedFrames.first().path
-                                                },
-                                                onFail = { error ->
-                                                    view.performHapticFeedback(android.view.HapticFeedbackConstants.REJECT)
-                                                    verificationError = error
-                                                }
-                                            )
                                             return@launch
                                         }
 
-                                        // FIX: Pass highResFile so verifyAndHandleResult can:
-                                        // (a) append it as the final burst frame for the backend, and
-                                        // (b) run local DocumentAntiSpoofChecker at full resolution.
+                                        // Sharpen every frame — all of them feed the server blur gate.
+                                        withContext(Dispatchers.IO) {
+                                            burst.forEach { file ->
+                                                try {
+                                                    val bmp = BitmapFactory.decodeFile(file.path)
+                                                    if (bmp != null) {
+                                                        val sharpened = ImageSharpeningUtils.applySharpeningPipeline(bmp)
+                                                        file.outputStream().use { out ->
+                                                            sharpened.compress(android.graphics.Bitmap.CompressFormat.JPEG, 95, out)
+                                                        }
+                                                        if (sharpened !== bmp) bmp.recycle()
+                                                    }
+                                                } catch (e: Exception) {
+                                                    Log.w("DocumentCapture", "Auto-capture: sharpening failed for ${file.name}: ${e.message}")
+                                                }
+                                            }
+                                        }
+
+                                        val primaryFile = burst.first()
+
+                                        // Show the actual captured document in the verifying overlay.
+                                        try {
+                                            val opts = android.graphics.BitmapFactory.Options().apply { inSampleSize = 4 }
+                                            val thumb = android.graphics.BitmapFactory.decodeFile(primaryFile.path, opts)
+                                            if (thumb != null) {
+                                                withContext(Dispatchers.Main) {
+                                                    frozenBitmap?.recycle()
+                                                    frozenBitmap = thumb
+                                                }
+                                            }
+                                        } catch (e: Exception) {
+                                            Log.w("DocumentCapture", "Auto-capture: frozen bitmap update skipped: ${e.message}")
+                                        }
+
+                                        // POST-CAPTURE QUALITY GATE on the primary frame: bakes EXIF
+                                        // rotation into pixels and silently retakes once after an AE
+                                        // kick on a black frame (wedged-precapture recovery, audit RC2).
+                                        val verdict = validateWithAeRecovery(
+                                            context, imageCapture, primaryFile, isFrontSide = !isBackSide
+                                        )
+                                        if (!verdict.ok) {
+                                            Log.w("DocumentCapture", "Auto-capture rejected by post-capture gate: ${verdict.reason}")
+                                            BurstCaptureUtils.cleanupBurstFiles(burst)
+                                            withContext(Dispatchers.Main) {
+                                                verificationError = verdict.userMessage
+                                                isProcessing = false
+                                                isCapturing = false
+                                                frozenBitmap = null
+                                            }
+                                            return@launch
+                                        }
+
+                                        // PRE-UPLOAD PRESENCE GATE: one fast /predict on the final
+                                        // frame. If the document is not in it (user moved during the
+                                        // window), fail fast with an honest message instead of feeding
+                                        // room photos to the expensive forensic pipeline. Gate errors
+                                        // fail open — verify-burst remains the authority.
+                                        val presenceOk = try {
+                                            // Decode downsampled — the bitmap overload re-encodes at
+                                            // 640px/q65 (~100-200KB) vs the raw file's 1-3MB. A 40ms
+                                            // presence check must not cost a full-res upload.
+                                            val gateOpts = android.graphics.BitmapFactory.Options().apply { inSampleSize = 2 }
+                                            val gateBmp = android.graphics.BitmapFactory.decodeFile(primaryFile.path, gateOpts)
+                                            if (gateBmp != null) {
+                                                try {
+                                                    val gate = MLRepository().predict(
+                                                        sessionId = kycSessionId.ifBlank { "presence-gate" },
+                                                        bitmap = gateBmp,
+                                                        docTypeExpected = MLDocumentType.fromSdkType(documentType ?: 1),
+                                                        sideExpected = if (capturedFiles.isNotEmpty()) "BACK" else "FRONT"
+                                                    )
+                                                    if (gate is Resource.Success) gate.data.docOk else true
+                                                } finally {
+                                                    gateBmp.recycle()
+                                                }
+                                            } else true
+                                        } catch (e: CancellationException) {
+                                            throw e
+                                        } catch (e: Exception) {
+                                            Log.w("DocumentCapture", "Presence gate errored (${e.message}) — proceeding to verify-burst")
+                                            true
+                                        }
+                                        if (!presenceOk) {
+                                            Log.w("DocumentCapture", "Presence gate: no document in final frames — failing fast")
+                                            BurstCaptureUtils.cleanupBurstFiles(burst)
+                                            withContext(Dispatchers.Main) {
+                                                view.performHapticFeedback(android.view.HapticFeedbackConstants.REJECT)
+                                                verificationError = "The document moved out of view — keep it steady until capture finishes."
+                                                isProcessing = false
+                                                isCapturing = false
+                                                frozenBitmap = null
+                                            }
+                                            return@launch
+                                        }
+
+                                        BurstCaptureUtils.debugPersistLastBurst = (context.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
+                                        BurstCaptureUtils.debugSnapshotBurst(context, burst)
                                         verifyAndHandleResult(
-                                            frames = frames,
+                                            frames = burst,
                                             documentType = documentType,
                                             capturedFiles = capturedFiles,
                                             isBackSide = isBackSide,
                                             kycSessionId = kycSessionId,
-                                            highResFile = highResFile,
                                             onPass = { passedFrames, burstScore ->
                                                 lastBurstScore = burstScore
                                                 view.performHapticFeedback(android.view.HapticFeedbackConstants.CONFIRM)
                                                 verificationPassed = true
                                                 burstFiles = passedFrames
-                                                previewPath = highResFile?.takeIf { it.exists() }?.path
-                                                    ?: passedFrames.first().path
+                                                previewPath = passedFrames.first().path
                                             },
                                             onFail = { error ->
-                                                highResFile?.delete()
                                                 view.performHapticFeedback(android.view.HapticFeedbackConstants.REJECT)
                                                 verificationError = error
                                             }
@@ -1389,214 +1364,159 @@ fun DocumentCaptureScreen(
                         verificationPassed = false
                         captureAttemptCount++
 
-                        // IMMEDIATELY freeze the camera frame on tap (iOS-matching behavior)
-                        // Recycle the previous bitmap to prevent native memory leaks on rapid re-capture
-                        frozenBitmap?.recycle()
-                        frozenBitmap = previewView.bitmap
+                        // TEMPORAL FIX (session ddb47290, device test 2026-08-15): capture the
+                        // full-res burst IMMEDIATELY on tap, while the user is still holding the
+                        // pose — the live preview + "Hold still" status stay up through the ~3s
+                        // window. Freezing happens only after the last frame is on disk.
                         isProcessing = true
                         isCapturing = false
-                        processingStatus = if (isBackSide) "Processing..." else "Verifying..."
+                        processingStatus = "Hold still…"
 
-                        // Drain pre-buffered frames INSTANTLY (no post-tap camera capture)
+                        // Drain the ring buffer (628x421 preview frames — never uploaded)
                         val bufferedBitmaps = BurstCaptureUtils.drainBuffer()
 
                         coroutineScope.launch {
                             try {
-                                // ── High-res capture (runs in parallel with burst frame saving) ──
-                                // FIX: Torch remains ON during capture so the actual photo is taken
-                                // under the same lighting the user saw in the frozen preview.
-                                // Torch is turned off AFTER highResCapture.await() completes.
-                                // (CAPTURE_MODE_ZERO_SHUTTER_LAG means the photo is from the preview
-                                // stream buffer — same frame as frozenBitmap.)
-                                val highResCapture = async(Dispatchers.IO) {
-                                    BurstCaptureUtils.captureBurst(
-                                        context = context,
-                                        imageCapture = imageCapture,
-                                        frameCount = 1,
-                                        delayMs = 0
-                                    ).firstOrNull()
+                                withContext(Dispatchers.IO) {
+                                    bufferedBitmaps.forEach { runCatching { it.recycle() } }
                                 }
 
-                                // Save buffered bitmaps to temp files for anti-spoofing verification
-                                val frames = withContext(Dispatchers.IO) {
-                                    bufferedBitmaps.mapIndexedNotNull { index, bitmap ->
-                                        try {
-                                            val file = File(context.cacheDir, "burst_frame_${System.currentTimeMillis()}_$index.jpg")
-                                            file.outputStream().use { out ->
-                                                bitmap.compress(Bitmap.CompressFormat.JPEG, 95, out)
-                                            }
-                                            file
-                                        } catch (e: Exception) {
-                                            Log.w("DocumentCapture", "Failed to save buffered frame $index: ${e.message}")
-                                            null
-                                        } finally {
-                                            bitmap.recycle()
-                                        }
-                                    }
+                                // Capture the burst NOW. 3 frames = server minimum for
+                                // verify-burst; delayMs=0 + MINIMIZE_LATENCY keeps the
+                                // hold-still window ~3s on slow HALs.
+                                val burst = BurstCaptureUtils.captureBurst(
+                                    context = context,
+                                    imageCapture = imageCapture,
+                                    frameCount = 3,
+                                    delayMs = 0
+                                )
+                                Log.d("DocumentCapture", "Manual capture: burst complete (${burst.size} full-res frames)")
+
+                                // Capture window over — release the user: freeze the preview
+                                // and switch to the verifying overlay.
+                                withContext(Dispatchers.Main) {
+                                    view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
+                                    processingStatus = if (isBackSide) "Processing..." else "Verifying..."
+                                    frozenBitmap?.recycle()
+                                    frozenBitmap = previewView.bitmap
                                 }
 
-                                // Await high-res result (concurrent with burst frame saving above)
-                                val highResFile = highResCapture.await()
-                                Log.d("DocumentCapture", "High-res capture: ${highResFile?.name ?: "failed (will use burst frame)"}")
-
-                                // FIX: Turn off torch AFTER capture completes so the captured image
-                                // has the same lighting as the frozen preview. Turning it off before
-                                // caused the AE to re-adjust mid-capture, producing a darker photo.
+                                // Torch off only after all frames are captured so lighting
+                                // stays consistent across the burst.
                                 if (torchEnabled) {
                                     withContext(Dispatchers.Main) {
                                         CameraUtils.setTorch(false)
-                                        // torchEnabled updates automatically via CameraUtils.torchStateFlow
                                     }
                                 }
 
-                                // FIX: Replace the frozen preview bitmap with a thumbnail of the
-                                // actual captured image. This ensures what the user sees during
-                                // processing and in the preview screen is the same image.
-                                if (highResFile != null && highResFile.exists()) {
-                                    try {
-                                        val opts = android.graphics.BitmapFactory.Options().apply { inSampleSize = 4 }
-                                        val thumb = android.graphics.BitmapFactory.decodeFile(highResFile.path, opts)
-                                        if (thumb != null) {
-                                            withContext(Dispatchers.Main) {
-                                                frozenBitmap?.recycle()
-                                                frozenBitmap = thumb
-                                            }
-                                        }
-                                    } catch (e: Exception) {
-                                        Log.w("DocumentCapture", "Frozen bitmap update skipped: ${e.message}")
+                                if (burst.size < 3) {
+                                    Log.w("DocumentCapture", "Manual capture: only ${burst.size}/3 frames captured")
+                                    BurstCaptureUtils.cleanupBurstFiles(burst)
+                                    withContext(Dispatchers.Main) {
+                                        verificationError = "Failed to capture frames. Please try again."
+                                        isProcessing = false
+                                        isCapturing = false
+                                        frozenBitmap = null
                                     }
-                                }
-
-                                // Apply 4-stage sharpening pipeline to high-res file (iOS parity).
-                                // Mirrors iOS ManualCaptureCameraView.applySharpeningFilter().
-                                if (highResFile != null && highResFile.exists()) {
-                                    try {
-                                        val bmp = BitmapFactory.decodeFile(highResFile.path)
-                                        if (bmp != null) {
-                                            val sharpened = ImageSharpeningUtils.applySharpeningPipeline(bmp)
-                                            highResFile.outputStream().use { out ->
-                                                sharpened.compress(android.graphics.Bitmap.CompressFormat.JPEG, 95, out)
-                                            }
-                                            if (sharpened !== bmp) bmp.recycle()
-                                            Log.d("DocumentCapture", "Sharpening applied to high-res capture")
-                                        }
-                                    } catch (e: Exception) {
-                                        Log.w("DocumentCapture", "Sharpening failed, using original: ${e.message}")
-                                    }
-                                }
-
-                                // POST-CAPTURE QUALITY GATE (same as auto-capture path): validate
-                                // the FINAL image before upload, bake EXIF rotation into pixels,
-                                // and silently retake once after an AE kick on a black frame.
-                                if (highResFile != null && highResFile.exists()) {
-                                    val verdict = validateWithAeRecovery(
-                                        context, imageCapture, highResFile, isFrontSide = !isBackSide
-                                    )
-                                    if (!verdict.ok) {
-                                        Log.w("DocumentCapture", "Manual capture rejected by post-capture gate: ${verdict.reason}")
-                                        highResFile.delete()
-                                        BurstCaptureUtils.cleanupBurstFiles(frames)
-                                        withContext(Dispatchers.Main) {
-                                            verificationError = verdict.userMessage
-                                            isProcessing = false
-                                            isCapturing = false
-                                            frozenBitmap = null
-                                        }
-                                        return@launch
-                                    }
-                                }
-
-                                // Preview ring-buffer frames are preview-resolution (628x421 observed on
-                                // T442M) — the server blur/spoof gate rejects them as BLURRY on every
-                                // attempt (C0 device test 2026-08-15). Always capture the anti-spoof burst
-                                // at full resolution via ImageCapture; buffered frames are discarded below.
-                                run {
-                                    Log.i("DocumentCapture", "Discarding ${frames.size} preview-res buffer frames, bursting full-res via ImageCapture")
-                                    // keep highResFile: passed to verifyAndHandleResult as the final burst frame
-                                    BurstCaptureUtils.cleanupBurstFiles(frames)
-                                    val fallbackFrames = BurstCaptureUtils.captureBurst(
-                                        context = context,
-                                        imageCapture = imageCapture,
-                                        frameCount = 6,
-                                        delayMs = 50
-                                    )
-                                    if (fallbackFrames.isEmpty()) {
-                                        withContext(Dispatchers.Main) {
-                                            verificationError = "Failed to capture frames. Please try again."
-                                            isProcessing = false
-                                            isCapturing = false
-                                            frozenBitmap = null
-                                        }
-                                        return@launch
-                                    }
-                                    // L-4: Apply sharpening to fallback frames — they bypass the
-                                    // ring-buffer bitmap pipeline where sharpening runs normally.
-                                    // Fallback frames are already full-resolution (from imageCapture).
-                                    withContext(Dispatchers.IO) {
-                                        fallbackFrames.forEach { file ->
-                                            try {
-                                                val bmp = BitmapFactory.decodeFile(file.path)
-                                                if (bmp != null) {
-                                                    val sharpened = ImageSharpeningUtils.applySharpeningPipeline(bmp)
-                                                    file.outputStream().use { out ->
-                                                        sharpened.compress(android.graphics.Bitmap.CompressFormat.JPEG, 95, out)
-                                                    }
-                                                    if (sharpened !== bmp) bmp.recycle()
-                                                }
-                                            } catch (e: Exception) {
-                                                Log.w("DocumentCapture", "Manual fallback: sharpening failed for ${file.name}: ${e.message}")
-                                            }
-                                        }
-                                    }
-                                    BurstCaptureUtils.debugPersistLastBurst = (context.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
-                                    BurstCaptureUtils.debugSnapshotBurst(context, fallbackFrames + listOfNotNull(highResFile))
-                                    verifyAndHandleResult(
-                                        frames = fallbackFrames,
-                                        documentType = documentType,
-                                        capturedFiles = capturedFiles,
-                                        isBackSide = isBackSide,
-                                        kycSessionId = kycSessionId,
-                                        highResFile = highResFile,
-                                        onPass = { passedFrames, burstScore ->
-                                            lastBurstScore = burstScore
-                                            view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
-                                            verificationPassed = true
-                                            burstFiles = passedFrames
-                                            previewPath = passedFrames.first().path
-                                        },
-                                        onFail = { error ->
-                                            view.performHapticFeedback(HapticFeedbackConstants.REJECT)
-                                            verificationError = error
-                                        }
-                                    )
                                     return@launch
                                 }
 
-                                // Primary path: verify pre-buffered burst frames (anti-spoofing)
-                                // and use high-res imageCapture photo as the primary document file.
-                                // FIX: Pass highResFile and kycSessionId so verifyAndHandleResult can:
-                                // (a) append it as the final burst frame for the backend,
-                                // (b) run local DocumentAntiSpoofChecker at full sensor resolution, and
-                                // (c) tie the burst session ID to the KYC session for backend correlation.
+                                // Sharpen every frame — all of them feed the server blur gate.
+                                withContext(Dispatchers.IO) {
+                                    burst.forEach { file ->
+                                        try {
+                                            val bmp = BitmapFactory.decodeFile(file.path)
+                                            if (bmp != null) {
+                                                val sharpened = ImageSharpeningUtils.applySharpeningPipeline(bmp)
+                                                file.outputStream().use { out ->
+                                                    sharpened.compress(android.graphics.Bitmap.CompressFormat.JPEG, 95, out)
+                                                }
+                                                if (sharpened !== bmp) bmp.recycle()
+                                            }
+                                        } catch (e: Exception) {
+                                            Log.w("DocumentCapture", "Manual capture: sharpening failed for ${file.name}: ${e.message}")
+                                        }
+                                    }
+                                }
+
+                                val primaryFile = burst.first()
+
+                                // Show the actual captured document in the verifying overlay.
+                                try {
+                                    val opts = android.graphics.BitmapFactory.Options().apply { inSampleSize = 4 }
+                                    val thumb = android.graphics.BitmapFactory.decodeFile(primaryFile.path, opts)
+                                    if (thumb != null) {
+                                        withContext(Dispatchers.Main) {
+                                            frozenBitmap?.recycle()
+                                            frozenBitmap = thumb
+                                        }
+                                    }
+                                } catch (e: Exception) {
+                                    Log.w("DocumentCapture", "Manual capture: frozen bitmap update skipped: ${e.message}")
+                                }
+
+                                // POST-CAPTURE QUALITY GATE on the primary frame (EXIF bake +
+                                // AE-wedge recovery, audit RC2).
+                                val verdict = validateWithAeRecovery(
+                                    context, imageCapture, primaryFile, isFrontSide = !isBackSide
+                                )
+                                if (!verdict.ok) {
+                                    Log.w("DocumentCapture", "Manual capture rejected by post-capture gate: ${verdict.reason}")
+                                    BurstCaptureUtils.cleanupBurstFiles(burst)
+                                    withContext(Dispatchers.Main) {
+                                        verificationError = verdict.userMessage
+                                        isProcessing = false
+                                        isCapturing = false
+                                        frozenBitmap = null
+                                    }
+                                    return@launch
+                                }
+
+                                // PRE-UPLOAD PRESENCE GATE (fail-open on errors): fail fast with an
+                                // honest message if the document is not in the final frames.
+                                val presenceOk = try {
+                                    val gate = MLRepository().predict(
+                                        sessionId = kycSessionId.ifBlank { "presence-gate" },
+                                        imageFile = primaryFile,
+                                        docTypeExpected = MLDocumentType.fromSdkType(documentType ?: 1),
+                                        sideExpected = if (capturedFiles.isNotEmpty()) "BACK" else "FRONT"
+                                    )
+                                    if (gate is Resource.Success) gate.data.docOk else true
+                                } catch (e: CancellationException) {
+                                    throw e
+                                } catch (e: Exception) {
+                                    Log.w("DocumentCapture", "Presence gate errored (${e.message}) — proceeding to verify-burst")
+                                    true
+                                }
+                                if (!presenceOk) {
+                                    Log.w("DocumentCapture", "Presence gate: no document in final frames — failing fast")
+                                    BurstCaptureUtils.cleanupBurstFiles(burst)
+                                    withContext(Dispatchers.Main) {
+                                        view.performHapticFeedback(HapticFeedbackConstants.REJECT)
+                                        verificationError = "The document moved out of view — keep it steady until capture finishes."
+                                        isProcessing = false
+                                        isCapturing = false
+                                        frozenBitmap = null
+                                    }
+                                    return@launch
+                                }
+
+                                BurstCaptureUtils.debugPersistLastBurst = (context.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
+                                BurstCaptureUtils.debugSnapshotBurst(context, burst)
                                 verifyAndHandleResult(
-                                    frames = frames,
+                                    frames = burst,
                                     documentType = documentType,
                                     capturedFiles = capturedFiles,
                                     isBackSide = isBackSide,
                                     kycSessionId = kycSessionId,
-                                    highResFile = highResFile,
                                     onPass = { passedFrames, burstScore ->
                                         lastBurstScore = burstScore
                                         view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
                                         verificationPassed = true
                                         burstFiles = passedFrames
-                                        // Use full-resolution imageCapture file as primary document.
-                                        // Fall back to first burst frame if high-res capture failed.
-                                        previewPath = highResFile?.takeIf { it.exists() }?.path
-                                            ?: passedFrames.first().path
+                                        previewPath = passedFrames.first().path
                                     },
                                     onFail = { error ->
-                                        highResFile?.delete()
                                         view.performHapticFeedback(HapticFeedbackConstants.REJECT)
                                         verificationError = error
                                     }

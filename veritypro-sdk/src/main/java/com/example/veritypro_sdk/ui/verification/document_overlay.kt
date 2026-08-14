@@ -219,7 +219,7 @@ fun DocumentDetectionOverlay(
             DetectionState.SEARCHING -> "Scanning… position your document" to Color.Black.copy(alpha = 0.6f)
             DetectionState.DETECTING -> "Align the document — hold steady" to GuidanceConfig.STATE_AMBER.copy(alpha = 0.9f)
             DetectionState.LOCKED -> "Hold still — capturing now" to GuidanceConfig.STATE_GREEN.copy(alpha = 0.9f)
-            DetectionState.CAPTURING -> "Capturing…" to Color.Black.copy(alpha = 0.6f)
+            DetectionState.CAPTURING -> "Hold still — capturing…" to GuidanceConfig.STATE_GREEN.copy(alpha = 0.9f)
             DetectionState.SUCCESS -> "Captured successfully!" to GuidanceConfig.STATE_GREEN.copy(alpha = 0.9f)
             DetectionState.FAILED -> "Let's try that again" to GuidanceConfig.STATE_ERROR.copy(alpha = 0.9f)
         }
