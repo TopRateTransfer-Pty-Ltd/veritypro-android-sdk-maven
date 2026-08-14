@@ -71,7 +71,14 @@ fun BurstVerificationScreen(
     var state by remember { mutableStateOf<BurstVerificationState>(BurstVerificationState.Idle) }
     var capturedFiles by remember { mutableStateOf<List<File>>(emptyList()) }
 
-    val imageCapture = remember { ImageCapture.Builder().build() }
+    // MAXIMIZE_QUALITY: burst frames feed the server anti-spoof/blur gate — the
+    // default (minimize-latency) mode on budget devices yields soft frames that
+    // the gate correctly rejects as BLURRY (T442M device test, C0 re-run).
+    val imageCapture = remember {
+        ImageCapture.Builder()
+            .setCaptureMode(ImageCapture.CAPTURE_MODE_MAXIMIZE_QUALITY)
+            .build()
+    }
     val previewView = remember {
         PreviewView(context).apply {
             implementationMode = PreviewView.ImplementationMode.COMPATIBLE
@@ -95,10 +102,15 @@ fun BurstVerificationScreen(
         }
     }
 
-    // Auto-start burst capture when screen loads
+    // Auto-start burst capture when screen loads.
+    // The camera was just re-bound for this screen, so AF/AE start from scratch:
+    // wait for the session, re-trigger 3A on the document, then give the lens
+    // time to converge BEFORE frame 1 — firing at 500ms produced 8 out-of-focus
+    // frames that the server gate rejected as BLURRY on every attempt.
     LaunchedEffect(Unit) {
-        // Small delay to let camera initialize
-        kotlinx.coroutines.delay(500)
+        kotlinx.coroutines.delay(900)          // camera session up
+        CameraUtils.kickAutoExposure()         // re-trigger AF/AE/AWB (center point)
+        kotlinx.coroutines.delay(1100)         // 3A convergence before frame 1
         startBurstVerification(
             context = context,
             imageCapture = imageCapture,
@@ -352,7 +364,10 @@ private suspend fun startBurstVerification(
             context = context,
             imageCapture = imageCapture,
             frameCount = 8,
-            delayMs = 100
+            // 250ms spacing keeps AF/AE converged across the burst window (100ms
+            // outran 3A on budget devices) and still gives the anti-spoof model
+            // temporal variety across ~2.8s.
+            delayMs = 250
         ) { current, total ->
             onStateChange(BurstVerificationState.Capturing(current, total))
         }
