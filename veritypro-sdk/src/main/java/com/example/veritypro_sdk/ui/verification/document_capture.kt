@@ -1039,6 +1039,8 @@ fun DocumentCaptureScreen(
                                                     }
                                                 }
                                             }
+                                            BurstCaptureUtils.debugPersistLastBurst = (context.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
+                                            BurstCaptureUtils.debugSnapshotBurst(context, fallbackFrames + listOfNotNull(highResFile))
                                             verifyAndHandleResult(
                                                 frames = fallbackFrames,
                                                 documentType = documentType,
@@ -1546,6 +1548,8 @@ fun DocumentCaptureScreen(
                                             }
                                         }
                                     }
+                                    BurstCaptureUtils.debugPersistLastBurst = (context.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
+                                    BurstCaptureUtils.debugSnapshotBurst(context, fallbackFrames + listOfNotNull(highResFile))
                                     verifyAndHandleResult(
                                         frames = fallbackFrames,
                                         documentType = documentType,
