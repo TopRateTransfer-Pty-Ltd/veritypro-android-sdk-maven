@@ -400,6 +400,7 @@ fun DocumentCaptureScreen(
         }
 
         val mlRepository = MLRepository()
+        var consecutiveBlackFrames = 0
         val docTypeExpected = MLDocumentType.fromSdkType(documentType ?: 1)
         Log.d("DocumentCapture", "ML Live loop started: docType=$docTypeExpected, isBackSide=$isBackSide, cameraReady=$cameraReady")
 
@@ -447,6 +448,52 @@ fun DocumentCaptureScreen(
                     // that produced blown-out captures (session 76bc252d).
                     val (sceneMedianLuma, sceneClipRatio) = analyseSceneExposure(bitmap)
                     CameraUtils.updateSceneExposure(sceneMedianLuma, sceneClipRatio)
+
+                    // BLACK-PREVIEW WATCHDOG (wedge confirmed on T442M 2026-08-15,
+                    // sessions ddb47290 x2): after repeated full-res stills the HAL
+                    // can stop delivering preview frames — the TextureView serves a
+                    // constant black frame, guidance analyses it forever (bit-
+                    // identical server logits, presence 'not_document' conf 1.0)
+                    // and the user stares at a dead screen. Scene luma is already
+                    // measured every tick; three consecutive near-black frames on
+                    // an open capture screen cannot be a real scene (even a dark
+                    // room meters above this) — rebind the camera to recover.
+                    if (sceneMedianLuma < 8) {
+                        consecutiveBlackFrames++
+                        if (consecutiveBlackFrames >= 3) {
+                            Log.e("DocumentCapture", "Black-preview watchdog: $consecutiveBlackFrames consecutive black frames (luma=$sceneMedianLuma) — rebinding camera")
+                            consecutiveBlackFrames = 0
+                            bitmap.recycle()
+                            withContext(Dispatchers.Main) {
+                                // NOTE: cameraReady stays true — this LaunchedEffect is
+                                // keyed on it, and flipping it would cancel this very
+                                // coroutine before the rebind completes. onCameraError
+                                // still flips it false (effect exits to the retry UI).
+                                CameraUtils.bindSmartCamera(
+                                    context = context,
+                                    lifecycleOwner = lifecycleOwner,
+                                    previewView = previewView,
+                                    imageCapture = imageCapture,
+                                    useDetection = false,
+                                    onFacesDetected = null,
+                                    onCameraReady = { report ->
+                                        capabilityReport = report
+                                        cameraReady = true
+                                        Log.i("DocumentCapture", "Black-preview watchdog: camera rebound OK")
+                                    },
+                                    onCameraError = { errorMsg ->
+                                        cameraErrorMessage = errorMsg
+                                        cameraReady = false
+                                    }
+                                )
+                            }
+                            delay(2000) // let the new session start delivering frames
+                            continue
+                        }
+                    } else {
+                        consecutiveBlackFrames = 0
+                    }
+
                     Log.d("DocumentCapture", "ML Live: Got bitmap ${bitmap.width}x${bitmap.height}, calling predict...")
                     withContext(Dispatchers.Default) {
                         val result = try {
@@ -999,6 +1046,11 @@ fun DocumentCaptureScreen(
                                             return@launch
                                         }
 
+                                        // Snapshot BEFORE the gates so rejected frames stay
+                                        // inspectable via adb (debug builds only).
+                                        BurstCaptureUtils.debugPersistLastBurst = (context.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
+                                        BurstCaptureUtils.debugSnapshotBurst(context, burst)
+
                                         // PRE-UPLOAD PRESENCE GATE: one fast /predict on the final
                                         // frame. If the document is not in it (user moved during the
                                         // window), fail fast with an honest message instead of feeding
@@ -1042,8 +1094,6 @@ fun DocumentCaptureScreen(
                                             return@launch
                                         }
 
-                                        BurstCaptureUtils.debugPersistLastBurst = (context.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
-                                        BurstCaptureUtils.debugSnapshotBurst(context, burst)
                                         verifyAndHandleResult(
                                             frames = burst,
                                             documentType = documentType,
@@ -1472,6 +1522,11 @@ fun DocumentCaptureScreen(
                                     return@launch
                                 }
 
+                                // Snapshot BEFORE the gates so rejected frames stay
+                                // inspectable via adb (debug builds only).
+                                BurstCaptureUtils.debugPersistLastBurst = (context.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
+                                BurstCaptureUtils.debugSnapshotBurst(context, burst)
+
                                 // PRE-UPLOAD PRESENCE GATE (fail-open on errors): fail fast with an
                                 // honest message if the document is not in the final frames.
                                 val presenceOk = try {
@@ -1501,8 +1556,6 @@ fun DocumentCaptureScreen(
                                     return@launch
                                 }
 
-                                BurstCaptureUtils.debugPersistLastBurst = (context.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
-                                BurstCaptureUtils.debugSnapshotBurst(context, burst)
                                 verifyAndHandleResult(
                                     frames = burst,
                                     documentType = documentType,
