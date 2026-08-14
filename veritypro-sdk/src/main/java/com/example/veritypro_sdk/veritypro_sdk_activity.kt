@@ -7,7 +7,6 @@ import android.util.Log
 import android.view.WindowManager
 import androidx.appcompat.app.AppCompatActivity
 import androidx.activity.compose.setContent
-import androidx.lifecycle.lifecycleScope
 import com.example.veritypro_sdk.ui.verification.VerificationScreen
 import com.example.veritypro_sdk.utils.LivenessResult
 import com.example.veritypro_sdk.utils.VerityOption
