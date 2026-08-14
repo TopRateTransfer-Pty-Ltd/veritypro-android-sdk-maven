@@ -997,9 +997,14 @@ fun DocumentCaptureScreen(
                                             }
                                         }
 
-                                        if (frames.size < 3) {
-                                            Log.w("DocumentCapture", "Auto-capture: only ${frames.size} frames, falling back to ImageCapture")
-                                            highResFile?.delete()
+                                        // Preview ring-buffer frames are preview-resolution (628x421 observed
+                                        // on T442M) — the server blur/spoof gate rejects them as BLURRY on
+                                        // every attempt (C0 device test 2026-08-15). Always capture the
+                                        // anti-spoof burst at full resolution via ImageCapture; the buffered
+                                        // preview frames are discarded below.
+                                        run {
+                                            Log.i("DocumentCapture", "Auto-capture: discarding ${frames.size} preview-res buffer frames, bursting full-res via ImageCapture")
+                                            // keep highResFile: passed to verifyAndHandleResult as the final burst frame
                                             BurstCaptureUtils.cleanupBurstFiles(frames)
                                             val fallbackFrames = BurstCaptureUtils.captureBurst(
                                                 context = context,
@@ -1040,6 +1045,7 @@ fun DocumentCaptureScreen(
                                                 capturedFiles = capturedFiles,
                                                 isBackSide = isBackSide,
                                                 kycSessionId = kycSessionId,
+                                                highResFile = highResFile,
                                                 onPass = { passedFrames, burstScore ->
                                                     lastBurstScore = burstScore
                                                     view.performHapticFeedback(android.view.HapticFeedbackConstants.CONFIRM)
@@ -1498,10 +1504,13 @@ fun DocumentCaptureScreen(
                                     }
                                 }
 
-                                if (frames.size < 3) {
-                                    // Not enough pre-buffered frames — fall back to live capture
-                                    Log.w("DocumentCapture", "Buffer had ${frames.size} frames, falling back to ImageCapture")
-                                    highResFile?.delete()
+                                // Preview ring-buffer frames are preview-resolution (628x421 observed on
+                                // T442M) — the server blur/spoof gate rejects them as BLURRY on every
+                                // attempt (C0 device test 2026-08-15). Always capture the anti-spoof burst
+                                // at full resolution via ImageCapture; buffered frames are discarded below.
+                                run {
+                                    Log.i("DocumentCapture", "Discarding ${frames.size} preview-res buffer frames, bursting full-res via ImageCapture")
+                                    // keep highResFile: passed to verifyAndHandleResult as the final burst frame
                                     BurstCaptureUtils.cleanupBurstFiles(frames)
                                     val fallbackFrames = BurstCaptureUtils.captureBurst(
                                         context = context,
@@ -1543,6 +1552,7 @@ fun DocumentCaptureScreen(
                                         capturedFiles = capturedFiles,
                                         isBackSide = isBackSide,
                                         kycSessionId = kycSessionId,
+                                        highResFile = highResFile,
                                         onPass = { passedFrames, burstScore ->
                                             lastBurstScore = burstScore
                                             view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
