@@ -56,6 +56,22 @@ class MotionAnalysisCollector(context: Context) : SensorEventListener {
         val motionScore: Float,
     )
 
+    /**
+     * Instantaneous shake estimate: gyro magnitude averaged over the most
+     * recent ~10 samples. Used by the shutter motion gate to fire the burst
+     * at a still moment. Returns 0 when no gyro data is available (sensor
+     * absent → the gate is a no-op, fail open).
+     */
+    fun recentGyroMagnitude(): Float {
+        val snapshot = synchronized(lock) { gyroSamples.takeLast(10) }
+        if (snapshot.isEmpty()) return 0f
+        var sum = 0f
+        for (s in snapshot) {
+            sum += sqrt(s[0] * s[0] + s[1] * s[1] + s[2] * s[2])
+        }
+        return sum / snapshot.size
+    }
+
     fun stop(): MotionResult {
         val (durationMs, accelSnapshot, gyroSnapshot) = synchronized(lock) {
             running = false

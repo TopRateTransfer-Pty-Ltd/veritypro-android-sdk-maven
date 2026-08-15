@@ -225,6 +225,13 @@ fun DocumentCaptureScreen(
 
     // ML Detection State
     var mlPassed by remember { mutableStateOf(false) }
+    // Pre-shutter quality gates (P0 first-attempt-pass work, 2026-08-15):
+    // block the LOCK — never the user — when the preview is clearly too soft
+    // to survive the server blur gate, and auto-assist with the torch in low
+    // light. Defaults are permissive: gates only catch definite failures.
+    var sharpnessOk by remember { mutableStateOf(true) }
+    var previewSharpness by remember { mutableStateOf(999.0) }
+    var autoTorchTried by remember { mutableStateOf(false) }
     var mlConfidence by remember { mutableStateOf(0f) }
     var mlHint by remember { mutableStateOf("") }
     // Debounce for not-ok hints: a single soft preview frame can misclassify
@@ -248,7 +255,7 @@ fun DocumentCaptureScreen(
 
     // Animated colors for smooth transitions
     // Determine if in locked state (mlPassed + optimal distance)
-    val isLocked = mlPassed && distanceGuidance?.isOptimal == true
+    val isLocked = mlPassed && distanceGuidance?.isOptimal == true && sharpnessOk
     val isDetecting = mlPassed && !isLocked
 
     val buttonBorderColor by animateColorAsState(
@@ -494,7 +501,32 @@ fun DocumentCaptureScreen(
                         consecutiveBlackFrames = 0
                     }
 
-                    Log.d("DocumentCapture", "ML Live: Got bitmap ${bitmap.width}x${bitmap.height}, calling predict...")
+                    // PRE-SHUTTER SHARPNESS GATE: measure preview sharpness on-device
+                    // every tick. Server data (2026-08-15): captures at Laplacian
+                    // 34-192 (analysis size) all failed the blur gate, passes were
+                    // 795-933. Blocking the LOCK on a clearly-soft preview prevents
+                    // the reject at the source — a not-yet-locked overlay is
+                    // invisible friction, a post-capture reject costs ~15s and
+                    // user morale. Threshold is deliberately permissive (catches
+                    // definite mush only) until funnel data calibrates it.
+                    previewSharpness = measurePreviewSharpness(bitmap)
+                    sharpnessOk = previewSharpness >= GuidanceConfig.PREVIEW_SHARPNESS_MIN
+                    if (!sharpnessOk) {
+                        Log.d("DocumentCapture", "Sharpness gate: preview too soft (%.1f < %.1f) — blocking lock".format(previewSharpness, GuidanceConfig.PREVIEW_SHARPNESS_MIN))
+                    }
+
+                    // AUTO-TORCH: genuinely dark scene + no glare + torch off →
+                    // switch it on once per screen instance. The existing glare
+                    // logic still auto-disables it if it causes blowout.
+                    if (!autoTorchTried && !torchEnabled && !hasGlareLocal &&
+                        sceneMedianLuma in 1 until GuidanceConfig.AUTO_TORCH_LUMA_BELOW
+                    ) {
+                        autoTorchTried = true
+                        Log.i("DocumentCapture", "Auto-torch: dark scene (luma=$sceneMedianLuma) — enabling torch")
+                        CameraUtils.setTorch(true)
+                    }
+
+                    Log.d("DocumentCapture", "ML Live: Got bitmap ${bitmap.width}x${bitmap.height}, sharpness=%.1f, calling predict...".format(previewSharpness))
                     withContext(Dispatchers.Default) {
                         val result = try {
                             mlRepository.predict(
@@ -575,7 +607,12 @@ fun DocumentCaptureScreen(
                                     } else {
                                         null
                                     }
-                                    Log.d("DocumentCapture", "Distance: docOk=${response.docOk}, optimal=${distanceGuidance?.isOptimal}")
+                                    // Actionable hint when only the sharpness gate is
+                                    // blocking the lock (document found, frame too soft).
+                                    if (response.docOk && !glarePresent && !sharpnessOk && mlHint.isEmpty()) {
+                                        mlHint = "Hold steadier — or add more light"
+                                    }
+                                    Log.d("DocumentCapture", "Distance: docOk=${response.docOk}, optimal=${distanceGuidance?.isOptimal}, sharpnessOk=$sharpnessOk")
                                 }
                                 is Resource.Error -> {
                                     Log.e("DocumentCapture", "ML Live ERROR: ${result.message}")
@@ -858,7 +895,7 @@ fun DocumentCaptureScreen(
                 verificationPassed -> DetectionState.SUCCESS
                 verificationError.isNotEmpty() -> DetectionState.FAILED
                 isCapturing || isProcessing -> DetectionState.CAPTURING
-                mlPassed && distanceGuidance?.isOptimal == true -> DetectionState.LOCKED
+                mlPassed && distanceGuidance?.isOptimal == true && sharpnessOk -> DetectionState.LOCKED
                 mlPassed -> DetectionState.DETECTING
                 else -> DetectionState.SEARCHING
             }
@@ -952,6 +989,21 @@ fun DocumentCaptureScreen(
                                         // the server gate flags them BLURRY. Recycle immediately.
                                         withContext(Dispatchers.IO) {
                                             bufferedBitmaps.forEach { runCatching { it.recycle() } }
+                                        }
+
+                                        // MOTION GATE: fire the shutter at a still moment. Hand
+                                        // shake is the dominant blur source on slow sensors —
+                                        // wait (bounded) for gyro magnitude to settle before the
+                                        // burst. Worst case adds MOTION_GATE_MAX_WAIT_MS.
+                                        val motionWaitStart = System.currentTimeMillis()
+                                        while (motionCollector.recentGyroMagnitude() > GuidanceConfig.MOTION_GATE_GYRO_MAX &&
+                                            System.currentTimeMillis() - motionWaitStart < GuidanceConfig.MOTION_GATE_MAX_WAIT_MS
+                                        ) {
+                                            delay(50)
+                                        }
+                                        val motionWaited = System.currentTimeMillis() - motionWaitStart
+                                        if (motionWaited > 100) {
+                                            Log.d("DocumentCapture", "Motion gate: waited ${motionWaited}ms for stillness (gyro=${motionCollector.recentGyroMagnitude()})")
                                         }
 
                                         // Capture the burst NOW. 3 frames = server minimum for
@@ -1435,6 +1487,16 @@ fun DocumentCaptureScreen(
                             try {
                                 withContext(Dispatchers.IO) {
                                     bufferedBitmaps.forEach { runCatching { it.recycle() } }
+                                }
+
+                                // MOTION GATE (same as auto path): bounded wait for a
+                                // still moment before the burst — hand shake at the tap
+                                // is the dominant blur source.
+                                val motionWaitStart = System.currentTimeMillis()
+                                while (motionCollector.recentGyroMagnitude() > GuidanceConfig.MOTION_GATE_GYRO_MAX &&
+                                    System.currentTimeMillis() - motionWaitStart < GuidanceConfig.MOTION_GATE_MAX_WAIT_MS
+                                ) {
+                                    delay(50)
                                 }
 
                                 // Capture the burst NOW. 3 frames = server minimum for
@@ -1958,6 +2020,55 @@ private fun analyseSceneExposure(bitmap: Bitmap): Pair<Int, Float> {
     }
     return median to clipped.toFloat() / pixels.size
 }
+
+/**
+ * On-device preview sharpness: variance of a 4-neighbour Laplacian over a
+ * downscaled grayscale copy (~200px wide, few ms of CPU). Pure Kotlin — no
+ * OpenCV dependency (native libs were purged from the SDK). Absolute values
+ * are resolution-dependent; the gate threshold is calibrated for this
+ * measurement, not comparable to the server's full-size Laplacian numbers.
+ */
+private fun measurePreviewSharpness(bitmap: Bitmap): Double {
+    return try {
+        val targetW = 200
+        val scale = targetW.toFloat() / bitmap.width
+        val w = targetW
+        val h = (bitmap.height * scale).toInt().coerceAtLeast(2)
+        val scaled = Bitmap.createScaledBitmap(bitmap, w, h, true)
+        val pixels = IntArray(w * h)
+        scaled.getPixels(pixels, 0, w, 0, 0, w, h)
+        if (scaled !== bitmap) scaled.recycle()
+
+        // Grayscale luma
+        val gray = IntArray(w * h)
+        for (i in pixels.indices) {
+            val p = pixels[i]
+            gray[i] = ((p shr 16 and 0xFF) * 299 + (p shr 8 and 0xFF) * 587 + (p and 0xFF) * 114) / 1000
+        }
+
+        // 4-neighbour Laplacian variance
+        var sum = 0.0
+        var sumSq = 0.0
+        var n = 0
+        for (y in 1 until h - 1) {
+            val row = y * w
+            for (x in 1 until w - 1) {
+                val i = row + x
+                val lap = (gray[i - 1] + gray[i + 1] + gray[i - w] + gray[i + w] - 4 * gray[i]).toDouble()
+                sum += lap
+                sumSq += lap * lap
+                n++
+            }
+        }
+        if (n == 0) return 999.0
+        val mean = sum / n
+        sumSq / n - mean * mean
+    } catch (e: Exception) {
+        Log.w("DocumentCapture", "Sharpness measurement failed: ${e.message}")
+        999.0 // fail open — never block the lock on a measurement error
+    }
+}
+
 
 private fun detectGlare(bitmap: Bitmap): Boolean {
     val w = 64
