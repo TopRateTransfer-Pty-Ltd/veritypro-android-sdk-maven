@@ -34,5 +34,7 @@ android {
 
 dependencies {
     implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2'
+    // SEC-024: EncryptedSharedPreferences for secure visitor_id storage
+    implementation 'androidx.security:security-crypto:1.1.0-alpha06'
     // NO CameraX, NO Compose, NO ML dependencies
 }
