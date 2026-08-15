@@ -1138,21 +1138,25 @@ fun DocumentCaptureScreen(
                                             return@launch
                                         }
 
-                                        // Sharpen every frame — all of them feed the server blur gate.
+                                        // LATENCY FIX (2026-08-15, measured 10.3s client post-
+                                        // processing): sharpen ONLY the primary frame — it is the
+                                        // one shown in preview and uploaded as the document (OCR
+                                        // benefits). The forensic burst frames are raw-sharp
+                                        // (Laplacian ~1000 on-device) and artificial sharpening
+                                        // artifacts can feed tamper/spoof false positives.
                                         withContext(Dispatchers.IO) {
-                                            burst.forEach { file ->
-                                                try {
-                                                    val bmp = BitmapFactory.decodeFile(file.path)
-                                                    if (bmp != null) {
-                                                        val sharpened = ImageSharpeningUtils.applySharpeningPipeline(bmp)
-                                                        file.outputStream().use { out ->
-                                                            sharpened.compress(android.graphics.Bitmap.CompressFormat.JPEG, 95, out)
-                                                        }
-                                                        if (sharpened !== bmp) bmp.recycle()
+                                            val file = burst.first()
+                                            try {
+                                                val bmp = BitmapFactory.decodeFile(file.path)
+                                                if (bmp != null) {
+                                                    val sharpened = ImageSharpeningUtils.applySharpeningPipeline(bmp)
+                                                    file.outputStream().use { out ->
+                                                        sharpened.compress(android.graphics.Bitmap.CompressFormat.JPEG, 95, out)
                                                     }
-                                                } catch (e: Exception) {
-                                                    Log.w("DocumentCapture", "Auto-capture: sharpening failed for ${file.name}: ${e.message}")
+                                                    if (sharpened !== bmp) bmp.recycle()
                                                 }
+                                            } catch (e: Exception) {
+                                                Log.w("DocumentCapture", "Auto-capture: sharpening failed for ${file.name}: ${e.message}")
                                             }
                                         }
 
@@ -1206,21 +1210,15 @@ fun DocumentCaptureScreen(
                                         // twice) — backs skip the gate and go straight to
                                         // verify-burst. Model retraining with back-side data is the
                                         // real fix (data-science ticket).
+                                        // LATENCY FIX: local geometry detector on the captured
+                                        // frame replaces the server /predict round-trip (~1.5s).
+                                        // Same fail-open semantics; verify-burst stays authority.
                                         val presenceOk = if (isBackSide) true else try {
-                                            // Decode downsampled — the bitmap overload re-encodes at
-                                            // 640px/q65 (~100-200KB) vs the raw file's 1-3MB. A 40ms
-                                            // presence check must not cost a full-res upload.
-                                            val gateOpts = android.graphics.BitmapFactory.Options().apply { inSampleSize = 2 }
+                                            val gateOpts = android.graphics.BitmapFactory.Options().apply { inSampleSize = 4 }
                                             val gateBmp = android.graphics.BitmapFactory.decodeFile(primaryFile.path, gateOpts)
                                             if (gateBmp != null) {
                                                 try {
-                                                    val gate = MLRepository().predict(
-                                                        sessionId = kycSessionId.ifBlank { "presence-gate" },
-                                                        bitmap = gateBmp,
-                                                        docTypeExpected = MLDocumentType.fromSdkType(documentType ?: 1),
-                                                        sideExpected = if (capturedFiles.isNotEmpty()) "BACK" else "FRONT"
-                                                    )
-                                                    if (gate is Resource.Success) gate.data.docOk else true
+                                                    DocumentFrameDetector.analyse(gateBmp).present
                                                 } finally {
                                                     gateBmp.recycle()
                                                 }
@@ -1636,21 +1634,25 @@ fun DocumentCaptureScreen(
                                     return@launch
                                 }
 
-                                // Sharpen every frame — all of them feed the server blur gate.
+                                // LATENCY FIX (2026-08-15, measured 10.3s client post-
+                                // processing): sharpen ONLY the primary frame — it is the
+                                // one shown in preview and uploaded as the document (OCR
+                                // benefits). The forensic burst frames are raw-sharp
+                                // (Laplacian ~1000 on-device) and artificial sharpening
+                                // artifacts can feed tamper/spoof false positives.
                                 withContext(Dispatchers.IO) {
-                                    burst.forEach { file ->
-                                        try {
-                                            val bmp = BitmapFactory.decodeFile(file.path)
-                                            if (bmp != null) {
-                                                val sharpened = ImageSharpeningUtils.applySharpeningPipeline(bmp)
-                                                file.outputStream().use { out ->
-                                                    sharpened.compress(android.graphics.Bitmap.CompressFormat.JPEG, 95, out)
-                                                }
-                                                if (sharpened !== bmp) bmp.recycle()
+                                    val file = burst.first()
+                                    try {
+                                        val bmp = BitmapFactory.decodeFile(file.path)
+                                        if (bmp != null) {
+                                            val sharpened = ImageSharpeningUtils.applySharpeningPipeline(bmp)
+                                            file.outputStream().use { out ->
+                                                sharpened.compress(android.graphics.Bitmap.CompressFormat.JPEG, 95, out)
                                             }
-                                        } catch (e: Exception) {
-                                            Log.w("DocumentCapture", "Manual capture: sharpening failed for ${file.name}: ${e.message}")
+                                            if (sharpened !== bmp) bmp.recycle()
                                         }
+                                    } catch (e: Exception) {
+                                        Log.w("DocumentCapture", "Manual capture: sharpening failed for ${file.name}: ${e.message}")
                                     }
                                 }
 
@@ -1696,14 +1698,18 @@ fun DocumentCaptureScreen(
                                 // honest message if the document is not in the final frames.
                                 // FRONT SIDE ONLY — presence model false-rejects licence backs
                                 // (see auto-capture path note).
+                                // LATENCY FIX: local geometry detector replaces the server
+                                // /predict round-trip. Fail-open; verify-burst stays authority.
                                 val presenceOk = if (isBackSide) true else try {
-                                    val gate = MLRepository().predict(
-                                        sessionId = kycSessionId.ifBlank { "presence-gate" },
-                                        imageFile = primaryFile,
-                                        docTypeExpected = MLDocumentType.fromSdkType(documentType ?: 1),
-                                        sideExpected = if (capturedFiles.isNotEmpty()) "BACK" else "FRONT"
-                                    )
-                                    if (gate is Resource.Success) gate.data.docOk else true
+                                    val gateOpts = android.graphics.BitmapFactory.Options().apply { inSampleSize = 4 }
+                                    val gateBmp = android.graphics.BitmapFactory.decodeFile(primaryFile.path, gateOpts)
+                                    if (gateBmp != null) {
+                                        try {
+                                            DocumentFrameDetector.analyse(gateBmp).present
+                                        } finally {
+                                            gateBmp.recycle()
+                                        }
+                                    } else true
                                 } catch (e: CancellationException) {
                                     throw e
                                 } catch (e: Exception) {

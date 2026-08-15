@@ -49,8 +49,11 @@ class MLRepository {
          * backend downscales every frame anyway, so 1280 px keeps more detail
          * than the server will ever use while cutting the payload to ~2-3 MB.
          */
-        private const val MAX_BURST_FRAME_DIMENSION = 1280
-        private const val JPEG_QUALITY_BURST = 85
+        // 2026-08-15 latency fix: server analyses at 768px (LLM_ANALYSIS_IMAGE_SIZE)
+        // — 896px keeps headroom above that while halving the upload payload
+        // (~2MB -> ~0.8MB; measured ~10s of a 25s verdict was uplink time).
+        private const val MAX_BURST_FRAME_DIMENSION = 896
+        private const val JPEG_QUALITY_BURST = 80
     }
 
     /**
