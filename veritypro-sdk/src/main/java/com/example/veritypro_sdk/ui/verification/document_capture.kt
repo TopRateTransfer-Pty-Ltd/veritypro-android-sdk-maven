@@ -1056,7 +1056,13 @@ fun DocumentCaptureScreen(
                                         // window), fail fast with an honest message instead of feeding
                                         // room photos to the expensive forensic pipeline. Gate errors
                                         // fail open — verify-burst remains the authority.
-                                        val presenceOk = try {
+                                        // FRONT SIDE ONLY: the presence model systematically scores
+                                        // licence BACKS as not_document (device test 2026-08-15:
+                                        // a sharp, perfectly framed NT licence back was rejected
+                                        // twice) — backs skip the gate and go straight to
+                                        // verify-burst. Model retraining with back-side data is the
+                                        // real fix (data-science ticket).
+                                        val presenceOk = if (isBackSide) true else try {
                                             // Decode downsampled — the bitmap overload re-encodes at
                                             // 640px/q65 (~100-200KB) vs the raw file's 1-3MB. A 40ms
                                             // presence check must not cost a full-res upload.
@@ -1529,7 +1535,9 @@ fun DocumentCaptureScreen(
 
                                 // PRE-UPLOAD PRESENCE GATE (fail-open on errors): fail fast with an
                                 // honest message if the document is not in the final frames.
-                                val presenceOk = try {
+                                // FRONT SIDE ONLY — presence model false-rejects licence backs
+                                // (see auto-capture path note).
+                                val presenceOk = if (isBackSide) true else try {
                                     val gate = MLRepository().predict(
                                         sessionId = kycSessionId.ifBlank { "presence-gate" },
                                         imageFile = primaryFile,
