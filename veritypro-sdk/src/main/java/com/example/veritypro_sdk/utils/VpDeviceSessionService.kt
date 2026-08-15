@@ -31,6 +31,13 @@ private const val MINT_PATH = "/intelligence/api/v1/device/sessions"
  */
 object VpDeviceSessionService {
 
+    // Overridden in unit tests only — null means use real network. Set this
+    // before calling collectAndSubmit() in tests so the OkHttpClient is never
+    // initialised (Android stubs used in unit tests have null Build.* fields
+    // which cause OkHttp 5.x platform detection to throw).
+    @Volatile
+    internal var testHandler: ((okhttp3.Request) -> okhttp3.Response)? = null
+
     private val httpClient: OkHttpClient by lazy {
         OkHttpClient.Builder()
             .connectTimeout(8, TimeUnit.SECONDS)
@@ -88,7 +95,10 @@ object VpDeviceSessionService {
                 .addHeader("x-api-key", apiKey)
                 .build()
 
-            httpClient.newCall(request).execute().use { res ->
+            // In unit tests testHandler is set — bypass OkHttpClient entirely so
+            // Android stubs with null Build.* fields never trigger OkHttp init.
+            val response = testHandler?.invoke(request) ?: httpClient.newCall(request).execute()
+            response.use { res ->
                 if (!res.isSuccessful) {
                     Log.w(TAG, "HTTP ${res.code} from device sessions endpoint")
                     return@withContext null
@@ -110,7 +120,7 @@ object VpDeviceSessionService {
         val wm = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
         val metrics = DisplayMetrics()
         wm.defaultDisplay.getMetrics(metrics)
-        val locale = context.resources.configuration.locales[0]
+        val locale = try { context.resources.configuration.locales[0] } catch (_: Exception) { java.util.Locale.getDefault() }
 
         return JSONObject().apply {
             put("integration_id", integrationId)
@@ -128,6 +138,7 @@ object VpDeviceSessionService {
                 put("tz_offset", tz.rawOffset / 60_000)
                 put("language", locale.language)
                 put("touch_points", 5)
+                getBatteryLevel(context)?.let { put("battery", it) }
                 put("is_jailbroken", isRooted())
                 put("is_emulator", isEmulator())
                 put("is_frida_detected", isFridaDetected())
@@ -138,6 +149,12 @@ object VpDeviceSessionService {
         }
     }
 
+    private fun getBatteryLevel(context: Context): Double? = try {
+        val bm = context.getSystemService(Context.BATTERY_SERVICE) as? android.os.BatteryManager
+        val level = bm?.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY) ?: -1
+        if (level >= 0) level.toDouble() / 100.0 else null
+    } catch (_: Exception) { null }
+
     private fun isRooted(): Boolean = try {
         listOf(
             "/su", "/system/bin/su", "/system/xbin/su", "/sbin/su",
@@ -146,14 +163,15 @@ object VpDeviceSessionService {
         ).any { java.io.File(it).exists() }
     } catch (_: Exception) { false }
 
-    private fun isEmulator(): Boolean =
-        Build.FINGERPRINT.startsWith("generic") ||
-        Build.FINGERPRINT.startsWith("unknown") ||
-        Build.MODEL.contains("google_sdk") ||
-        Build.MODEL.contains("Emulator") ||
-        Build.MODEL.contains("Android SDK built for x86") ||
-        Build.MANUFACTURER.contains("Genymotion") ||
-        (Build.BRAND.startsWith("generic") && Build.DEVICE.startsWith("generic"))
+    private fun isEmulator(): Boolean = try {
+        Build.FINGERPRINT?.startsWith("generic") == true ||
+        Build.FINGERPRINT?.startsWith("unknown") == true ||
+        Build.MODEL?.contains("google_sdk") == true ||
+        Build.MODEL?.contains("Emulator") == true ||
+        Build.MODEL?.contains("Android SDK built for x86") == true ||
+        Build.MANUFACTURER?.contains("Genymotion") == true ||
+        (Build.BRAND?.startsWith("generic") == true && Build.DEVICE?.startsWith("generic") == true)
+    } catch (_: Exception) { false }
 
     private fun isFridaDetected(): Boolean = try {
         java.io.File("/proc/self/maps").readText()
