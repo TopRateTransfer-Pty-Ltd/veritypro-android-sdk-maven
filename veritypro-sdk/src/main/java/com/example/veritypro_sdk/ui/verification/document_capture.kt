@@ -239,7 +239,7 @@ fun DocumentCaptureScreen(
     // light. Defaults are permissive: gates only catch definite failures.
     var sharpnessOk by remember { mutableStateOf(true) }
     var previewSharpness by remember { mutableStateOf(999.0) }
-    var autoTorchTried by remember { mutableStateOf(false) }
+
     var mlConfidence by remember { mutableStateOf(0f) }
     var mlHint by remember { mutableStateOf("") }
     // Debounce for not-ok hints: a single soft preview frame can misclassify
@@ -429,8 +429,11 @@ fun DocumentCaptureScreen(
         val docTypeExpected = MLDocumentType.fromSdkType(documentType ?: 1)
         Log.d("DocumentCapture", "ML Live loop started: docType=$docTypeExpected, isBackSide=$isBackSide, cameraReady=$cameraReady")
 
-        // Additional warm-up delay to ensure camera stream is stable
-        delay(500)
+        // Warm-up delay: after a full-teardown (cameraGeneration > 0) the HAL
+        // takes ~2-3s to start delivering real frames. Without enough grace time
+        // the watchdog counts startup black frames and immediately re-enters the
+        // rebind loop. On first bind 500ms is enough; after teardown use 3s.
+        delay(if (cameraGeneration > 0) 3000L else 500L)
 
         while (isActive) {
             delay(1000) // Analyze every 1 second (faster feedback)
@@ -549,17 +552,6 @@ fun DocumentCaptureScreen(
                     sharpnessOk = previewSharpness >= GuidanceConfig.PREVIEW_SHARPNESS_MIN
                     if (!sharpnessOk) {
                         Log.d("DocumentCapture", "Sharpness gate: preview too soft (%.1f < %.1f) — blocking lock".format(previewSharpness, GuidanceConfig.PREVIEW_SHARPNESS_MIN))
-                    }
-
-                    // AUTO-TORCH: genuinely dark scene + no glare + torch off →
-                    // switch it on once per screen instance. The existing glare
-                    // logic still auto-disables it if it causes blowout.
-                    if (!autoTorchTried && !torchEnabled && !hasGlareLocal &&
-                        sceneMedianLuma in 1 until GuidanceConfig.AUTO_TORCH_LUMA_BELOW
-                    ) {
-                        autoTorchTried = true
-                        Log.i("DocumentCapture", "Auto-torch: dark scene (luma=$sceneMedianLuma) — enabling torch")
-                        CameraUtils.setTorch(true)
                     }
 
                     // ON-DEVICE PRESENCE (YOLO retirement program, 2026-08-15):
