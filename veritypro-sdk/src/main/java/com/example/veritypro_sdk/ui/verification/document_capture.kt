@@ -57,6 +57,7 @@ import com.example.veritypro_sdk.utils.CameraCapabilityReport
 import com.example.veritypro_sdk.utils.CameraUtils
 import com.example.veritypro_sdk.utils.DistanceGuidance
 import com.example.veritypro_sdk.utils.DistanceState
+import com.example.veritypro_sdk.utils.DocumentFrameDetector
 import com.example.veritypro_sdk.utils.DocumentAntiSpoofChecker
 import com.example.veritypro_sdk.utils.FocusMode
 import com.example.veritypro_sdk.utils.GuidanceConfig
@@ -560,6 +561,46 @@ fun DocumentCaptureScreen(
                         Log.i("DocumentCapture", "Auto-torch: dark scene (luma=$sceneMedianLuma) — enabling torch")
                         CameraUtils.setTorch(true)
                     }
+
+                    // ON-DEVICE PRESENCE (YOLO retirement program, 2026-08-15):
+                    // geometry-based detector, no network, no training bias.
+                    val localDoc = DocumentFrameDetector.analyse(bitmap)
+
+                    if (currentSideExpected == "BACK") {
+                        // BACK: the local detector is the guidance authority —
+                        // the server doc_presence model false-rejects genuine
+                        // backs (front-biased training data) and its flapping
+                        // kept breaking the lock. No server call at all here;
+                        // verify-burst (side-aware) remains the accept/reject
+                        // authority for the captured frames.
+                        bitmap.recycle()
+                        withContext(Dispatchers.Main) {
+                            if (!isProcessing && !isCapturing) {
+                                mlPassed = localDoc.present && !hasGlareLocal
+                                mlConfidence = if (localDoc.present) 0.9f else 0f
+                                distanceGuidance = if (localDoc.present && !hasGlareLocal) {
+                                    DistanceGuidance(
+                                        state = DistanceState.PERFECT,
+                                        frameCoverage = GuidanceConfig.OPTIMAL_COVERAGE_TARGET,
+                                        message = "Document detected",
+                                        isOptimal = true
+                                    )
+                                } else null
+                                mlHint = when {
+                                    hasGlareLocal -> "Glare detected — tilt the card or move from the light"
+                                    !localDoc.present -> "Position the back of your card in the frame"
+                                    else -> ""
+                                }
+                            }
+                        }
+                        Log.d("DocumentCapture", "Local presence (BACK): present=${localDoc.present} boundary=%.2f detail=%.0f luma=${localDoc.interiorLuma}".format(localDoc.boundaryScore, localDoc.interiorDetail))
+                        isAnalyzing = false
+                        continue
+                    }
+
+                    // FRONT: server guidance stays authoritative (stable all day);
+                    // local detector logs in shadow mode to build calibration data.
+                    Log.d("DocumentCapture", "Local presence shadow (FRONT): present=${localDoc.present} boundary=%.2f detail=%.0f luma=${localDoc.interiorLuma}".format(localDoc.boundaryScore, localDoc.interiorDetail))
 
                     Log.d("DocumentCapture", "ML Live: Got bitmap ${bitmap.width}x${bitmap.height}, sharpness=%.1f, calling predict...".format(previewSharpness))
                     withContext(Dispatchers.Default) {
