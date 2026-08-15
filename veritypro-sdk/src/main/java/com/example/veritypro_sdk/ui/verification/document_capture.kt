@@ -119,11 +119,18 @@ fun DocumentCaptureScreen(
     // withVideoCapture=true: CAPTURE_MODE_ZERO_SHUTTER_LAG is incompatible with VideoCapture
     // bound in the same session — it causes CameraX to reset the video recording via
     // resetDirectly, dropping VideoRecordEvent.Finalize. MINIMIZE_LATENCY is used instead.
-    val imageCapture = remember { CameraUtils.createSmartImageCapture(context, withVideoCapture = true) }
+    // Camera generation: incremented by the black-preview watchdog's FULL
+    // TEARDOWN escalation. On the T442M HAL the wedge survives unbindAll()+
+    // rebind with the same use-case/surface objects (observed 2026-08-15:
+    // rebind 'succeeds', frames stay luma=0) — only recreating the
+    // ImageCapture + PreviewView (like exiting and re-entering the screen)
+    // clears it. Everything camera-owned is keyed on this value.
+    var cameraGeneration by remember { mutableStateOf(0) }
+    val imageCapture = remember(cameraGeneration) { CameraUtils.createSmartImageCapture(context, withVideoCapture = true) }
 
     // Per-module session video recording: rear camera, 720p HD, 3 min / 30 MB cap
     val videoRecorder = remember { VerityVideoRecorder(context) }
-    val videoCapture: VideoCapture<Recorder> = remember { videoRecorder.buildVideoCapture() }
+    val videoCapture: VideoCapture<Recorder> = remember(cameraGeneration) { videoRecorder.buildVideoCapture() }
 
     val capturedFiles = remember { mutableStateListOf<File>() }
 
@@ -167,7 +174,7 @@ fun DocumentCaptureScreen(
     var distanceGuidance by remember { mutableStateOf<DistanceGuidance?>(null) }
     var cameraErrorMessage by remember { mutableStateOf<String?>(null) }
 
-    val previewView = remember {
+    val previewView = remember(cameraGeneration) {
         PreviewView(context).apply {
             implementationMode = PreviewView.ImplementationMode.COMPATIBLE
             scaleType = PreviewView.ScaleType.FILL_CENTER
@@ -277,8 +284,14 @@ fun DocumentCaptureScreen(
         label = "buttonInnerColor"
     )
 
-    // Bind smart camera with automatic capability detection
-    LaunchedEffect(Unit) {
+    // Bind smart camera with automatic capability detection. Keyed on
+    // cameraGeneration so the watchdog's full-teardown escalation re-binds
+    // the freshly created use cases.
+    LaunchedEffect(cameraGeneration) {
+        if (cameraGeneration > 0) {
+            cameraReady = false
+            Log.w("DocumentCapture", "Camera generation $cameraGeneration — full teardown rebind")
+        }
         Log.d("DocumentCapture", "Smart camera binding started...")
         CameraUtils.bindSmartCamera(
             context = context,
@@ -408,6 +421,10 @@ fun DocumentCaptureScreen(
 
         val mlRepository = MLRepository()
         var consecutiveBlackFrames = 0
+        // Simple-rebind attempts within this effect instance. A full teardown
+        // (cameraGeneration++) recreates previewView, restarting this effect
+        // and naturally resetting the counter.
+        var watchdogRebinds = 0
         val docTypeExpected = MLDocumentType.fromSdkType(documentType ?: 1)
         Log.d("DocumentCapture", "ML Live loop started: docType=$docTypeExpected, isBackSide=$isBackSide, cameraReady=$cameraReady")
 
@@ -468,9 +485,26 @@ fun DocumentCaptureScreen(
                     if (sceneMedianLuma < 8) {
                         consecutiveBlackFrames++
                         if (consecutiveBlackFrames >= 3) {
-                            Log.e("DocumentCapture", "Black-preview watchdog: $consecutiveBlackFrames consecutive black frames (luma=$sceneMedianLuma) — rebinding camera")
                             consecutiveBlackFrames = 0
                             bitmap.recycle()
+                            // ESCALATION: a simple rebind reuses the same use-case
+                            // and surface objects — on the T442M HAL the wedge
+                            // survives that (rebind reports OK, frames stay black).
+                            // After 2 failed simple rebinds, do the FULL teardown:
+                            // bump cameraGeneration → new ImageCapture + new
+                            // PreviewView + fresh bind (equivalent to exiting and
+                            // re-entering the screen, which is known to clear it).
+                            if (watchdogRebinds >= 2) {
+                                Log.e("DocumentCapture", "Black-preview watchdog: simple rebinds failed ($watchdogRebinds) — FULL camera teardown (generation ${cameraGeneration + 1})")
+                                withContext(Dispatchers.Main) {
+                                    cameraGeneration++
+                                }
+                                // This effect is about to be cancelled (keyed on the
+                                // recreated previewView) — stop the loop cleanly.
+                                break
+                            }
+                            watchdogRebinds++
+                            Log.e("DocumentCapture", "Black-preview watchdog: 3 consecutive black frames (luma=$sceneMedianLuma) — rebinding camera (attempt $watchdogRebinds)")
                             withContext(Dispatchers.Main) {
                                 // NOTE: cameraReady stays true — this LaunchedEffect is
                                 // keyed on it, and flipping it would cancel this very
@@ -499,6 +533,7 @@ fun DocumentCaptureScreen(
                         }
                     } else {
                         consecutiveBlackFrames = 0
+                        watchdogRebinds = 0 // healthy frame — reset escalation ladder
                     }
 
                     // PRE-SHUTTER SHARPNESS GATE: measure preview sharpness on-device
@@ -1266,13 +1301,18 @@ fun DocumentCaptureScreen(
                         }
                     }
                 } else {
-                    // Camera preview
-                    AndroidView(
-                        factory = { previewView },
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .clip(RoundedCornerShape(ScaleUtil.scaleWidth(8.dp)))
-                    )
+                    // Camera preview. key(previewView): AndroidView caches its
+                    // factory result — a watchdog full-teardown creates a NEW
+                    // PreviewView, and without the key the old (wedged) surface
+                    // would stay on screen.
+                    androidx.compose.runtime.key(previewView) {
+                        AndroidView(
+                            factory = { previewView },
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .clip(RoundedCornerShape(ScaleUtil.scaleWidth(8.dp)))
+                        )
+                    }
                 }
 
                 // Frozen frame + processing overlay with hero thumbnail + sub-steps
