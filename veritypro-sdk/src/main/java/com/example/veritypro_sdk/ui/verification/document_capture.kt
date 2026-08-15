@@ -605,7 +605,16 @@ fun DocumentCaptureScreen(
                                     // GLARE GATE: a glared frame is never locked — capturing
                                     // it would yield an unreadable document. Block the lock
                                     // and keep guiding the user until the frame reads cleanly.
-                                    mlPassed = response.docOk && !glarePresent
+                                    // BACK-SIDE LOCK DEBOUNCE: the presence model flaps on
+                                    // genuine card backs (device test 2026-08-15 17:16:
+                                    // docOk oscillated 0.93-0.97 → 0.0 every 2-3 ticks on a
+                                    // steady, sharp back), constantly breaking the lock and
+                                    // restarting the countdown. On the back side, one
+                                    // isolated not-ok tick does not drop the lock — two
+                                    // consecutive misses do. Fronts are unchanged.
+                                    val effectiveDocOk = response.docOk ||
+                                        (isBackSide && mlPassed && mlNotOkStreak < 1)
+                                    mlPassed = effectiveDocOk && !glarePresent
                                     mlConfidence = response.confidence ?: 0f
                                     // C-2: store structured quality signals for checklist display
                                     mlQualitySignals = response.qualitySignals
@@ -954,7 +963,14 @@ fun DocumentCaptureScreen(
                     // capture. On network failure or a late verdict, capture
                     // proceeds — burst verify remains the accept authority
                     // (fail toward the server, never silently accept).
-                    launch(Dispatchers.Default) {
+                    // BACK SIDE: skip the countdown veto entirely. Its first server
+                    // stage is the presence model, which false-rejects genuine
+                    // licence backs (device test 2026-08-15 17:16: real back,
+                    // sharpness 400-1200, cancelled twice with 'No document
+                    // detected'). Same decision as the post-capture presence gate:
+                    // verify-burst (side-aware since doc-ml PR #24) is the
+                    // authority for backs.
+                    if (!isBackSide) launch(Dispatchers.Default) {
                         val verdictRepo = MLRepository()
                         val verdictBitmap =
                             withContext(Dispatchers.Main) { previewView.bitmap }
