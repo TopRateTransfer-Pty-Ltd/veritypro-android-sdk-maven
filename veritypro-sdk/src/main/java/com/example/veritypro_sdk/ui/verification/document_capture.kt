@@ -499,6 +499,17 @@ fun DocumentCaptureScreen(
                             // PreviewView + fresh bind (equivalent to exiting and
                             // re-entering the screen, which is known to clear it).
                             if (watchdogRebinds >= 2) {
+                                if (cameraGeneration >= 3) {
+                                    // Camera is permanently wedged after 3 full teardowns
+                                    // on this device — stop cycling and surface a clear
+                                    // error so the user can close and reopen the screen.
+                                    Log.e("DocumentCapture", "Black-preview watchdog: camera permanently wedged after $cameraGeneration teardowns — giving up")
+                                    withContext(Dispatchers.Main) {
+                                        cameraErrorMessage = "Camera is unavailable. Please close the screen and try again."
+                                        cameraReady = false
+                                    }
+                                    return@LaunchedEffect
+                                }
                                 Log.e("DocumentCapture", "Black-preview watchdog: simple rebinds failed ($watchdogRebinds) — FULL camera teardown (generation ${cameraGeneration + 1})")
                                 withContext(Dispatchers.Main) {
                                     cameraGeneration++
