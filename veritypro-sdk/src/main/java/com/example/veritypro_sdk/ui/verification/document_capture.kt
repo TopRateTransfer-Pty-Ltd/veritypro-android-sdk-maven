@@ -41,11 +41,14 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import android.view.HapticFeedbackConstants
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
+import com.example.veritypro_sdk.services.MLCaptureState
 import com.example.veritypro_sdk.services.MLDecision
+import com.example.veritypro_sdk.services.MLDeviceSignals
 import com.example.veritypro_sdk.services.MLDocumentType
 import com.example.veritypro_sdk.services.MLQualitySignals
 import com.example.veritypro_sdk.services.MLRepository
 import com.example.veritypro_sdk.services.MLSpoofType
+import com.example.veritypro_sdk.services.MLV2Repository
 import com.example.veritypro_sdk.services.Resource
 import com.example.veritypro_sdk.services.sanitizeMLHint
 import com.example.veritypro_sdk.utils.AutoZoomController
@@ -1676,6 +1679,23 @@ fun DocumentCaptureScreen(
  *
  * Runs on a background dispatcher -- safe to call from a coroutine.
  */
+/**
+ * V2 capture-verification toggle (device-first CaptureVerification).
+ *
+ * LOCAL/DEV only. When `useV2CaptureVerify` is true, the capture-moment
+ * verification routes through POST /v2/kyc/doc/capture-verify (primary still +
+ * PAD frames → VERIFIED | RETRY | REJECTED | MANUAL_REVIEW) instead of the v1
+ * /verify-burst path. Default FALSE — v1 stays the shipped behaviour. Flip at
+ * runtime for local testing (no SDK rebuild), e.g. from the integrator app:
+ *   V2CaptureConfig.useV2CaptureVerify = true
+ * and point the SDK at the local backend:
+ *   MLRetrofitInstance.configure("http://<dev-ip>:8001/")
+ */
+object V2CaptureConfig {
+    @Volatile
+    var useV2CaptureVerify: Boolean = false
+}
+
 private suspend fun verifyAndHandleResult(
     frames: List<File>,
     documentType: Int?,
@@ -1728,6 +1748,73 @@ private suspend fun verifyAndHandleResult(
     } else {
         frames  // fallback: no high-res available, use preview frames
     }
+
+    // ── V2 DEVICE-FIRST PATH (LOCAL/DEV, toggled) ──────────────────────────
+    // Route capture-moment verification through /v2/kyc/doc/capture-verify:
+    // primary still + >=3 distinct PAD frames → explicit VERIFIED/RETRY/
+    // REJECTED/MANUAL_REVIEW. The server is the sole authority; we render the
+    // returned state and never upgrade a non-VERIFIED verdict.
+    if (V2CaptureConfig.useV2CaptureVerify) {
+        val v2 = MLV2Repository()
+        val primaryBmp = (highResFile?.takeIf { it.exists() } ?: frames.firstOrNull())
+            ?.let { runCatching { BitmapFactory.decodeFile(it.path) }.getOrNull() }
+        // PAD frames: the preview ring-buffer (multiple distinct frames).
+        val padBmps = frames.mapNotNull { runCatching { BitmapFactory.decodeFile(it.path) }.getOrNull() }
+        try {
+            if (primaryBmp == null || padBmps.size < MLV2Repository.MIN_PAD_FRAMES) {
+                Log.w("DocumentCapture", "V2: insufficient evidence (primary=${primaryBmp != null}, pad=${padBmps.size}) — retry")
+                withContext(Dispatchers.Main) { onFail("Not enough frames captured. Please hold steady and retake.") }
+                return
+            }
+            val signals = MLDeviceSignals(captureMode = "AUTO", deviceModel = android.os.Build.MODEL)
+            val res = v2.captureVerify(
+                captureSessionId = antiSpoofSessionId,
+                side = sideExpected,
+                docTypeExpected = docTypeExpected,
+                primary = primaryBmp,
+                padFrames = padBmps,
+                deviceSignals = signals,
+            )
+            withContext(Dispatchers.Main) {
+                when (res) {
+                    is Resource.Success -> {
+                        val r = res.data
+                        Log.d("DocumentCapture", "V2 capture-verify: state=${r.state} reason=${r.reasonCode} decisionId=${r.decisionId}")
+                        when (r.state) {
+                            // Accepted (or accepted-pending human review) → proceed.
+                            MLCaptureState.VERIFIED, MLCaptureState.MANUAL_REVIEW ->
+                                onPass(burstFrames, r.decision.confidence?.toDouble() ?: 0.0)
+                            // Recoverable → re-capture with the server's guidance.
+                            MLCaptureState.RETRY -> {
+                                BurstCaptureUtils.cleanupBurstFiles(frames)
+                                onFail(sanitizeMLHint(r.retry?.hint ?: "Please retake the document."))
+                            }
+                            // Terminal fail (spoof/tamper/invalid).
+                            else -> {
+                                BurstCaptureUtils.cleanupBurstFiles(frames)
+                                onFail(MLSpoofType.toUserMessage(r.decision.spoof?.decision ?: r.reasonCode))
+                            }
+                        }
+                    }
+                    is Resource.Error -> {
+                        // Fail-closed: v2 verification unavailable must not become a silent pass.
+                        Log.e("DocumentCapture", "V2 capture-verify error: ${res.message}")
+                        BurstCaptureUtils.cleanupBurstFiles(frames)
+                        onFail("Verification service unavailable. Please check connection and retry.")
+                    }
+                    else -> {
+                        BurstCaptureUtils.cleanupBurstFiles(frames)
+                        onFail("Verification failed. Please try again.")
+                    }
+                }
+            }
+        } finally {
+            if (primaryBmp != null && primaryBmp != padBmps.firstOrNull()) primaryBmp.recycle()
+            padBmps.forEach { it.recycle() }
+        }
+        return
+    }
+    // ── end V2 path ────────────────────────────────────────────────────────
 
     Log.d("DocumentCapture", "Calling verify-burst: ${burstFrames.size} frames " +
             "(high-res only: ${highResFile?.exists() == true}), " +
