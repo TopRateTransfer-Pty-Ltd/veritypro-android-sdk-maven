@@ -479,10 +479,25 @@ fun DocumentCaptureScreen(
                                     val glarePresent = hasGlareLocal ||
                                         hintLc.contains("glare") || hintLc.contains("reflect")
 
-                                    // GLARE GATE: a glared frame is never locked — capturing
-                                    // it would yield an unreadable document. Block the lock
-                                    // and keep guiding the user until the frame reads cleanly.
-                                    mlPassed = response.docOk && !glarePresent
+                                    // GLARE = SOFT GUIDANCE, NOT A HARD GATE.
+                                    // Root cause (glossy-laminate deadlock): the on-device
+                                    // detectGlare() heuristic fires on the specular sheen of any
+                                    // laminated ID (e.g. AU driver licences) on essentially every
+                                    // frame. Gating the lock on it (docOk && !glarePresent) left
+                                    // mlPassed permanently false — LOCKED never engaged, auto-
+                                    // capture never counted down, and the manual button stayed
+                                    // disabled. The document was detected perfectly (docOk=true,
+                                    // conf≈0.95) yet could never be captured.
+                                    //
+                                    // The backend's docOk verdict is the single source of truth
+                                    // for frame extractability: it confirms a document is present,
+                                    // of the expected type/side, and readable. The backend folds
+                                    // its bbox-scoped quality assessment (glare/sharpness over the
+                                    // document region) into docOk, and the burst stage then runs
+                                    // the rigorous sharpness (Laplacian) + anti-spoof checks that
+                                    // are the real quality gate. Glare only guides the user (below)
+                                    // — it no longer independently blocks capture on-device.
+                                    mlPassed = response.docOk
                                     mlConfidence = response.confidence ?: 0f
                                     // C-2: store structured quality signals for checklist display
                                     mlQualitySignals = response.qualitySignals
@@ -508,12 +523,18 @@ fun DocumentCaptureScreen(
                                         mlHint = "Glare detected — tilt the document or move from the light"
                                     }
 
-                                    // Distance guidance: docOk AND glare-free means ready.
-                                    distanceGuidance = if (response.docOk && !glarePresent) {
+                                    // Readiness follows the backend's docOk authority. Glare is
+                                    // surfaced as a guidance hint (above) but does not veto the
+                                    // lock — the on-device blowout heuristic is a crude whole-frame
+                                    // signal that false-positives on legitimate laminate sheen, and
+                                    // gating on it deadlocked glossy IDs. The multi-frame burst
+                                    // stage (Laplacian sharpness + anti-spoof) is the authoritative
+                                    // quality gate and rejects genuinely unreadable captures.
+                                    distanceGuidance = if (response.docOk) {
                                         DistanceGuidance(
                                             state = DistanceState.PERFECT,
                                             frameCoverage = GuidanceConfig.OPTIMAL_COVERAGE_TARGET,
-                                            message = "Document detected",
+                                            message = if (glarePresent) "Document detected — reduce glare for best quality" else "Document detected",
                                             isOptimal = true
                                         )
                                     } else {
