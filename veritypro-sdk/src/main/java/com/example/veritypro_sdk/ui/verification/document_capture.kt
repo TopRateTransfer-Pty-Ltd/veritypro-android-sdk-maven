@@ -1696,18 +1696,20 @@ private suspend fun verifyAndHandleResult(
     }
 
 
-    // FIX: Append the high-res capture as the final frame in the burst payload when available.
-    // The ring buffer contains preview-resolution bitmaps (~screen-size). Including the actual
-    // ZSL/high-res photo gives the backend one full-sensor-resolution frame for texture,
-    // moiré, and edge-sharpness analysis that preview bitmaps cannot reliably provide.
+    // FIX: Send ONLY the high-res ImageCapture frame to verify-burst.
+    // Sending preview ring-buffer frames (628x421, JPEG-95) alongside the high-res frame caused
+    // the server's anti-spoof gate to return SPOOF_SUSPECTED (conf=0.85) — preview frames have
+    // low Laplacian sharpness and JPEG block artefacts that the server correctly identifies as
+    // screen-replay or printed-copy characteristics. The high-res frame (2448x1642+) has
+    // sufficient resolution and texture for accurate anti-spoof analysis on its own.
     val burstFrames = if (highResFile != null && highResFile.exists()) {
-        frames + highResFile
+        listOf(highResFile)
     } else {
-        frames
+        frames  // fallback: no high-res available, use preview frames
     }
 
     Log.d("DocumentCapture", "Calling verify-burst: ${burstFrames.size} frames " +
-            "(${frames.size} preview + ${if (highResFile != null && highResFile.exists()) 1 else 0} high-res), " +
+            "(high-res only: ${highResFile?.exists() == true}), " +
             "docType=$docTypeExpected, side=$sideExpected")
 
     // FIX: Run local anti-spoof analysis on the HIGH-RESOLUTION file when available.

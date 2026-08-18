@@ -156,8 +156,8 @@ class MLRepository {
         sideExpected: String? = null
     ): Resource<MLVerifyBurstResponse> {
         return try {
-            if (frames.size < 3) {
-                return Resource.Error("At least 3 frames required for verification")
+            if (frames.isEmpty()) {
+                return Resource.Error("At least 1 frame required for verification")
             }
 
             // FIX: Process files sequentially to avoid loading all 6 high-res JPEGs
@@ -213,8 +213,8 @@ class MLRepository {
         sideExpected: String? = null
     ): Resource<MLVerifyBurstResponse> {
         return try {
-            if (bitmaps.size < 3) {
-                return Resource.Error("At least 3 frames required for verification")
+            if (bitmaps.isEmpty()) {
+                return Resource.Error("At least 1 frame required for verification")
             }
 
             // BUG A-03 FIX: Process bitmaps sequentially to match the fix already applied
