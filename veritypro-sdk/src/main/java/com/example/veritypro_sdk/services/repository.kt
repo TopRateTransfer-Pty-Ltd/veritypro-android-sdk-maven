@@ -34,15 +34,21 @@ class ApiRepository {
             }
         }
 
-        // Try standard { "Error": { "message": "..." } } format
+        // Log the raw body so staging errors are always visible in logcat
+        Log.e("Verity", "HTTP $statusCode raw error body: $errorBody")
+
         try {
             val json = JSONObject(errorBody)
+            // VerityPro backend format: { "StatusMessage": "..." }
+            val statusMsg = json.optString("StatusMessage", "")
+            if (statusMsg.isNotEmpty()) return statusMsg
+            // Standard { "Error": { "message": "..." } } format
             val errorObj = json.optJSONObject("Error")
             if (errorObj != null) {
                 val msg = errorObj.optString("message", "")
                 if (msg.isNotEmpty()) return msg
             }
-            // Try ASP.NET validation format: { "title": "...", "errors": { "Field": ["msg"] } }
+            // ASP.NET validation format: { "title": "...", "errors": { "Field": ["msg"] } }
             val errorsObj = json.optJSONObject("errors")
             if (errorsObj != null) {
                 val messages = mutableListOf<String>()

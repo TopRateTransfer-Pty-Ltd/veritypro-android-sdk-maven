@@ -71,6 +71,34 @@ class VerityProViewModel(
     val livenessVerificationState: StateFlow<LivenessVerificationState> = _livenessVerificationState
 
     // ========================================================================
+    // CAPTURED DOCUMENT STORAGE — survives screen rotation
+    // ========================================================================
+    // Composable state (remember {}) is wiped on configuration change. File
+    // paths are cheap to persist and the files themselves stay on disk, so we
+    // store them here and fall back to these when the composable state is null.
+
+    private var _capturedFrontPath: String? = null
+    private var _capturedBackPath: String? = null
+    private var _capturedVideoPath: String? = null
+
+    fun setCapturedDocumentPaths(front: String?, back: String?, video: String?) {
+        _capturedFrontPath = front
+        _capturedBackPath = back
+        _capturedVideoPath = video
+    }
+
+    fun getCapturedFrontFile(): File? = _capturedFrontPath?.let { File(it).takeIf { f -> f.exists() } }
+    fun getCapturedBackFile(): File? = _capturedBackPath?.let { File(it).takeIf { f -> f.exists() } }
+    fun getCapturedVideoFile(): File? = _capturedVideoPath?.let { File(it).takeIf { f -> f.exists() } }
+    fun hasCapturedDocuments(): Boolean = _capturedFrontPath != null
+
+    fun clearCapturedDocumentPaths() {
+        _capturedFrontPath = null
+        _capturedBackPath = null
+        _capturedVideoPath = null
+    }
+
+    // ========================================================================
     // ML BACKEND STATE
     // ========================================================================
 

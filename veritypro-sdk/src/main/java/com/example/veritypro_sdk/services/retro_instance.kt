@@ -71,7 +71,8 @@ object MLRetrofitInstance {
         "https://api.skylinefare.com/",
         "http://10.0.2.2:",      // Android emulator → host localhost
         "http://localhost:",
-        "http://127.0.0.1:"
+        "http://127.0.0.1:",
+        "http://192.168."        // LAN — local dev on physical device
     )
 
     private var mlBaseUrl: String = ML_BASE_URL
