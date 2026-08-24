@@ -507,11 +507,23 @@ fun DocumentCaptureScreen(
                                     // Hint debounce: only surface a not-ok hint after 2
                                     // consecutive not-ok frames — one soft preview frame can
                                     // misclassify and flash "wrong document" (device test E8).
+                                    // Back-side threshold is higher (4 frames) because the
+                                    // TFLite presence model was trained on front-facing images
+                                    // and regularly under-scores back-side frames (no portrait).
+                                    val isCapturingBack = currentSideExpected == "BACK"
                                     mlNotOkStreak = if (!response.docOk) mlNotOkStreak + 1 else 0
-                                    mlHint = if (!response.docOk && mlNotOkStreak >= 2) {
-                                        sanitizeMLHint(response.hint ?: "")
-                                    } else {
-                                        ""
+                                    val streakThreshold = if (isCapturingBack) 4 else 2
+                                    mlHint = when {
+                                        response.docOk -> ""
+                                        mlNotOkStreak < streakThreshold -> ""
+                                        // Back-side NO_DOCUMENT is a presence-model false positive —
+                                        // the document IS there; the model just can't see it without
+                                        // a portrait. Give the customer correct positioning guidance,
+                                        // not an alarming "does not appear to be a document" message.
+                                        isCapturingBack && (response.hint.contains("No document", ignoreCase = true) ||
+                                            response.hint.contains("hold your ID", ignoreCase = true)) ->
+                                            "Keep the back of your document centered and steady"
+                                        else -> sanitizeMLHint(response.hint ?: "")
                                     }
                                     Log.d("DocumentCapture", "ML Live SUCCESS: docOk=${response.docOk}, glare=$glarePresent, conf=$mlConfidence")
 
