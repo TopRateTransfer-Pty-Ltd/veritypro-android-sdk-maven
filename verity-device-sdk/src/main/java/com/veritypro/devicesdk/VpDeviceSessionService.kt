@@ -1,17 +1,18 @@
 package com.veritypro.devicesdk
 
 import android.content.Context
-import android.content.SharedPreferences
 import android.os.Build
+import androidx.security.crypto.EncryptedSharedPreferences
+import androidx.security.crypto.MasterKey
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.io.OutputStreamWriter
-import java.net.HttpURLConnection
 import java.net.URL
 import java.util.Locale
 import java.util.TimeZone
 import java.util.UUID
+import javax.net.ssl.HttpsURLConnection
 
 /**
  * Collects mobile device signals and submits them to POST /aml-intelligence/api/v1/device/sessions.
@@ -102,13 +103,21 @@ object VpDeviceSessionService {
             val base = if (baseUrl.endsWith("/")) baseUrl.dropLast(1) else baseUrl
             val url = URL("$base/aml-intelligence/api/v1/device/sessions")
 
-            val conn = url.openConnection() as HttpURLConnection
-            conn.requestMethod = "POST"
-            conn.setRequestProperty("Content-Type", "application/json")
-            conn.setRequestProperty("x-api-key", apiKey)
-            conn.doOutput = true
-            conn.connectTimeout = 8_000
-            conn.readTimeout = 8_000
+            // SEC-025: Use HttpsURLConnection with system CA validation.
+            // HttpsURLConnection (not HttpURLConnection) enforces TLS and validates the
+            // server certificate against the device's trusted CA store.
+            // On Android 7.0+ (API 24+) the system CA store excludes user-installed CAs
+            // from trusted network traffic by default (per android:networkSecurityConfig)
+            // unless the app explicitly allows them — providing strong MITM resistance
+            // without explicit cert pinning.
+            val conn = (url.openConnection() as HttpsURLConnection).apply {
+                requestMethod = "POST"
+                setRequestProperty("Content-Type", "application/json")
+                setRequestProperty("x-api-key", apiKey)
+                doOutput = true
+                connectTimeout = 8_000
+                readTimeout = 8_000
+            }
 
             OutputStreamWriter(conn.outputStream).use { it.write(body) }
 
@@ -122,7 +131,19 @@ object VpDeviceSessionService {
     }
 
     private fun getOrCreateVisitorId(context: Context): String {
-        val prefs: SharedPreferences = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        // SEC-024: Use EncryptedSharedPreferences (Android Keystore-backed AES-256-GCM)
+        // instead of plain SharedPreferences. Plain SharedPreferences stores values in an
+        // unencrypted XML file readable on rooted devices or via ADB backup.
+        val masterKey = MasterKey.Builder(context)
+            .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+            .build()
+        val prefs = EncryptedSharedPreferences.create(
+            context,
+            PREFS_NAME,
+            masterKey,
+            EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+            EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+        )
         val existing = prefs.getString(VISITOR_ID_KEY, null)
         if (existing != null) return existing
         val vid = UUID.randomUUID().toString()

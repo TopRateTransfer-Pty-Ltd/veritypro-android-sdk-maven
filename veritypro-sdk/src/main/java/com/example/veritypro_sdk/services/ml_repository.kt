@@ -1,6 +1,7 @@
 package com.example.veritypro_sdk.services
 
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.util.Base64
 import android.util.Log
 import kotlinx.coroutines.CancellationException
@@ -39,6 +40,22 @@ class MLRepository {
          * base64 payload from ~3-5MB to ~100-200KB per frame.
          */
         private const val MAX_LIVE_FRAME_DIMENSION = 640
+
+        /**
+         * Maximum dimension for burst/file frames submitted for anti-spoof verification.
+         * The backend anti-spoof model resizes all frames to 320 px internally; sending
+         * the raw camera JPEG (up to 12 MP, ~3–10 MB) wastes ~40 s of upload time for
+         * 7 frames on a mobile uplink. 1024 px gives the backend enough headroom if its
+         * resize target ever increases, while cutting payload from ~3-10 MB to ~150-400 KB.
+         */
+        private const val MAX_BURST_FRAME_DIMENSION = 1024
+
+        /**
+         * JPEG quality for burst frames. Slightly higher than live (65 %) to preserve
+         * texture detail used by the anti-spoof model, but well below the original raw
+         * camera JPEG quality (~95 %).
+         */
+        private const val JPEG_QUALITY_BURST = 80
     }
 
     /**
@@ -156,8 +173,8 @@ class MLRepository {
         sideExpected: String? = null
     ): Resource<MLVerifyBurstResponse> {
         return try {
-            if (frames.size < 3) {
-                return Resource.Error("At least 3 frames required for verification")
+            if (frames.isEmpty()) {
+                return Resource.Error("At least 1 frame required for verification")
             }
 
             // FIX: Process files sequentially to avoid loading all 6 high-res JPEGs
@@ -213,8 +230,8 @@ class MLRepository {
         sideExpected: String? = null
     ): Resource<MLVerifyBurstResponse> {
         return try {
-            if (bitmaps.size < 3) {
-                return Resource.Error("At least 3 frames required for verification")
+            if (bitmaps.isEmpty()) {
+                return Resource.Error("At least 1 frame required for verification")
             }
 
             // BUG A-03 FIX: Process bitmaps sequentially to match the fix already applied
@@ -339,21 +356,40 @@ class MLRepository {
     // ========================================================================
 
     /**
-     * Convert image file to base64 string
+     * Convert image file to base64 string for burst/anti-spoof submission.
+     *
+     * Previously sent raw camera JPEG bytes without downscaling (~3–10 MB per frame,
+     * ~40 s upload for 7 frames). Now decodes to Bitmap, downscales to at most
+     * MAX_BURST_FRAME_DIMENSION on the longest edge, and re-encodes at JPEG_QUALITY_BURST.
+     * The backend resizes all burst frames to 320 px internally so no detail is lost.
+     *
+     * Fallback: if BitmapFactory cannot decode the file (corrupt/unsupported format)
+     * the raw bytes are sent unchanged, preserving pre-fix behaviour.
      */
     private fun fileToBase64(file: File): String {
-        val bytes = file.readBytes()
-        return Base64.encodeToString(bytes, Base64.NO_WRAP)
+        val bitmap = BitmapFactory.decodeFile(file.absolutePath)
+            ?: return Base64.encodeToString(file.readBytes(), Base64.NO_WRAP)
+        val scaled = downscaleBitmap(bitmap, MAX_BURST_FRAME_DIMENSION)
+        if (scaled !== bitmap) bitmap.recycle()
+        val out = ByteArrayOutputStream()
+        scaled.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY_BURST, out)
+        scaled.recycle()
+        return Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP)
     }
 
     /**
-     * Convert bitmap to base64 JPEG string (full quality, used for burst verify submissions).
+     * Convert bitmap to base64 JPEG string for burst verify submissions.
+     *
+     * Previously encoded at full bitmap resolution (JPEG_QUALITY 85 %). Now
+     * downscales to MAX_BURST_FRAME_DIMENSION before encoding to match the
+     * same payload reduction applied to file-based burst frames above.
      */
     private fun bitmapToBase64(bitmap: Bitmap): String {
+        val scaled = downscaleBitmap(bitmap, MAX_BURST_FRAME_DIMENSION)
         val outputStream = ByteArrayOutputStream()
-        bitmap.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, outputStream)
-        val bytes = outputStream.toByteArray()
-        return Base64.encodeToString(bytes, Base64.NO_WRAP)
+        scaled.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY_BURST, outputStream)
+        if (scaled !== bitmap) scaled.recycle()
+        return Base64.encodeToString(outputStream.toByteArray(), Base64.NO_WRAP)
     }
 
     /**

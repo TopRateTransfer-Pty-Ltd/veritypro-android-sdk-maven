@@ -41,11 +41,14 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import android.view.HapticFeedbackConstants
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
+import com.example.veritypro_sdk.services.MLCaptureState
 import com.example.veritypro_sdk.services.MLDecision
+import com.example.veritypro_sdk.services.MLDeviceSignals
 import com.example.veritypro_sdk.services.MLDocumentType
 import com.example.veritypro_sdk.services.MLQualitySignals
 import com.example.veritypro_sdk.services.MLRepository
 import com.example.veritypro_sdk.services.MLSpoofType
+import com.example.veritypro_sdk.services.MLV2Repository
 import com.example.veritypro_sdk.services.Resource
 import com.example.veritypro_sdk.services.sanitizeMLHint
 import com.example.veritypro_sdk.utils.AutoZoomController
@@ -479,21 +482,48 @@ fun DocumentCaptureScreen(
                                     val glarePresent = hasGlareLocal ||
                                         hintLc.contains("glare") || hintLc.contains("reflect")
 
-                                    // GLARE GATE: a glared frame is never locked — capturing
-                                    // it would yield an unreadable document. Block the lock
-                                    // and keep guiding the user until the frame reads cleanly.
-                                    mlPassed = response.docOk && !glarePresent
+                                    // GLARE = SOFT GUIDANCE, NOT A HARD GATE.
+                                    // Root cause (glossy-laminate deadlock): the on-device
+                                    // detectGlare() heuristic fires on the specular sheen of any
+                                    // laminated ID (e.g. AU driver licences) on essentially every
+                                    // frame. Gating the lock on it (docOk && !glarePresent) left
+                                    // mlPassed permanently false — LOCKED never engaged, auto-
+                                    // capture never counted down, and the manual button stayed
+                                    // disabled. The document was detected perfectly (docOk=true,
+                                    // conf≈0.95) yet could never be captured.
+                                    //
+                                    // The backend's docOk verdict is the single source of truth
+                                    // for frame extractability: it confirms a document is present,
+                                    // of the expected type/side, and readable. The backend folds
+                                    // its bbox-scoped quality assessment (glare/sharpness over the
+                                    // document region) into docOk, and the burst stage then runs
+                                    // the rigorous sharpness (Laplacian) + anti-spoof checks that
+                                    // are the real quality gate. Glare only guides the user (below)
+                                    // — it no longer independently blocks capture on-device.
+                                    mlPassed = response.docOk
                                     mlConfidence = response.confidence ?: 0f
                                     // C-2: store structured quality signals for checklist display
                                     mlQualitySignals = response.qualitySignals
                                     // Hint debounce: only surface a not-ok hint after 2
                                     // consecutive not-ok frames — one soft preview frame can
                                     // misclassify and flash "wrong document" (device test E8).
+                                    // Back-side threshold is higher (4 frames) because the
+                                    // TFLite presence model was trained on front-facing images
+                                    // and regularly under-scores back-side frames (no portrait).
+                                    val isCapturingBack = currentSideExpected == "BACK"
                                     mlNotOkStreak = if (!response.docOk) mlNotOkStreak + 1 else 0
-                                    mlHint = if (!response.docOk && mlNotOkStreak >= 2) {
-                                        sanitizeMLHint(response.hint ?: "")
-                                    } else {
-                                        ""
+                                    val streakThreshold = if (isCapturingBack) 4 else 2
+                                    mlHint = when {
+                                        response.docOk -> ""
+                                        mlNotOkStreak < streakThreshold -> ""
+                                        // Back-side NO_DOCUMENT is a presence-model false positive —
+                                        // the document IS there; the model just can't see it without
+                                        // a portrait. Give the customer correct positioning guidance,
+                                        // not an alarming "does not appear to be a document" message.
+                                        isCapturingBack && (response.hint.contains("No document", ignoreCase = true) ||
+                                            response.hint.contains("hold your ID", ignoreCase = true)) ->
+                                            "Keep the back of your document centered and steady"
+                                        else -> sanitizeMLHint(response.hint ?: "")
                                     }
                                     Log.d("DocumentCapture", "ML Live SUCCESS: docOk=${response.docOk}, glare=$glarePresent, conf=$mlConfidence")
 
@@ -508,12 +538,18 @@ fun DocumentCaptureScreen(
                                         mlHint = "Glare detected — tilt the document or move from the light"
                                     }
 
-                                    // Distance guidance: docOk AND glare-free means ready.
-                                    distanceGuidance = if (response.docOk && !glarePresent) {
+                                    // Readiness follows the backend's docOk authority. Glare is
+                                    // surfaced as a guidance hint (above) but does not veto the
+                                    // lock — the on-device blowout heuristic is a crude whole-frame
+                                    // signal that false-positives on legitimate laminate sheen, and
+                                    // gating on it deadlocked glossy IDs. The multi-frame burst
+                                    // stage (Laplacian sharpness + anti-spoof) is the authoritative
+                                    // quality gate and rejects genuinely unreadable captures.
+                                    distanceGuidance = if (response.docOk) {
                                         DistanceGuidance(
                                             state = DistanceState.PERFECT,
                                             frameCoverage = GuidanceConfig.OPTIMAL_COVERAGE_TARGET,
-                                            message = "Document detected",
+                                            message = if (glarePresent) "Document detected — reduce glare for best quality" else "Document detected",
                                             isOptimal = true
                                         )
                                     } else {
@@ -1655,6 +1691,23 @@ fun DocumentCaptureScreen(
  *
  * Runs on a background dispatcher -- safe to call from a coroutine.
  */
+/**
+ * V2 capture-verification toggle (device-first CaptureVerification).
+ *
+ * LOCAL/DEV only. When `useV2CaptureVerify` is true, the capture-moment
+ * verification routes through POST /v2/kyc/doc/capture-verify (primary still +
+ * PAD frames → VERIFIED | RETRY | REJECTED | MANUAL_REVIEW) instead of the v1
+ * /verify-burst path. Default FALSE — v1 stays the shipped behaviour. Flip at
+ * runtime for local testing (no SDK rebuild), e.g. from the integrator app:
+ *   V2CaptureConfig.useV2CaptureVerify = true
+ * and point the SDK at the local backend:
+ *   MLRetrofitInstance.configure("http://<dev-ip>:8001/")
+ */
+object V2CaptureConfig {
+    @Volatile
+    var useV2CaptureVerify: Boolean = false
+}
+
 private suspend fun verifyAndHandleResult(
     frames: List<File>,
     documentType: Int?,
@@ -1696,18 +1749,87 @@ private suspend fun verifyAndHandleResult(
     }
 
 
-    // FIX: Append the high-res capture as the final frame in the burst payload when available.
-    // The ring buffer contains preview-resolution bitmaps (~screen-size). Including the actual
-    // ZSL/high-res photo gives the backend one full-sensor-resolution frame for texture,
-    // moiré, and edge-sharpness analysis that preview bitmaps cannot reliably provide.
+    // FIX: Send ONLY the high-res ImageCapture frame to verify-burst.
+    // Sending preview ring-buffer frames (628x421, JPEG-95) alongside the high-res frame caused
+    // the server's anti-spoof gate to return SPOOF_SUSPECTED (conf=0.85) — preview frames have
+    // low Laplacian sharpness and JPEG block artefacts that the server correctly identifies as
+    // screen-replay or printed-copy characteristics. The high-res frame (2448x1642+) has
+    // sufficient resolution and texture for accurate anti-spoof analysis on its own.
     val burstFrames = if (highResFile != null && highResFile.exists()) {
-        frames + highResFile
+        listOf(highResFile)
     } else {
-        frames
+        frames  // fallback: no high-res available, use preview frames
     }
 
+    // ── V2 DEVICE-FIRST PATH (LOCAL/DEV, toggled) ──────────────────────────
+    // Route capture-moment verification through /v2/kyc/doc/capture-verify:
+    // primary still + >=3 distinct PAD frames → explicit VERIFIED/RETRY/
+    // REJECTED/MANUAL_REVIEW. The server is the sole authority; we render the
+    // returned state and never upgrade a non-VERIFIED verdict.
+    if (V2CaptureConfig.useV2CaptureVerify) {
+        val v2 = MLV2Repository()
+        val primaryBmp = (highResFile?.takeIf { it.exists() } ?: frames.firstOrNull())
+            ?.let { runCatching { BitmapFactory.decodeFile(it.path) }.getOrNull() }
+        // PAD frames: the preview ring-buffer (multiple distinct frames).
+        val padBmps = frames.mapNotNull { runCatching { BitmapFactory.decodeFile(it.path) }.getOrNull() }
+        try {
+            if (primaryBmp == null || padBmps.size < MLV2Repository.MIN_PAD_FRAMES) {
+                Log.w("DocumentCapture", "V2: insufficient evidence (primary=${primaryBmp != null}, pad=${padBmps.size}) — retry")
+                withContext(Dispatchers.Main) { onFail("Not enough frames captured. Please hold steady and retake.") }
+                return
+            }
+            val signals = MLDeviceSignals(captureMode = "AUTO", deviceModel = android.os.Build.MODEL)
+            val res = v2.captureVerify(
+                captureSessionId = antiSpoofSessionId,
+                side = sideExpected,
+                docTypeExpected = docTypeExpected,
+                primary = primaryBmp,
+                padFrames = padBmps,
+                deviceSignals = signals,
+            )
+            withContext(Dispatchers.Main) {
+                when (res) {
+                    is Resource.Success -> {
+                        val r = res.data
+                        Log.d("DocumentCapture", "V2 capture-verify: state=${r.state} reason=${r.reasonCode} decisionId=${r.decisionId}")
+                        when (r.state) {
+                            // Accepted (or accepted-pending human review) → proceed.
+                            MLCaptureState.VERIFIED, MLCaptureState.MANUAL_REVIEW ->
+                                onPass(burstFrames, r.decision.confidence?.toDouble() ?: 0.0)
+                            // Recoverable → re-capture with the server's guidance.
+                            MLCaptureState.RETRY -> {
+                                BurstCaptureUtils.cleanupBurstFiles(frames)
+                                onFail(sanitizeMLHint(r.retry?.hint ?: "Please retake the document."))
+                            }
+                            // Terminal fail (spoof/tamper/invalid).
+                            else -> {
+                                BurstCaptureUtils.cleanupBurstFiles(frames)
+                                onFail(MLSpoofType.toUserMessage(r.decision.spoof?.decision ?: r.reasonCode))
+                            }
+                        }
+                    }
+                    is Resource.Error -> {
+                        // Fail-closed: v2 verification unavailable must not become a silent pass.
+                        Log.e("DocumentCapture", "V2 capture-verify error: ${res.message}")
+                        BurstCaptureUtils.cleanupBurstFiles(frames)
+                        onFail("Verification service unavailable. Please check connection and retry.")
+                    }
+                    else -> {
+                        BurstCaptureUtils.cleanupBurstFiles(frames)
+                        onFail("Verification failed. Please try again.")
+                    }
+                }
+            }
+        } finally {
+            if (primaryBmp != null && primaryBmp != padBmps.firstOrNull()) primaryBmp.recycle()
+            padBmps.forEach { it.recycle() }
+        }
+        return
+    }
+    // ── end V2 path ────────────────────────────────────────────────────────
+
     Log.d("DocumentCapture", "Calling verify-burst: ${burstFrames.size} frames " +
-            "(${frames.size} preview + ${if (highResFile != null && highResFile.exists()) 1 else 0} high-res), " +
+            "(high-res only: ${highResFile?.exists() == true}), " +
             "docType=$docTypeExpected, side=$sideExpected")
 
     // FIX: Run local anti-spoof analysis on the HIGH-RESOLUTION file when available.

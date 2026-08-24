@@ -1,0 +1,8 @@
+﻿# VerityPro CODEOWNERS — Android SDK
+*                              @sentientquant
+/app/src/                      @sentientquant
+/lib/                          @sentientquant
+build.gradle                   @sentientquant
+build.gradle.kts               @sentientquant
+settings.gradle*               @sentientquant
+/.github/workflows/            @sentientquant

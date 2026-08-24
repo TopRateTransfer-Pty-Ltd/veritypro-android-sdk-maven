@@ -197,8 +197,8 @@ fun PreviewCapturedImageScreen(
                             hint = backResult.message
                         }
                         Log.d("PreviewScreen", "Back side validation: barcode=${backResult.hasBarcode}, MRZ=${backResult.hasMRZ}, text=${backResult.hasText}(${backResult.textCount}), face=${backResult.hasFace}, valid=${backResult.isValid}, conf=${backResult.confidence}")
-                    } else if (burstFiles.size >= 3) {
-                        // Use burst frames for anti-spoofing
+                    } else if (burstFiles.isNotEmpty()) {
+                        // Use burst frames for anti-spoofing (1+ frames accepted — high-res only path)
                         val mlRepository = MLRepository()
                         val docTypeExpected = MLDocumentType.fromSdkType(documentType)
                         val sideExpected = if (isBackSide) "BACK" else "FRONT"

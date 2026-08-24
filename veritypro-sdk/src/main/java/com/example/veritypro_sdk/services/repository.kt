@@ -34,15 +34,21 @@ class ApiRepository {
             }
         }
 
-        // Try standard { "Error": { "message": "..." } } format
+        // Log the raw body so staging errors are always visible in logcat
+        Log.e("Verity", "HTTP $statusCode raw error body: $errorBody")
+
         try {
             val json = JSONObject(errorBody)
+            // VerityPro backend format: { "StatusMessage": "..." }
+            val statusMsg = json.optString("StatusMessage", "")
+            if (statusMsg.isNotEmpty()) return statusMsg
+            // Standard { "Error": { "message": "..." } } format
             val errorObj = json.optJSONObject("Error")
             if (errorObj != null) {
                 val msg = errorObj.optString("message", "")
                 if (msg.isNotEmpty()) return msg
             }
-            // Try ASP.NET validation format: { "title": "...", "errors": { "Field": ["msg"] } }
+            // ASP.NET validation format: { "title": "...", "errors": { "Field": ["msg"] } }
             val errorsObj = json.optJSONObject("errors")
             if (errorsObj != null) {
                 val messages = mutableListOf<String>()
@@ -162,6 +168,13 @@ class ApiRepository {
             if (response.statusCode == 201) {
                 Log.d("Verity", "Submitted KYC data")
                 Resource.CompletedSuccess(response.statusMessage)
+            } else if (response.statusCode == 409 && response.error?.message == "upload_duplicate") {
+                // The first updateKyc call succeeded server-side (session → Submitted) but
+                // the client never received the 201 (timeout / network drop). A retry correctly
+                // gets 409 because the session is already Submitted. Treat as success so the
+                // flow can advance to the result screen without stranding the user.
+                Log.w("Verity", "updateKyc 409 upload_duplicate — session already submitted, advancing as success")
+                Resource.CompletedSuccess("KYC Verification already submitted")
             } else {
                 Log.e("Verity", "Error Submitting KYC data: $response")
                 Resource.Error(response.error?.message ?: "Unable to validate")
@@ -176,6 +189,12 @@ class ApiRepository {
             }
         } catch (e: HttpException) {
             val errorBody = e.response()?.errorBody()?.string()
+            // Safety net: if the gateway ever forwards the raw HTTP 409, treat
+            // upload_duplicate the same as above (session already submitted).
+            if (e.code() == 409 && errorBody?.contains("upload_duplicate") == true) {
+                Log.w("Verity", "updateKyc HTTP 409 upload_duplicate — advancing as success")
+                return Resource.CompletedSuccess("KYC Verification already submitted")
+            }
             val errorMessage = parseHttpError(e.code(), errorBody)
             Log.e("Verity", "updateKyc HTTP ${e.code()}: $errorMessage")
             Resource.Error(errorMessage)

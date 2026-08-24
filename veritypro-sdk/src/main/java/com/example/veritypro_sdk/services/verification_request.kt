@@ -32,5 +32,5 @@ fun File.toMultipartBodyPart(partName: String): MultipartBody.Part =
     MultipartBody.Part.createFormData(
         partName,
         this.name,
-        RequestBody.create("image/*".toMediaTypeOrNull(), this)
+        RequestBody.create("image/jpeg".toMediaTypeOrNull(), this)
     )
