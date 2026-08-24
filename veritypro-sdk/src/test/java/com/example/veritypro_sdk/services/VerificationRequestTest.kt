@@ -1,30 +1,28 @@
 package com.example.veritypro_sdk.services
 
-import okhttp3.MultipartBody
-import okhttp3.RequestBody
 import okio.Buffer
-import org.junit.jupiter.api.Assertions.assertEquals
-import org.junit.jupiter.api.Assertions.assertNotNull
-import org.junit.jupiter.api.Test
-import org.junit.jupiter.api.io.TempDir
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Rule
+import org.junit.Test
+import org.junit.rules.TemporaryFolder
+import org.junit.runner.RunWith
+import org.junit.runners.JUnit4
 import java.io.File
-import java.nio.file.Path
 
-/**
- * TDD/regression tests for [File.toMultipartBodyPart].
- *
- * R1 (REGRESSION): MIME type must be "image/jpeg", not "image/*".
- *   image/* caused server-side 400 rejections on document upload.
- *   PR #17 (fix/burst-payload-downscale) fixes this — these tests are the
- *   guard that prevents regressing back to image/*.
- */
+// TDD/regression tests for File.toMultipartBodyPart.
+//
+// R1 (REGRESSION): MIME type must be "image/jpeg", not the wildcard "image/star".
+//   Using a wildcard MIME type caused server-side 400 rejections on document upload.
+//   PR #17 (fix/burst-payload-downscale) fixes this — these tests guard against regression.
+@RunWith(JUnit4::class)
 class VerificationRequestTest {
 
-    @TempDir
-    lateinit var tempDir: Path
+    @get:Rule
+    val tempFolder = TemporaryFolder()
 
     private fun tmpFile(name: String, content: ByteArray = byteArrayOf(0xFF.toByte(), 0xD8.toByte())): File {
-        val file = tempDir.resolve(name).toFile()
+        val file = tempFolder.newFile(name)
         file.writeBytes(content)
         return file
     }
@@ -37,9 +35,9 @@ class VerificationRequestTest {
         val part = file.toMultipartBodyPart("DocumentFront")
 
         val contentType = part.body.contentType()
-        assertNotNull(contentType, "Content-Type must not be null")
-        assertEquals("image", contentType!!.type, "Type must be 'image'")
-        assertEquals("jpeg", contentType.subtype, "Subtype must be 'jpeg', not '*'")
+        assertNotNull("Content-Type must not be null", contentType)
+        assertEquals("Type must be 'image'", "image", contentType!!.type)
+        assertEquals("Subtype must be 'jpeg', not '*'", "jpeg", contentType.subtype)
     }
 
     @Test
@@ -78,7 +76,7 @@ class VerificationRequestTest {
     // ── Filename ──────────────────────────────────────────────────────────────
 
     @Test
-    fun `filename matches the file's own name`() {
+    fun `filename matches the file own name`() {
         val file = tmpFile("document_front.jpg")
         val part = file.toMultipartBodyPart("DocumentFront")
 
@@ -129,9 +127,9 @@ class VerificationRequestTest {
         )) {
             val part = file.toMultipartBodyPart(name)
             assertEquals(
+                "$name must use image/jpeg",
                 "image/jpeg",
                 part.body.contentType().toString(),
-                "$name must use image/jpeg",
             )
         }
     }
