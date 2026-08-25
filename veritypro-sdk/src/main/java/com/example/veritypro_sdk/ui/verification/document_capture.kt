@@ -1364,7 +1364,9 @@ fun DocumentCaptureScreen(
             // Flexible space — pushes button toward bottom
             Spacer(modifier = Modifier.weight(0.3f))
 
-            // Capture button with ML-driven green color
+            // Capture button — always tappable so customers are never left wondering
+            // why the button doesn't respond. The backend validates quality and returns
+            // a clear retry message if the photo isn't good enough.
             Box(
                 modifier = Modifier
                     .size(ScaleUtil.scaleWidth(72.dp))
@@ -1373,8 +1375,8 @@ fun DocumentCaptureScreen(
                         color = buttonBorderColor,
                         shape = CircleShape
                     )
-                    .background(if (isProcessing) Color.Gray else if (!mlPassed) Color.Gray.copy(alpha = 0.5f) else buttonInnerColor, CircleShape)
-                    .clickable(enabled = !isProcessing && mlPassed) {
+                    .background(if (isProcessing) Color.Gray else buttonInnerColor.copy(alpha = if (mlPassed) 1f else 0.45f), CircleShape)
+                    .clickable(enabled = !isProcessing) {
                         // Haptic feedback on capture tap (matches iOS native button feel)
                         view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
 
@@ -1625,6 +1627,18 @@ fun DocumentCaptureScreen(
                     )
                 }
             }
+
+            Spacer(modifier = Modifier.height(ScaleUtil.scaleWidth(10.dp)))
+
+            Text(
+                text = if (mlPassed) "Hold still to auto-capture  •  or tap now"
+                       else "Tap to capture  •  or hold still to auto-capture",
+                color = Color.White.copy(alpha = 0.75f),
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Normal,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.padding(horizontal = 32.dp)
+            )
 
             Spacer(modifier = Modifier.weight(0.1f))
         }
