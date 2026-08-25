@@ -106,6 +106,16 @@ object CameraUtils {
      * @param onFacesDetected Callback for detected faces
      * @param onCameraReady Callback when camera is bound and ready (includes capability report)
      */
+    /**
+     * Returns the recording tier appropriate for this device's back camera.
+     * LIMITED → SD (480p, 800 kbps, 8 MiB): Camera2 guarantees Preview + ImageCapture(RECORD)
+     *   + VideoCapture concurrently on LIMITED, so we use this combination with a
+     *   RECORD-size ImageCapture cap to ensure the JPEG stays at 1920×1080.
+     * FULL / LEVEL_3 → HD (720p, 30 MiB): higher-resolution concurrent stream guaranteed.
+     */
+    fun getDocumentVideoTier(context: Context): DocumentVideoTier =
+        if (isConcurrentVideoSafe(context)) DocumentVideoTier.HD else DocumentVideoTier.SD
+
     @OptIn(ExperimentalGetImage::class)
     fun bindSmartCamera(
         context: Context,
@@ -116,7 +126,8 @@ object CameraUtils {
         onFacesDetected: ((List<Rect>) -> Unit)? = null,
         onCameraReady: ((CameraCapabilityReport) -> Unit)? = null,
         onCameraError: ((String) -> Unit)? = null,
-        videoCapture: VideoCapture<Recorder>? = null
+        videoCapture: VideoCapture<Recorder>? = null,
+        onVideoCaptureBound: ((Boolean) -> Unit)? = null
     ) {
         val cameraProviderFuture = ProcessCameraProvider.getInstance(context)
 
@@ -150,26 +161,17 @@ object CameraUtils {
                     useCases.add(imageAnalyzer)
                 }
 
-                // Add VideoCapture if provided (for per-module session recording) —
-                // ONLY on FULL/LEVEL_3 hardware. Camera2 guarantees full-resolution
-                // JPEG concurrent with a video stream only from FULL upward
-                // (LIMITED guarantees just PRIV/PREVIEW + PRIV/RECORD + JPEG/RECORD,
-                // capping the document photo at video size — observed 960×720 on a
-                // LIMITED device vs 2048×1373 without video). The document PHOTO is
-                // the verification evidence; the session video is supplementary, so
-                // it is skipped where the spec cannot guarantee both. This matches
-                // industry practice (no major KYC SDK records video concurrently
-                // with the document still on Android).
+                // Add VideoCapture on ALL devices.
+                // Camera2 guarantees Preview + ImageCapture(RECORD/1920×1080) + VideoCapture
+                // on both LIMITED and FULL hardware. On LIMITED we constrain ImageCapture to
+                // RECORD size (see createSmartImageCapture withVideoCapture=true) and use SD
+                // tier (480p 800 kbps) so the combination is within spec. On FULL/LEVEL_3 we
+                // use HD tier and full-res ImageCapture. ImageAnalysis is already disabled in
+                // the document flow (useDetection=false), keeping the combination to 3 use cases.
                 if (videoCapture != null) {
-                    if (isConcurrentVideoSafe(context)) {
-                        useCases.add(videoCapture)
-                    } else {
-                        Log.w(
-                            TAG,
-                            "VIDEO_SKIPPED_HW_LEVEL: camera hardware level below FULL — " +
-                                "session video disabled to guarantee full-resolution document capture"
-                        )
-                    }
+                    val tier = getDocumentVideoTier(context)
+                    Log.i(TAG, "VIDEO_CAPTURE: binding VideoCapture (tier=$tier)")
+                    useCases.add(videoCapture)
                 }
 
                 previewView.post {
@@ -210,11 +212,15 @@ object CameraUtils {
                         val boundRes = imageCapture.resolutionInfo?.resolution
                         val longEdge = boundRes?.let { maxOf(it.width, it.height) } ?: 0
                         if (videoCapture != null && longEdge in 1 until 1280) {
-                            Log.w(
+                            // Safety net: JPEG collapsed below the KYC floor despite RECORD-size
+                            // constraint — extreme edge case on non-compliant HALs. Remove video,
+                            // restore document photo quality, and report video as not bound.
+                            Log.e(
                                 TAG,
-                                "IMAGE_QUALITY_GUARD: JPEG collapsed to ${boundRes} with video bound — " +
-                                    "rebinding WITHOUT VideoCapture to restore document resolution"
+                                "IMAGE_QUALITY_GUARD: JPEG collapsed to ${boundRes} with video bound " +
+                                    "(longEdge=$longEdge < 1280) — rebinding WITHOUT VideoCapture"
                             )
+                            onVideoCaptureBound?.invoke(false)
                             val photoFirstGroup = UseCaseGroup.Builder()
                                 .setViewPort(viewPort)
                                 .apply {
@@ -233,6 +239,7 @@ object CameraUtils {
                             )
                         } else {
                             Log.i(TAG, "ImageCapture bound at ${boundRes} (video=${videoCapture != null})")
+                            if (videoCapture != null) onVideoCaptureBound?.invoke(true)
                         }
 
                         // Store camera reference for torch/zoom control
@@ -434,9 +441,19 @@ object CameraUtils {
      */
     fun createSmartImageCapture(context: Context, withVideoCapture: Boolean = false): ImageCapture {
         val report = CameraCapabilityAnalyzer.getCapabilityReport(context)
-        val targetResolution = report.recommendedResolution
 
-        Log.d(TAG, "Creating ImageCapture with target resolution: ${targetResolution.width}x${targetResolution.height}, withVideoCapture=$withVideoCapture")
+        // On LIMITED hardware with concurrent VideoCapture, Camera2 only guarantees
+        // JPEG/RECORD (≤ 1920×1080) alongside the video stream. Cap the target to
+        // 1920×1080 so CameraX does not attempt a size the HAL cannot serve concurrently,
+        // preventing the JPEG-collapse to 540×362 observed on T442M without this constraint.
+        val isLimitedWithVideo = withVideoCapture && !isConcurrentVideoSafe(context)
+        val targetResolution = if (isLimitedWithVideo) {
+            android.util.Size(1920, 1080)
+        } else {
+            report.recommendedResolution
+        }
+
+        Log.d(TAG, "Creating ImageCapture: target=${targetResolution.width}x${targetResolution.height}, withVideoCapture=$withVideoCapture, limitedConstraint=$isLimitedWithVideo")
 
         val resolutionSelector = ResolutionSelector.Builder()
             .setResolutionStrategy(

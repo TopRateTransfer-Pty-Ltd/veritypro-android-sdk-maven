@@ -122,11 +122,19 @@ fun DocumentCaptureScreen(
     // withVideoCapture=true: CAPTURE_MODE_ZERO_SHUTTER_LAG is incompatible with VideoCapture
     // bound in the same session — it causes CameraX to reset the video recording via
     // resetDirectly, dropping VideoRecordEvent.Finalize. MINIMIZE_LATENCY is used instead.
+    // On LIMITED hardware, createSmartImageCapture caps at 1920×1080 (RECORD size) so the
+    // three-use-case combination (Preview + ImageCapture + VideoCapture) is Camera2-guaranteed.
     val imageCapture = remember { CameraUtils.createSmartImageCapture(context, withVideoCapture = true) }
 
-    // Per-module session video recording: rear camera, 720p HD, 3 min / 30 MB cap
+    // Determine quality tier from device hardware level (SD for LIMITED, HD for FULL/LEVEL_3).
+    val videoTier = remember { CameraUtils.getDocumentVideoTier(context) }
+
+    // Per-module session video recording — tier-appropriate quality and size limits.
     val videoRecorder = remember { VerityVideoRecorder(context) }
-    val videoCapture: VideoCapture<Recorder> = remember { videoRecorder.buildVideoCapture() }
+    val videoCapture: VideoCapture<Recorder> = remember { videoRecorder.buildVideoCapture(videoTier) }
+
+    // Set to true by bindSmartCamera once VideoCapture survives the IMAGE_QUALITY_GUARD check.
+    var videoCaptureBound by remember { mutableStateOf(false) }
 
     val capturedFiles = remember { mutableStateListOf<File>() }
 
@@ -294,7 +302,15 @@ fun DocumentCaptureScreen(
                 cameraReady = false
                 Log.e("DocumentCapture", "Camera error: $errorMsg")
             },
-            videoCapture = videoCapture
+            videoCapture = videoCapture,
+            onVideoCaptureBound = { bound ->
+                videoCaptureBound = bound
+                if (!bound) {
+                    Log.w("DocumentCapture", "VideoCapture was NOT bound (IMAGE_QUALITY_GUARD removed it) — will report null video")
+                } else {
+                    Log.d("DocumentCapture", "VideoCapture bound successfully (tier=$videoTier)")
+                }
+            }
         )
         // Fallback if callback doesn't fire — extended to 5s so we don't
         // silently mark camera ready when it's actually still binding (H-5).
@@ -358,13 +374,20 @@ fun DocumentCaptureScreen(
         // 1000ms gives safe margin on all devices). This delay cannot be cancelled by
         // cameraReady changes because we are in a LaunchedEffect(Unit) scope.
         delay(1000)
-        Log.d("DocumentCapture", "Recording effect: calling startRecording")
+        if (!videoCaptureBound) {
+            // VideoCapture was removed by IMAGE_QUALITY_GUARD (extreme HAL edge case).
+            // Signal null video immediately — never rely on the 3-second timeout for this.
+            Log.w("DocumentCapture", "Recording effect: VideoCapture not bound — reporting null video (tier=$videoTier)")
+            onVideoRecorded?.invoke(null)
+            return@LaunchedEffect
+        }
+        Log.d("DocumentCapture", "Recording effect: calling startRecording (tier=$videoTier)")
         // Start ambient video recording for the document capture module.
-        // Recording is fire-and-forget: errors are logged but never surface to the user.
         videoRecorder.startRecording(
             videoCapture = videoCapture,
             module = VerityVideoModule.DOCUMENT,
             sessionId = kycSessionId.ifBlank { "unknown" },
+            tier = videoTier,
             onStopped = { videoFile ->
                 onVideoRecorded?.invoke(videoFile)
                 // Forward the deferred document files to the parent — this is the
