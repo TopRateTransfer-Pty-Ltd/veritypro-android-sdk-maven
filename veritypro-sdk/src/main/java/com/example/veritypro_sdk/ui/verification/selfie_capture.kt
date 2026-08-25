@@ -280,11 +280,11 @@ fun SelfieCaptureScreen(
         }
     }
 
-    // Fired by onComplete to capture a still frame after AWS releases the camera
-    var pendingPortraitCapture by remember { mutableStateOf(false) }
-    LaunchedEffect(pendingPortraitCapture) {
-        if (!pendingPortraitCapture) return@LaunchedEffect
-        pendingPortraitCapture = false
+    // Incrementing counter approach: never reset inside the effect, so the coroutine
+    // is never self-cancelled by a key change while it is still running.
+    var portraitCaptureTrigger by remember { mutableStateOf(0) }
+    LaunchedEffect(portraitCaptureTrigger) {
+        if (portraitCaptureTrigger == 0) return@LaunchedEffect
         // Allow AWS to fully release camera before we bind CameraX
         delay(250)
         val portraitFile = suspendCancellableCoroutine<File?> { cont ->
@@ -308,6 +308,7 @@ fun SelfieCaptureScreen(
                         ContextCompat.getMainExecutor(context),
                         object : ImageCapture.OnImageSavedCallback {
                             override fun onImageSaved(result: ImageCapture.OutputFileResults) {
+                                Log.d("Verity", "Portrait captured: ${outputFile.length()} bytes")
                                 provider?.unbindAll()
                                 cont.resume(outputFile)
                             }
@@ -414,7 +415,7 @@ fun SelfieCaptureScreen(
 
                                 onComplete = Action {
                                     isProcessingServerResult = true
-                                    pendingPortraitCapture = true
+                                    portraitCaptureTrigger++
                                 },
                                 onError = Consumer { ex ->
                                     error = ex

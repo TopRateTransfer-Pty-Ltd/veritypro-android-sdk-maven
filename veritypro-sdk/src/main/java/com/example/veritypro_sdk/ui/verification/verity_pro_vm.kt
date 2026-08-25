@@ -281,7 +281,7 @@ class VerityProViewModel(
     }
 
     fun updateKyc(data: VerificationRequestMultipart) {
-        Log.d("Verity", "ViewModel.updateKyc called - session=${data.SessionId}, front=${data.DocumentFront != null}, back=${data.DocumentBack != null}")
+        Log.d("Verity", "ViewModel.updateKyc called - session=${data.SessionId}, front=${data.DocumentFront != null}, back=${data.DocumentBack != null}, portrait=${data.PortraitPicture != null}")
         viewModelScope.launch {
             _kycState.value = Resource.Loading("Submitting KYC Verification")
 
