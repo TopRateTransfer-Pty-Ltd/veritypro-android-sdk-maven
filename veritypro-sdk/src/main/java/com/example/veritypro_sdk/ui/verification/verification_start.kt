@@ -104,6 +104,7 @@ fun VerificationScreen(
     var documentVideoFile: File? by remember { mutableStateOf(null) }
     var sessionId: String? by remember { mutableStateOf(null) }
     var livenessId: String? by remember { mutableStateOf(null) }
+    var selfiePortraitFile: File? by remember { mutableStateOf(null) }
     var addressDocFile: File? by remember { mutableStateOf(null) }
     var addressDocType: Int? by rememberSaveable { mutableStateOf(null) }
     var eddDocFile: File? by remember { mutableStateOf(null) }
@@ -728,7 +729,8 @@ fun VerificationScreen(
                                                     stage = viewModel.flowRouter.previousStage(stage) ?: VerificationStage.INTRO
                                                 },
                                                 viewModel = viewModel,
-                                                onLivenessComplete = { capturedSelfie ->
+                                                onLivenessComplete = { _, portraitFile ->
+                                                    selfiePortraitFile = portraitFile
                                                     // Use polling verification with livenessId (backend session ID)
                                                     viewModel.verifyLivenessResult(livenessId ?: awsSession) { succeeded ->
                                                         if (succeeded) {
@@ -785,6 +787,7 @@ fun VerificationScreen(
                                                                         DocumentFront = frontFile?.toMultipartBodyPart("DocumentFront"),
                                                                         DocumentBack = backFile?.toMultipartBodyPart("DocumentBack"),
                                                                         LivenessId = livenessId ?: "",
+                                                                        PortraitPicture = portraitFile?.toMultipartBodyPart("PortraitPicture"),
                                                                         SecurityAssessmentJson = securityJson,
                                                                         DocumentVideo = videoFile?.takeIf { it.length() > 0L }?.let { file ->
                                                                             MultipartBody.Part.createFormData(
@@ -806,7 +809,6 @@ fun VerificationScreen(
 
                                                             lastResult = LivenessResult(
                                                                 success = true,
-                                                                sessionToken = "fake",
                                                                 confidence = 0.95f,
                                                                 sessionId = viewModel.getSessionId()
                                                             )
@@ -965,6 +967,7 @@ fun VerificationScreen(
                                             DeviceAndBrowser = DeviceUtils.getDevicePlatform(),
                                             IpAddress = ipAddress ?: "",
                                             IpLocation = locationText ?: "",
+                                            PortraitPicture = selfiePortraitFile?.toMultipartBodyPart("PortraitPicture"),
                                             DocumentFront = refreshFrontFile?.toMultipartBodyPart("DocumentFront"),
                                             DocumentBack = refreshBackFile?.toMultipartBodyPart("DocumentBack"),
                                             SecurityAssessmentJson = securityJson,
