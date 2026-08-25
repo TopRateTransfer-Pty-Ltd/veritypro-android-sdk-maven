@@ -656,9 +656,11 @@ fun DocumentCaptureScreen(
     // Timeout fallback: if CameraX never delivers VideoRecordEvent.Finalize
     // (device under memory pressure, rare lifecycle edge case), advance the
     // flow after 3 seconds so the user is never stuck on this screen.
+    // If VideoCapture was never bound (IMAGE_QUALITY_GUARD removed it), skip
+    // the delay — there is nothing to wait for and the user sees a 3s freeze.
     LaunchedEffect(pendingDocumentFiles) {
         val pending = pendingDocumentFiles ?: return@LaunchedEffect
-        delay(3_000)
+        if (videoCaptureBound) delay(3_000)
         if (pendingDocumentFiles != null) {
             Log.w("DocumentCapture", "Video finalisation timeout — advancing without video file")
             // BUG A-02 FIX: explicitly signal null video before advancing.
