@@ -10,6 +10,11 @@ import androidx.camera.core.CameraSelector
 import androidx.camera.core.ImageCapture
 import androidx.camera.view.PreviewView
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
@@ -158,6 +163,19 @@ fun DocumentCaptureScreen(
     // NEW: Processing state for consolidated capture + verification flow
     var isProcessing by remember { mutableStateOf(false) }
     var processingStatus by remember { mutableStateOf("") }
+    // True once the first ML result (any result) arrives. Until then the camera
+    // is warming up and customers should see "Scanning..." not a capture prompt.
+    var mlFirstResultReceived by remember { mutableStateOf(false) }
+    val scanningTransition = rememberInfiniteTransition(label = "scanning")
+    val scanningAlpha by scanningTransition.animateFloat(
+        initialValue = 0.4f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(800, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "scanningAlpha"
+    )
     var verificationPassed by remember { mutableStateOf(false) }
     var verificationError by remember { mutableStateOf("") }
 
@@ -524,6 +542,7 @@ fun DocumentCaptureScreen(
                                     // are the real quality gate. Glare only guides the user (below)
                                     // — it no longer independently blocks capture on-device.
                                     mlPassed = response.docOk
+                                    mlFirstResultReceived = true
                                     mlConfidence = response.confidence ?: 0f
                                     // C-2: store structured quality signals for checklist display
                                     mlQualitySignals = response.qualitySignals
@@ -646,6 +665,7 @@ fun DocumentCaptureScreen(
     // immediately drives the back-side into LOCKED without any real detection.
     LaunchedEffect(isBackSide) {
         mlPassed = false
+        mlFirstResultReceived = false
         mlQualitySignals = null
         distanceGuidance = null
         autoCaptureProgress = 0f
@@ -1375,7 +1395,15 @@ fun DocumentCaptureScreen(
                         color = buttonBorderColor,
                         shape = CircleShape
                     )
-                    .background(if (isProcessing) Color.Gray else buttonInnerColor.copy(alpha = if (mlPassed) 1f else 0.45f), CircleShape)
+                    .background(
+                        if (isProcessing) Color.Gray
+                        else buttonInnerColor.copy(alpha = when {
+                            !mlFirstResultReceived -> 0.25f
+                            mlPassed -> 1f
+                            else -> 0.45f
+                        }),
+                        CircleShape
+                    )
                     .clickable(enabled = !isProcessing) {
                         // Haptic feedback on capture tap (matches iOS native button feel)
                         view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
@@ -1631,9 +1659,15 @@ fun DocumentCaptureScreen(
             Spacer(modifier = Modifier.height(ScaleUtil.scaleWidth(10.dp)))
 
             Text(
-                text = if (mlPassed) "Hold still to auto-capture  •  or tap now"
-                       else "Tap to capture  •  or hold still to auto-capture",
-                color = Color.White.copy(alpha = 0.75f),
+                text = when {
+                    !mlFirstResultReceived -> "Scanning document..."
+                    mlPassed -> "Hold still to auto-capture  •  or tap now"
+                    else -> "Tap to capture  •  or hold still to auto-capture"
+                },
+                color = if (!mlFirstResultReceived)
+                    Color.White.copy(alpha = scanningAlpha)
+                else
+                    Color.White.copy(alpha = 0.75f),
                 fontSize = 12.sp,
                 fontWeight = FontWeight.Normal,
                 textAlign = TextAlign.Center,
