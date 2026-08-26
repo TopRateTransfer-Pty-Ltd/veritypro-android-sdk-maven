@@ -342,6 +342,36 @@ object CameraUtils {
     }
 
     /**
+     * Lock AF and AE before capture countdown so the camera does not hunt during
+     * the hold-still window. The default FocusMeteringAction auto-cancels after
+     * 5 seconds, reverting to continuous-AF mode. Calling this when LOCKED state
+     * is entered prevents the camera from seeking focus during the 2-second
+     * countdown, eliminating motion-blur false positives ("photo not readable").
+     *
+     * Uses disableAutoCancel() so the lock stays until the next explicit cancel
+     * (via kickAutoExposure / cancelFocusAndMetering on the next session).
+     * AWB is intentionally excluded from the lock — colour temperature can drift
+     * without causing a blur artefact, and locking it prevents natural adaptation
+     * to ambient light changes during the countdown.
+     */
+    fun lockFocusForCapture() {
+        val camera = currentCamera ?: return
+        try {
+            camera.cameraControl.cancelFocusAndMetering()
+            val factory = SurfaceOrientedMeteringPointFactory(1f, 1f)
+            val centerPoint = factory.createPoint(0.5f, 0.5f)
+            val action = FocusMeteringAction.Builder(
+                centerPoint,
+                FocusMeteringAction.FLAG_AF or FocusMeteringAction.FLAG_AE
+            ).disableAutoCancel().build()
+            camera.cameraControl.startFocusAndMetering(action)
+            Log.d(TAG, "FOCUS_LOCK: AF/AE locked — camera will not hunt during capture countdown")
+        } catch (e: Exception) {
+            Log.w(TAG, "Focus lock failed — capture proceeds without explicit AF lock: ${e.message}")
+        }
+    }
+
+    /**
      * Reset a wedged auto-exposure sequence. On buggy LIMITED HALs a capture
      * taken in darkness can leave the AE precapture state stuck, making every
      * subsequent still come out black while the preview stays healthy (device

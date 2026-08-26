@@ -41,6 +41,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
@@ -927,6 +928,11 @@ fun DocumentCaptureScreen(
                 // The error auto-dismisses after 4s; if the document is still
                 // held correctly the next ML loop will re-enter LOCKED naturally.
                 if (verificationError.isNotEmpty()) return@LaunchedEffect
+                // Lock AF/AE immediately so the camera stops hunting during the
+                // hold-still countdown. The default FocusMeteringAction auto-cancels
+                // after 5s → continuous-AF resumes → blurry capture → false "not readable".
+                CameraUtils.lockFocusForCapture()
+                delay(150) // allow lock to settle before the countdown begins
                 view.performHapticFeedback(android.view.HapticFeedbackConstants.VIRTUAL_KEY)
                 val start = System.currentTimeMillis()
                 while (isActive) {
@@ -1171,38 +1177,56 @@ fun DocumentCaptureScreen(
         )
 
         // ── Layer 2: Full-screen processing overlay ──
-        if (isProcessing && frozenBitmap != null) {
+        // Shows a clean spinner instead of the frozen camera frame — frozenBitmap
+        // is the full camera preview including the dark scrim, which renders as a
+        // tiny card sliver when forced into a 1.586 landscape aspect-ratio box.
+        if (isProcessing) {
             Box(
-                modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.88f)),
+                modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.92f)),
                 contentAlignment = Alignment.Center
             ) {
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     modifier = Modifier.padding(horizontal = 32.dp)
                 ) {
-                    Image(
-                        bitmap = frozenBitmap!!.asImageBitmap(),
-                        contentDescription = "Captured document",
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .aspectRatio(if (documentType == 1) 1.414f else 1.586f)
-                            .clip(RoundedCornerShape(12.dp))
-                    )
-                    Spacer(modifier = Modifier.height(24.dp))
                     if (verificationPassed) {
-                        Text("✓", color = GuidanceConfig.STATE_GREEN, fontSize = 48.sp, fontWeight = FontWeight.Bold)
+                        Text(
+                            text = "✓",
+                            color = GuidanceConfig.STATE_GREEN,
+                            fontSize = 72.sp,
+                            fontWeight = FontWeight.Bold
+                        )
                     } else if (verificationError.isNotEmpty()) {
-                        Text("✗", color = GuidanceConfig.STATE_ERROR, fontSize = 48.sp, fontWeight = FontWeight.Bold)
+                        Text(
+                            text = "✗",
+                            color = GuidanceConfig.STATE_ERROR,
+                            fontSize = 72.sp,
+                            fontWeight = FontWeight.Bold
+                        )
                     } else {
-                        CircularProgressIndicator(modifier = Modifier.size(48.dp), color = Color.White, strokeWidth = 3.dp)
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(72.dp),
+                            color = Color.White,
+                            strokeWidth = 5.dp
+                        )
                     }
-                    Spacer(modifier = Modifier.height(16.dp))
+                    Spacer(modifier = Modifier.height(28.dp))
                     Text(
                         text = processingStatus.ifEmpty { "Processing..." },
                         color = Color.White,
-                        fontSize = 17.sp,
-                        fontWeight = FontWeight.W600
+                        fontSize = 18.sp,
+                        fontWeight = FontWeight.W600,
+                        textAlign = TextAlign.Center
                     )
+                    if (!verificationPassed && verificationError.isEmpty()) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = "Checking document quality…",
+                            color = Color.White.copy(alpha = 0.55f),
+                            fontSize = 13.sp,
+                            textAlign = TextAlign.Center
+                        )
+                    }
                 }
             }
         }
