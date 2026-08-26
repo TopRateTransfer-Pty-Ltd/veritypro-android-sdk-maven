@@ -115,7 +115,7 @@ object CapturedImageValidator {
             Log.w(TAG, "REJECT no readable portrait on front side")
             return Verdict(
                 false,
-                "The photo on your document is not readable — retake with even lighting and no glare.",
+                "Couldn't read the photo on your document — hold it flat and fully in frame, then retake.",
                 "PORTRAIT_NOT_READABLE",
             )
         }
