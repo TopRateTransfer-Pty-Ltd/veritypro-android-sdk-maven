@@ -21,7 +21,9 @@ enum class VerityMode {
     ADDRESS,
     EDD,
     COMBINED,
-    SERVER_DRIVEN
+    SERVER_DRIVEN,
+    /** Biometric step-up authentication — liveness-only flow using an active challenge. */
+    STEP_UP_AUTH
 }
 
 @Parcelize
@@ -58,6 +60,13 @@ data class VerityOption(
     val stateOrProvince: String? = null,
     /** Postal/ZIP code of the subject's address (forwarded as "PostalCode"). */
     val postalCode: String? = null,
+    // ── STEP_UP_AUTH fields ──────────────────────────────────────────────────
+    /** Challenge ID issued by KYC Integration (required for STEP_UP_AUTH mode). */
+    val stepUpChallengeId: String? = null,
+    /** Subject ID that was enrolled during KYC (required for STEP_UP_AUTH mode). */
+    val stepUpSubjectId: String? = null,
+    /** Short-lived JWT issued alongside the challenge (required for STEP_UP_AUTH mode). */
+    val stepUpToken: String? = null,
 ) : Parcelable {
     /** Resolved [VerityMode] from the serialized [mode] string. */
     val verityMode: VerityMode

@@ -162,4 +162,21 @@ interface VerityApiService {
         @Header("x-api-key") apiKey: String,
         @Body body: StepCompletionRequest = StepCompletionRequest()
     ): ApiResponse<SessionStateResponse>
+
+    // ── Biometric Step-Up Authentication ──────────────────────────────────────
+    // Route: API gateway → KYC Integration → /api/v1/step-up/...
+
+    @POST("/kycintegration/api/v1/step-up/challenges/{challengeId}/complete")
+    suspend fun completeStepUpChallenge(
+        @Path("challengeId") challengeId: String,
+        @Header("x-api-key") apiKey: String,
+        @Header("X-StepUp-Token") stepUpToken: String,
+        @Body request: StepUpCompleteRequest,
+    ): StepUpCompleteResponse
+
+    @GET("/kycintegration/api/v1/step-up/challenges/{challengeId}")
+    suspend fun getStepUpChallengeStatus(
+        @Path("challengeId") challengeId: String,
+        @Header("x-api-key") apiKey: String,
+    ): StepUpStatusResponse
 }
