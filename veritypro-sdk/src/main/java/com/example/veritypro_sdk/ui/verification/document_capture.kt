@@ -558,6 +558,17 @@ fun DocumentCaptureScreen(
                                     // TFLite presence model was trained on front-facing images
                                     // and regularly under-scores back-side frames (no portrait).
                                     val isCapturingBack = currentSideExpected == "BACK"
+                                    // The TFLite presence model was trained on front-facing documents
+                                    // and cannot classify back-side frames (no portrait photo —
+                                    // always returns docOk=false, conf≈0.2–0.4). Once the ML loop
+                                    // has warmed up (mlFirstResultReceived), treat any detection as
+                                    // confirmed presence for the back side. The post-capture
+                                    // validateBackNoFace() gate is the authoritative quality check
+                                    // and rejects captures where the user showed the front again.
+                                    if (isCapturingBack && mlFirstResultReceived) {
+                                        mlPassed = true
+                                        Log.d("DocumentCapture", "Back-side ML override: mlPassed=true (model not trained for back)")
+                                    }
                                     mlNotOkStreak = if (!response.docOk) mlNotOkStreak + 1 else 0
                                     val streakThreshold = if (isCapturingBack) 4 else 2
                                     mlHint = when {
@@ -592,17 +603,21 @@ fun DocumentCaptureScreen(
                                     // gating on it deadlocked glossy IDs. The multi-frame burst
                                     // stage (Laplacian sharpness + anti-spoof) is the authoritative
                                     // quality gate and rejects genuinely unreadable captures.
-                                    distanceGuidance = if (response.docOk) {
+                                    distanceGuidance = if (response.docOk || (isCapturingBack && mlFirstResultReceived)) {
                                         DistanceGuidance(
                                             state = DistanceState.PERFECT,
                                             frameCoverage = GuidanceConfig.OPTIMAL_COVERAGE_TARGET,
-                                            message = if (glarePresent) "Document detected — reduce glare for best quality" else "Document detected",
+                                            message = when {
+                                                glarePresent -> "Document detected — reduce glare for best quality"
+                                                isCapturingBack -> "Keep the back of your document centered"
+                                                else -> "Document detected"
+                                            },
                                             isOptimal = true
                                         )
                                     } else {
                                         null
                                     }
-                                    Log.d("DocumentCapture", "Distance: docOk=${response.docOk}, optimal=${distanceGuidance?.isOptimal}")
+                                    Log.d("DocumentCapture", "Distance: docOk=${response.docOk}, back=$isCapturingBack, mlPassed=$mlPassed, optimal=${distanceGuidance?.isOptimal}")
                                 }
                                 is Resource.Error -> {
                                     Log.e("DocumentCapture", "ML Live ERROR: ${result.message}")

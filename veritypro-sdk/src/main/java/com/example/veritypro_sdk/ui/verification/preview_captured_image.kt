@@ -2,54 +2,69 @@ package com.example.veritypro_sdk.ui.verification
 
 import androidx.compose.foundation.Image
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.unit.dp
-import java.io.File
-import androidx.compose.foundation.background
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Matrix
 import android.util.Log
 import androidx.exifinterface.media.ExifInterface
-import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
 import com.example.veritypro_sdk.services.MLDecision
 import com.example.veritypro_sdk.services.MLDocumentType
 import com.example.veritypro_sdk.services.MLRepository
 import com.example.veritypro_sdk.services.MLSpoofType
 import com.example.veritypro_sdk.services.Resource
-//import com.example.veritypro_sdk.utils.DocumentDetector
 import com.example.veritypro_sdk.utils.DocumentBackValidator
-import com.example.veritypro_sdk.utils.ImageSharpeningUtils
+import com.google.mlkit.vision.barcode.BarcodeScannerOptions
+import com.google.mlkit.vision.barcode.BarcodeScanning
+import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
-import com.google.mlkit.vision.barcode.BarcodeScanning
-import com.google.mlkit.vision.barcode.BarcodeScannerOptions
-import com.google.mlkit.vision.barcode.common.Barcode
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
+import java.io.File
 
-
-//private var detector: DocumentDetector? = null
+// ── VerityPro brand tokens ────────────────────────────────────────────────────
+private val Brand700 = Color(0xFF0400E5)
+private val SurfaceDark = Color(0xFF0A0B0D)
+private val SurfaceCard = Color(0xFFFFFFFF)
+private val StatusGreen = Color(0xFF10B981)
+private val StatusGreenSurface = Color(0xFF0A2A1E)
+private val StatusRed = Color(0xFFEF4444)
+private val StatusRedSurface = Color(0xFF2A0A0A)
+private val TextPrimary = Color(0xFFFFFFFF)
+private val TextSecondary = Color(0xFFB0B8C4)
 
 /**
- * Load bitmap with correct EXIF rotation applied
- * Documents are captured in landscape, need to display them correctly
+ * Loads the captured document bitmap with correct orientation.
+ *
+ * After [CapturedImageValidator.normalizeAndValidate] bakes any EXIF rotation
+ * into the pixel data and resets the orientation tag to NORMAL, the JPEG file
+ * is already correctly oriented. This function honours that normalisation: if
+ * EXIF is NORMAL (0°) the bitmap is returned as-is. A non-zero EXIF tag is
+ * applied (defensive path for files that skipped normalisation).
+ *
+ * The previous "Documents are always landscape" fallback that forced a 90°
+ * rotation whenever height > width was WRONG for our ViewPort capture flow
+ * (portrait phone, portrait JPEG): it produced a sideways preview on every
+ * device tested.
  */
 private fun loadBitmapWithRotation(file: File): Bitmap? {
     return try {
@@ -58,91 +73,73 @@ private fun loadBitmapWithRotation(file: File): Bitmap? {
             return null
         }
 
-        // First pass: get dimensions without loading into memory
-        val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-        BitmapFactory.decodeFile(file.path, options)
-
-        if (options.outWidth <= 0 || options.outHeight <= 0) {
-            Log.e("PreviewScreen", "Invalid image dimensions: ${options.outWidth}x${options.outHeight}")
+        // Probe dimensions without allocating the full bitmap.
+        val probe = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(file.path, probe)
+        if (probe.outWidth <= 0 || probe.outHeight <= 0) {
+            Log.e("PreviewScreen", "Invalid dimensions: ${probe.outWidth}x${probe.outHeight}")
             return null
         }
 
-        // Calculate downsample factor — target max 1920px on longest side for preview
-        val maxDimension = 1920
-        val longestSide = maxOf(options.outWidth, options.outHeight)
-        var inSampleSize = 1
-        while (longestSide / inSampleSize > maxDimension) {
-            inSampleSize *= 2
-        }
+        // Downsample to max 1920px on the longest side — enough for a preview.
+        val maxSide = 1920
+        val longest = maxOf(probe.outWidth, probe.outHeight)
+        var sample = 1
+        while (longest / sample > maxSide) sample *= 2
 
-        Log.d("PreviewScreen", "Original: ${options.outWidth}x${options.outHeight}, inSampleSize=$inSampleSize")
+        Log.d("PreviewScreen", "Original: ${probe.outWidth}x${probe.outHeight}, inSampleSize=$sample")
 
-        // Second pass: decode with downsampling
-        val decodeOptions = BitmapFactory.Options().apply {
-            this.inSampleSize = inSampleSize
-        }
-        val bitmap = BitmapFactory.decodeFile(file.path, decodeOptions)
-        if (bitmap == null) {
-            Log.e("PreviewScreen", "BitmapFactory.decodeFile returned null (likely OOM)")
+        val bitmap = BitmapFactory.decodeFile(
+            file.path,
+            BitmapFactory.Options().apply { inSampleSize = sample }
+        ) ?: run {
+            Log.e("PreviewScreen", "BitmapFactory returned null (OOM?)")
             return null
         }
 
-        // Read EXIF orientation
+        // Read EXIF orientation and apply if non-zero.
+        // After normalizeExifRotation() this will always be ORIENTATION_NORMAL
+        // (rotation baked into pixels) so rotationDegrees = 0 and the bitmap
+        // is returned directly — no second rotation applied.
         val exif = ExifInterface(file.path)
         val orientation = exif.getAttributeInt(
             ExifInterface.TAG_ORIENTATION,
             ExifInterface.ORIENTATION_NORMAL
         )
-
-        // Determine rotation angle
         val rotationDegrees = when (orientation) {
-            ExifInterface.ORIENTATION_ROTATE_90 -> 90f
+            ExifInterface.ORIENTATION_ROTATE_90  -> 90f
             ExifInterface.ORIENTATION_ROTATE_180 -> 180f
             ExifInterface.ORIENTATION_ROTATE_270 -> 270f
             else -> 0f
         }
 
-        // Apply rotation if needed
-        val oriented = if (rotationDegrees != 0f) {
+        if (rotationDegrees != 0f) {
             val matrix = Matrix().apply { postRotate(rotationDegrees) }
             val rotated = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
-            if (rotated != bitmap) {
-                bitmap.recycle()
-            }
-            Log.d("PreviewScreen", "Applied EXIF rotation: $rotationDegrees degrees")
+            if (rotated != bitmap) bitmap.recycle()
+            Log.d("PreviewScreen", "Applied EXIF rotation ${rotationDegrees}° → ${rotated.width}x${rotated.height}")
             rotated
         } else {
-            // No rotation needed, but check if image is portrait when it should be landscape
-            // Documents are always landscape (wider than tall)
-            if (bitmap.height > bitmap.width) {
-                // Image is portrait, rotate 90 degrees to make it landscape
-                val matrix = Matrix().apply { postRotate(90f) }
-                val rotated = Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
-                if (rotated != bitmap) {
-                    bitmap.recycle()
-                }
-                Log.d("PreviewScreen", "Rotated portrait image to landscape")
-                rotated
-            } else {
-                bitmap
-            }
+            // EXIF is NORMAL — pixels already correctly oriented after normaliseExifRotation().
+            Log.d("PreviewScreen", "EXIF=NORMAL, displaying as-is: ${bitmap.width}x${bitmap.height}")
+            bitmap
         }
-
-        // Return oriented image directly — no sharpening needed for preview.
-        // The camera produces sufficient quality; aggressive sharpening amplifies
-        // sensor noise and makes the image look grainy/bright on mobile screens.
-        oriented
     } catch (e: Exception) {
-        Log.e("PreviewScreen", "Failed to load bitmap with rotation", e)
+        Log.e("PreviewScreen", "loadBitmapWithRotation failed", e)
         null
     }
 }
 
 /**
- * Preview screen with Anti-Spoofing verification
+ * Document preview and anti-spoofing confirmation screen.
  *
- * Uses ML backend /verify-burst endpoint for anti-spoofing verification.
- * Falls back to accepting document if ML backend is unavailable.
+ * Displayed immediately after capture. Shows the captured image at full width
+ * on a dark background and runs the async anti-spoof verification. The
+ * Continue button is gated on [antiSpoofPassed]; Retake is always available.
+ *
+ * When [verificationAlreadyPassed] is true (capture screen already ran ML
+ * verification) the async check is skipped and the screen opens in a
+ * pre-verified state, eliminating duplicate round-trips.
  */
 @Composable
 fun PreviewCapturedImageScreen(
@@ -151,85 +148,67 @@ fun PreviewCapturedImageScreen(
     onRetake: () -> Unit,
     documentType: Int,
     isBackSide: Boolean = false,
-    verificationAlreadyPassed: Boolean = false, // NEW: Skip verification if already done on capture screen
+    verificationAlreadyPassed: Boolean = false,
     onContinue: (File) -> Unit
 ) {
-
-    // If verification already passed on capture screen, skip verification here
-    var isChecking by remember { mutableStateOf(!verificationAlreadyPassed) }
+    var isChecking      by remember { mutableStateOf(!verificationAlreadyPassed) }
     var antiSpoofPassed by remember { mutableStateOf(verificationAlreadyPassed) }
-    var confidence by remember { mutableStateOf(if (verificationAlreadyPassed) 1f else 0f) }
-    var hint by remember { mutableStateOf(if (verificationAlreadyPassed) "Document verified" else "") }
-    var spoofReason by remember { mutableStateOf("") }
-    var usedMLBackend by remember { mutableStateOf(false) }
-    val context = LocalContext.current
-    val coroutineScope = rememberCoroutineScope()
+    var confidence      by remember { mutableStateOf(if (verificationAlreadyPassed) 1f else 0f) }
+    var hint            by remember { mutableStateOf(if (verificationAlreadyPassed) "Document verified" else "") }
+    var spoofReason     by remember { mutableStateOf("") }
+    val coroutineScope  = rememberCoroutineScope()
 
-    // Anti-spoofing verification using burst frames
-    // Skip if verification was already done on capture screen
+    // ── Anti-spoofing verification ────────────────────────────────────────────
     LaunchedEffect(file, burstFiles, verificationAlreadyPassed) {
-        // If verification already passed, skip the verification process
         if (verificationAlreadyPassed) {
             isChecking = false
             antiSpoofPassed = true
             confidence = 1f
             hint = "Document verified"
-            Log.d("PreviewScreen", "Verification skipped - already passed on capture screen")
+            Log.d("PreviewScreen", "Verification skipped — already passed on capture screen")
             return@LaunchedEffect
         }
 
         isChecking = true
         hint = ""
         spoofReason = ""
-        usedMLBackend = false
 
         val bmp = BitmapFactory.decodeFile(file.path)
-
         if (bmp != null) {
             coroutineScope.launch(Dispatchers.IO) {
                 try {
                     if (isBackSide) {
-                        // Validate back side using barcode, MRZ, text, and face detection
                         val backResult = DocumentBackValidator.validateDocumentBack(bmp)
                         withContext(Dispatchers.Main) {
                             antiSpoofPassed = backResult.isValid
                             confidence = backResult.confidence
                             hint = backResult.message
                         }
-                        Log.d("PreviewScreen", "Back side validation: barcode=${backResult.hasBarcode}, MRZ=${backResult.hasMRZ}, text=${backResult.hasText}(${backResult.textCount}), face=${backResult.hasFace}, valid=${backResult.isValid}, conf=${backResult.confidence}")
+                        Log.d("PreviewScreen", "Back validation: barcode=${backResult.hasBarcode} MRZ=${backResult.hasMRZ} text=${backResult.hasText}(${backResult.textCount}) face=${backResult.hasFace} valid=${backResult.isValid} conf=${backResult.confidence}")
                     } else if (burstFiles.isNotEmpty()) {
-                        // Use burst frames for anti-spoofing (1+ frames accepted — high-res only path)
                         val mlRepository = MLRepository()
                         val docTypeExpected = MLDocumentType.fromSdkType(documentType)
-                        val sideExpected = if (isBackSide) "BACK" else "FRONT"
-
-                        Log.d("PreviewScreen", "Anti-spoofing verification: ${burstFiles.size} frames")
+                        Log.d("PreviewScreen", "Anti-spoof: ${burstFiles.size} burst frames")
 
                         val result = mlRepository.verifyBurst(
                             sessionId = "android-antispoof-${System.currentTimeMillis()}",
                             frames = burstFiles,
                             docTypeExpected = docTypeExpected,
-                            sideExpected = sideExpected
+                            sideExpected = if (isBackSide) "BACK" else "FRONT"
                         )
 
                         withContext(Dispatchers.Main) {
                             when (result) {
                                 is Resource.Success -> {
                                     val response = result.data
-                                    usedMLBackend = true
                                     antiSpoofPassed = response.decision == MLDecision.PASS
                                     confidence = response.confidence ?: 0f
                                     hint = response.hint
-
-                                    if (!antiSpoofPassed) {
-                                        spoofReason = response.spoof.reason
-                                    }
-
-                                    Log.d("PreviewScreen", "Anti-spoof result: ${response.decision}, conf=$confidence, hint=$hint")
+                                    if (!antiSpoofPassed) spoofReason = response.spoof.reason
+                                    Log.d("PreviewScreen", "Anti-spoof: ${response.decision} conf=$confidence hint=$hint")
                                 }
                                 is Resource.Error -> {
                                     Log.w("PreviewScreen", "Anti-spoof error: ${result.message}")
-                                    // Do NOT accept on error — require actual verification
                                     antiSpoofPassed = false
                                     confidence = 0f
                                     hint = "Verification service unavailable. Please retake and retry."
@@ -242,26 +221,22 @@ fun PreviewCapturedImageScreen(
                             }
                         }
                     } else {
-                        // Not enough burst frames — cannot verify
                         withContext(Dispatchers.Main) {
                             antiSpoofPassed = false
                             confidence = 0f
                             hint = "Insufficient frames for verification. Please retake."
                         }
-                        Log.w("PreviewScreen", "Not enough burst frames for anti-spoofing: ${burstFiles.size}")
+                        Log.w("PreviewScreen", "Not enough burst frames: ${burstFiles.size}")
                     }
                 } catch (e: Exception) {
                     Log.e("PreviewScreen", "Anti-spoofing failed", e)
                     withContext(Dispatchers.Main) {
-                        // Do NOT accept on error
                         antiSpoofPassed = false
                         confidence = 0f
                         hint = "Verification failed. Please retake the photo."
                     }
                 } finally {
-                    withContext(Dispatchers.Main) {
-                        isChecking = false
-                    }
+                    withContext(Dispatchers.Main) { isChecking = false }
                 }
             }
         } else {
@@ -271,71 +246,70 @@ fun PreviewCapturedImageScreen(
         }
     }
 
-    val bitmap = remember(file.path) {
-        loadBitmapWithRotation(file)
-    }
+    val bitmap = remember(file.path) { loadBitmapWithRotation(file) }
 
-    // If the image can't be loaded, the file is corrupted — override verification state
+    // Corrupted file overrides passed-in verification state.
     if (bitmap == null && antiSpoofPassed) {
         antiSpoofPassed = false
         hint = "Image file is corrupted. Please retake the photo."
     }
 
+    // ── UI ────────────────────────────────────────────────────────────────────
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color(0xFF373D4B))
+            .background(SurfaceDark)
     ) {
         Column(
             modifier = Modifier.fillMaxSize(),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            // Top section - Title (fixed)
-            Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(48.dp)))
 
-            Text(
-                text = "Preview captured image",
-                color = Color.White,
-                fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(18.dp).toSp() },
-                fontWeight = FontWeight.W600,
-                textAlign = TextAlign.Center,
-                modifier = Modifier.padding(horizontal = ScaleUtil.scaleWidth(24.dp))
-            )
+            // ── Top bar ───────────────────────────────────────────────────────
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .statusBarsPadding()
+                    .height(56.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Text(
+                    text = "Review your document",
+                    color = TextPrimary,
+                    fontSize = 17.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    textAlign = TextAlign.Center
+                )
+            }
 
-            Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(24.dp)))
-
-            // Middle section - Image (flexible, takes remaining space)
+            // ── Document image card ───────────────────────────────────────────
             Box(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth()
-                    .padding(horizontal = ScaleUtil.scaleWidth(16.dp)),
+                    .padding(horizontal = 20.dp, vertical = 8.dp),
                 contentAlignment = Alignment.Center
             ) {
                 if (bitmap != null) {
-                    // Image container with overlay
                     Box(
-                        modifier = Modifier.fillMaxWidth(),
-                        contentAlignment = Alignment.Center
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(16.dp))
+                            .background(SurfaceCard)
                     ) {
                         Image(
                             bitmap = bitmap.asImageBitmap(),
                             contentDescription = "Captured document",
                             contentScale = ContentScale.Fit,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(ScaleUtil.scaleWidth(8.dp)))
+                            modifier = Modifier.fillMaxWidth()
                         )
 
-                        // Verification overlay with spinner
+                        // Verification overlay — shown while checking
                         if (isChecking) {
                             Box(
                                 modifier = Modifier
                                     .matchParentSize()
-                                    .background(
-                                        Color.Black.copy(alpha = 0.5f),
-                                        RoundedCornerShape(ScaleUtil.scaleWidth(8.dp))
-                                    ),
+                                    .background(Color.Black.copy(alpha = 0.58f)),
                                 contentAlignment = Alignment.Center
                             ) {
                                 Column(
@@ -343,483 +317,211 @@ fun PreviewCapturedImageScreen(
                                     verticalArrangement = Arrangement.Center
                                 ) {
                                     CircularProgressIndicator(
-                                        modifier = Modifier.size(48.dp),
+                                        modifier = Modifier.size(44.dp),
                                         color = Color.White,
-                                        strokeWidth = 4.dp
+                                        strokeWidth = 3.dp
                                     )
-                                    Spacer(modifier = Modifier.height(16.dp))
+                                    Spacer(modifier = Modifier.height(14.dp))
                                     Text(
-                                        text = "Verifying...",
+                                        text = "Verifying document...",
                                         color = Color.White,
-                                        fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(14.dp).toSp() },
-                                        fontWeight = FontWeight.W500
+                                        fontSize = 14.sp,
+                                        fontWeight = FontWeight.Medium
                                     )
                                 }
                             }
                         }
                     }
                 } else {
-                    Text("Unable to load image", color = Color.White)
+                    // Image load failure — show placeholder
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(240.dp)
+                            .clip(RoundedCornerShape(16.dp))
+                            .background(Color(0xFF1A1D23)),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = "Unable to load image",
+                            color = TextSecondary,
+                            fontSize = 14.sp
+                        )
+                    }
                 }
             }
 
-            Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(16.dp)))
-
-            // Status message section (fixed height)
+            // ── Status badge ──────────────────────────────────────────────────
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .height(ScaleUtil.scaleHeight(60.dp))
-                    .padding(horizontal = ScaleUtil.scaleWidth(24.dp)),
+                    .height(72.dp)
+                    .padding(horizontal = 24.dp),
                 contentAlignment = Alignment.Center
             ) {
-                // Show anti-spoofing result
-                // IMPORTANT: Check isChecking FIRST to avoid showing "Spoof detected" during verification
-                if (isChecking) {
-                    Text(
-                        text = "Verifying document authenticity...",
-                        color = Color(0xFFFFFFFF).copy(alpha = 0.7f),
-                        textAlign = TextAlign.Center,
-                        fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(14.dp).toSp() }
-                    )
-                } else if (hint.isNotEmpty()) {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text(
-                            text = hint,
-                            color = if (antiSpoofPassed) Color.White else Color(0xFFFFB74D),
-                            textAlign = TextAlign.Center,
-                            fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(14.dp).toSp() }
-                        )
-                        if (spoofReason.isNotEmpty() && !antiSpoofPassed) {
-                            Spacer(modifier = Modifier.height(4.dp))
+                when {
+                    isChecking -> {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(16.dp),
+                                color = TextSecondary,
+                                strokeWidth = 2.dp
+                            )
                             Text(
-                                text = "Reason: $spoofReason",
-                                color = Color(0xFFFFB74D),
-                                textAlign = TextAlign.Center,
-                                fontSize = 12.sp
+                                text = "Verifying document authenticity...",
+                                color = TextSecondary,
+                                fontSize = 13.sp
                             )
                         }
                     }
-                } else if (antiSpoofPassed) {
-                    Text(
-                        text = "Ensure all details are clear and readable",
-                        color = Color.White,
-                        textAlign = TextAlign.Center,
-                        fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(14.dp).toSp() }
-                    )
-                } else {
-                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text(
-                            text = if (spoofReason.isNotEmpty()) {
-                                MLSpoofType.toUserMessage(spoofReason)
-                            } else {
-                                "Spoof detected. Please use original document."
-                            },
-                            color = Color(0xFFEF5350),
-                            textAlign = TextAlign.Center,
-                            fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(14.dp).toSp() }
-                        )
+
+                    antiSpoofPassed -> {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            // Verified pill
+                            Box(
+                                modifier = Modifier
+                                    .background(StatusGreenSurface, RoundedCornerShape(100.dp))
+                                    .padding(horizontal = 16.dp, vertical = 7.dp)
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(8.dp)
+                                            .background(StatusGreen, RoundedCornerShape(100.dp))
+                                    )
+                                    Text(
+                                        text = if (hint.isNotEmpty()) hint else "Document verified",
+                                        color = StatusGreen,
+                                        fontSize = 13.sp,
+                                        fontWeight = FontWeight.Medium
+                                    )
+                                }
+                            }
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Text(
+                                text = "Ensure all details are clear and readable",
+                                color = TextSecondary,
+                                fontSize = 12.sp,
+                                textAlign = TextAlign.Center
+                            )
+                        }
+                    }
+
+                    else -> {
+                        // Error / spoof detected
+                        val errorMessage = when {
+                            spoofReason.isNotEmpty() -> MLSpoofType.toUserMessage(spoofReason)
+                            hint.isNotEmpty() -> hint
+                            else -> "Verification failed. Please use your original document."
+                        }
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Box(
+                                modifier = Modifier
+                                    .background(StatusRedSurface, RoundedCornerShape(100.dp))
+                                    .padding(horizontal = 16.dp, vertical = 7.dp)
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(8.dp)
+                                            .background(StatusRed, RoundedCornerShape(100.dp))
+                                    )
+                                    Text(
+                                        text = "Verification failed",
+                                        color = StatusRed,
+                                        fontSize = 13.sp,
+                                        fontWeight = FontWeight.Medium
+                                    )
+                                }
+                            }
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Text(
+                                text = errorMessage,
+                                color = TextSecondary,
+                                fontSize = 12.sp,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier.padding(horizontal = 8.dp)
+                            )
+                        }
                     }
                 }
             }
 
-            // Bottom section - Buttons (fixed, always visible)
+            // ── Action buttons ────────────────────────────────────────────────
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(
-                        horizontal = ScaleUtil.scaleWidth(24.dp),
-                        vertical = ScaleUtil.scaleHeight(24.dp)
-                    ),
-                horizontalArrangement = Arrangement.spacedBy(ScaleUtil.scaleWidth(12.dp))
+                    .padding(horizontal = 20.dp)
+                    .padding(bottom = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
+                // Retake — always enabled
                 OutlinedButton(
                     onClick = onRetake,
-                    shape = RoundedCornerShape(ScaleUtil.scaleWidth(4.dp)),
-                    colors = ButtonDefaults.outlinedButtonColors(
-                        containerColor = Color.White,
-                        contentColor = Color(0xFF374151)
-                    ),
                     modifier = Modifier
                         .weight(1f)
-                        .height(ScaleUtil.scaleHeight(48.dp))
+                        .height(52.dp),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.outlinedButtonColors(
+                        containerColor = Color.Transparent,
+                        contentColor = TextPrimary
+                    ),
+                    border = androidx.compose.foundation.BorderStroke(
+                        width = 1.5.dp,
+                        color = Color.White.copy(alpha = 0.35f)
+                    )
                 ) {
                     Text(
                         text = "Retake",
-                        fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(14.dp).toSp() },
-                        fontWeight = FontWeight.W500
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Medium
                     )
                 }
 
+                // Continue — gated on antiSpoofPassed
                 Button(
                     onClick = { onContinue(file) },
                     enabled = !isChecking && antiSpoofPassed,
-                    shape = RoundedCornerShape(ScaleUtil.scaleWidth(4.dp)),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = if (antiSpoofPassed) Color(0xFF2B7AEF) else Color.Gray,
-                        contentColor = Color.White,
-                        disabledContainerColor = Color.Gray,
-                        disabledContentColor = Color.White.copy(alpha = 0.7f)
-                    ),
                     modifier = Modifier
                         .weight(1f)
-                        .height(ScaleUtil.scaleHeight(48.dp))
+                        .height(52.dp),
+                    shape = RoundedCornerShape(12.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Brand700,
+                        contentColor = Color.White,
+                        disabledContainerColor = Brand700.copy(alpha = 0.35f),
+                        disabledContentColor = Color.White.copy(alpha = 0.45f)
+                    )
                 ) {
                     Text(
-                        text = if (isChecking) "Verifying..." else if (antiSpoofPassed) "Continue" else "Blocked",
-                        fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(14.dp).toSp() },
-                        fontWeight = FontWeight.W500
+                        text = when {
+                            isChecking -> "Verifying..."
+                            antiSpoofPassed -> "Continue"
+                            else -> "Retake required"
+                        },
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.SemiBold
                     )
                 }
             }
+
+            Spacer(modifier = Modifier.navigationBarsPadding())
         }
     }
 }
 
-fun getDocumentName(documentType: Int): String {
-    return when (documentType) {
-        1 -> "ID card"
-        2 -> "passport"
-        3 -> "driver's license"
-        else -> "document"
-    }
+fun getDocumentName(documentType: Int): String = when (documentType) {
+    1    -> "ID card"
+    2    -> "passport"
+    3    -> "driver's license"
+    else -> "document"
 }
-
-
-
-
-
-//package com.example.veritypro_sdk.ui.verification
-//
-//import androidx.compose.foundation.Image
-//import androidx.compose.ui.graphics.asImageBitmap
-//import androidx.compose.foundation.layout.*
-//import androidx.compose.material3.*
-//import androidx.compose.runtime.*
-//import androidx.compose.ui.Alignment
-//import androidx.compose.ui.Modifier
-//import androidx.compose.ui.text.style.TextAlign
-//import androidx.compose.ui.unit.dp
-//import java.io.File
-//import androidx.compose.foundation.background
-//import androidx.compose.foundation.shape.RoundedCornerShape
-//import androidx.compose.ui.draw.clip
-//import androidx.compose.ui.graphics.Color
-//import androidx.compose.ui.text.font.FontWeight
-//import androidx.compose.ui.unit.sp
-//import android.graphics.BitmapFactory
-//import android.util.Log
-//import androidx.compose.foundation.rememberScrollState
-//import androidx.compose.foundation.verticalScroll
-//import androidx.compose.ui.platform.LocalContext
-//import androidx.compose.ui.platform.LocalDensity
-//import com.example.veritypro_sdk.services.MLDecision
-//import com.example.veritypro_sdk.services.MLDocumentType
-//import com.example.veritypro_sdk.services.MLRepository
-//import com.example.veritypro_sdk.services.Resource
-////import com.example.veritypro_sdk.utils.DocumentDetector
-//import com.google.mlkit.vision.common.InputImage
-//import com.google.mlkit.vision.text.TextRecognition
-//import com.google.mlkit.vision.text.latin.TextRecognizerOptions
-//import com.google.mlkit.vision.barcode.BarcodeScanning
-//import com.google.mlkit.vision.barcode.BarcodeScannerOptions
-//import com.google.mlkit.vision.barcode.common.Barcode
-//import kotlinx.coroutines.Dispatchers
-//import kotlinx.coroutines.async
-//import kotlinx.coroutines.launch
-//import kotlinx.coroutines.tasks.await
-//import kotlinx.coroutines.withContext
-//
-//
-////private var detector: DocumentDetector? = null
-//
-///**
-// * Preview screen with Anti-Spoofing verification
-// *
-// * Uses ML backend /verify-burst endpoint for anti-spoofing verification.
-// * Falls back to accepting document if ML backend is unavailable.
-// */
-//@Composable
-//fun PreviewCapturedImageScreen(
-//    file: File,
-//    burstFiles: List<File> = emptyList(),
-//    onRetake: () -> Unit,
-//    documentType: Int,
-//    isBackSide: Boolean = false,
-//    onContinue: (File) -> Unit
-//) {
-//
-//    var isChecking by remember { mutableStateOf(true) }
-//    var antiSpoofPassed by remember { mutableStateOf(false) }
-//    var confidence by remember { mutableStateOf(0f) }
-//    var hint by remember { mutableStateOf("") }
-//    var spoofReason by remember { mutableStateOf("") }
-//    var usedMLBackend by remember { mutableStateOf(false) }
-//    val context = LocalContext.current
-//    val coroutineScope = rememberCoroutineScope()
-//
-//    // Anti-spoofing verification using burst frames
-//    LaunchedEffect(file, burstFiles) {
-//        isChecking = true
-//        hint = ""
-//        spoofReason = ""
-//        usedMLBackend = false
-//
-//        val bmp = BitmapFactory.decodeFile(file.path)
-//
-//        if (bmp != null) {
-//            coroutineScope.launch(Dispatchers.IO) {
-//                try {
-//                    if (isBackSide) {
-//                        // Skip anti-spoofing for back side - accept directly
-//                        withContext(Dispatchers.Main) {
-//                            antiSpoofPassed = true
-//                            confidence = 1f
-//                            hint = "Back side captured"
-//                        }
-//                        Log.d("PreviewScreen", "Back side: Anti-spoofing skipped")
-//                    } else if (burstFiles.size >= 3) {
-//                        // Use burst frames for anti-spoofing
-//                        val mlRepository = MLRepository()
-//                        val docTypeExpected = MLDocumentType.fromSdkType(documentType)
-//                        val sideExpected = if (isBackSide) "BACK" else "FRONT"
-//
-//                        Log.d("PreviewScreen", "Anti-spoofing verification: ${burstFiles.size} frames")
-//
-//                        val result = mlRepository.verifyBurst(
-//                            sessionId = "android-antispoof-${System.currentTimeMillis()}",
-//                            frames = burstFiles,
-//                            docTypeExpected = docTypeExpected,
-//                            sideExpected = sideExpected
-//                        )
-//
-//                        withContext(Dispatchers.Main) {
-//                            when (result) {
-//                                is Resource.Success -> {
-//                                    val response = result.data
-//                                    usedMLBackend = true
-//                                    antiSpoofPassed = response.decision == MLDecision.PASS
-//                                    confidence = response.confidence ?: 0f
-//                                    hint = response.hint
-//
-//                                    if (!antiSpoofPassed) {
-//                                        spoofReason = response.spoof.reason
-//                                    }
-//
-//                                    Log.d("PreviewScreen", "Anti-spoof result: ${response.decision}, conf=$confidence, hint=$hint")
-//                                }
-//                                is Resource.Error -> {
-//                                    Log.w("PreviewScreen", "Anti-spoof error: ${result.message}")
-//                                    // On ML backend error, accept document (offline fallback)
-//                                    antiSpoofPassed = false
-//                                    confidence = 0.5f
-//                                    hint = "Document captured (offline verification)"
-//                                }
-//                                else -> {
-//                                    antiSpoofPassed = false
-//                                    confidence = 0.5f
-//                                    hint = "Document captured"
-//                                }
-//                            }
-//                        }
-//                    } else {
-//                        // Not enough burst frames - accept with warning
-//                        withContext(Dispatchers.Main) {
-//                            antiSpoofPassed = false
-//                            confidence = 0.5f
-//                            hint = "Document captured (limited verification)"
-//                        }
-//                        Log.w("PreviewScreen", "Not enough burst frames for anti-spoofing: ${burstFiles.size}")
-//                    }
-//                } catch (e: Exception) {
-//                    Log.e("PreviewScreen", "Anti-spoofing failed", e)
-//                    withContext(Dispatchers.Main) {
-//                        // On error, accept document (graceful degradation)
-//                        antiSpoofPassed = false
-//                        confidence = 0.5f
-//                        hint = "Document captured (verification unavailable)"
-//                    }
-//                } finally {
-//                    withContext(Dispatchers.Main) {
-//                        isChecking = false
-//                    }
-//                }
-//            }
-//        } else {
-//            antiSpoofPassed = false
-//            isChecking = false
-//            hint = "Unable to load image"
-//        }
-//    }
-//
-//    val bitmap = remember(file.path) {
-//        try { BitmapFactory.decodeFile(file.path) } catch (e: Exception) { null }
-//    }
-//
-//    Box(
-//        modifier = Modifier
-//            .fillMaxSize()
-//            .background(Color(0xFF373D4B))
-//    ) {
-//        Column(
-//            modifier = Modifier
-//                .fillMaxSize()
-//                .verticalScroll(rememberScrollState()),
-//            horizontalAlignment = Alignment.CenterHorizontally
-//        ) {
-//            Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(101.dp)))
-//
-//            Text(
-//                text = "Preview captured image. Continue or retake below",
-//                color = Color.White,
-//                fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(16.dp).toSp() },
-//                fontWeight = FontWeight.W500,
-//                textAlign = TextAlign.Center,
-//                modifier = Modifier.padding(horizontal = ScaleUtil.scaleWidth(90.dp))
-//            )
-//
-//            Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(80.dp)))
-//
-//            if (bitmap != null) {
-//                Image(
-//                    bitmap = bitmap.asImageBitmap(),
-//                    contentDescription = "Captured document",
-//                    modifier = Modifier
-//                        .fillMaxWidth()
-//                        .aspectRatio(331f / 210f)
-//                        .clip(RoundedCornerShape(ScaleUtil.scaleWidth(8.dp)))
-//                )
-//            } else {
-//                Box(
-//                    modifier = Modifier
-//                        .fillMaxWidth()
-//                        .weight(1f),
-//                    contentAlignment = Alignment.Center
-//                ) {
-//                    Text("Unable to load image", color = Color.White)
-//                }
-//            }
-//
-//            Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(107.dp)))
-//
-//            // Show anti-spoofing result
-//            // IMPORTANT: Check isChecking FIRST to avoid showing "Spoof detected" during verification
-//            if (isChecking) {
-//                Text(
-//                    text = "Verifying document authenticity...",
-//                    color = Color(0xFFFFFFFF).copy(alpha = 0.7f),
-//                    textAlign = TextAlign.Center,
-//                    fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(16.dp).toSp() },
-//                    modifier = Modifier.padding(horizontal = ScaleUtil.scaleWidth(70.dp))
-//                )
-//            } else if (hint.isNotEmpty()) {
-//                Text(
-//                    text = hint,
-//                    color = if (antiSpoofPassed) Color.White else Color(0xFFFFB74D),
-//                    textAlign = TextAlign.Center,
-//                    fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(16.dp).toSp() },
-//                    modifier = Modifier.padding(horizontal = ScaleUtil.scaleWidth(70.dp))
-//                )
-//            } else if (antiSpoofPassed) {
-//                Text(
-//                    text = "Ensure all details are clear and readable before you continue",
-//                    color = Color.White,
-//                    textAlign = TextAlign.Center,
-//                    fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(16.dp).toSp() },
-//                    modifier = Modifier.padding(horizontal = ScaleUtil.scaleWidth(70.dp))
-//                )
-//            } else {
-//                Text(
-//                    text = "Spoof detected. Please use original document.",
-//                    color = Color(0xFFEF5350),
-//                    textAlign = TextAlign.Center,
-//                    fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(16.dp).toSp() },
-//                    modifier = Modifier.padding(horizontal = ScaleUtil.scaleWidth(70.dp))
-//                )
-//            }
-//
-//            // Show spoof reason if detected
-//            if (spoofReason.isNotEmpty() && !antiSpoofPassed) {
-//                Spacer(modifier = Modifier.height(8.dp))
-//                Text(
-//                    text = "Reason: $spoofReason",
-//                    color = Color(0xFFFFB74D),
-//                    textAlign = TextAlign.Center,
-//                    fontSize = 12.sp,
-//                    modifier = Modifier.padding(horizontal = ScaleUtil.scaleWidth(70.dp))
-//                )
-//            }
-//
-//            Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(90.dp)))
-//
-//            // Show confidence and verification source
-////            if (confidence > 0f && !isChecking) {
-////                Text(
-////                    text = "Confidence: ${"%.1f".format(confidence * 100)}%${if (usedMLBackend) " (Anti-Spoof)" else ""}",
-////                    color = if (antiSpoofPassed && confidence >= 0.7f) Color(0xFF81C784) else if (antiSpoofPassed) Color.Yellow else Color(0xFFEF5350),
-////                    fontSize = 12.sp
-////                )
-////                Spacer(modifier = Modifier.height(8.dp))
-////            }
-//
-//            Row(
-//                modifier = Modifier
-//                    .fillMaxWidth()
-//                    .padding(
-//                        horizontal = ScaleUtil.scaleWidth(24.dp),
-//                        vertical = ScaleUtil.scaleHeight(8.dp)
-//                    ),
-//                horizontalArrangement = Arrangement.spacedBy(ScaleUtil.scaleWidth(12.dp))
-//            ) {
-//                OutlinedButton(
-//                    onClick = onRetake,
-//                    shape = RoundedCornerShape(ScaleUtil.scaleWidth(4.dp)),
-//                    colors = ButtonDefaults.outlinedButtonColors(
-//                        containerColor = Color.White,
-//                        contentColor = Color(0xFF374151)
-//                    ),
-//                    modifier = Modifier
-//                        .weight(1f)
-//                        .height(ScaleUtil.scaleHeight(36.dp))
-//                ) {
-//                    Text(
-//                        text = "Retake",
-//                        fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(14.dp).toSp() },
-//                        fontWeight = FontWeight.W500
-//                    )
-//                }
-//
-//                Button(
-//                    onClick = { onContinue(file) },
-//                    enabled = !isChecking && antiSpoofPassed,
-//                    shape = RoundedCornerShape(ScaleUtil.scaleWidth(4.dp)),
-//                    colors = ButtonDefaults.outlinedButtonColors(
-//                        containerColor = if (antiSpoofPassed) Color(0xFF2B7AEF) else Color.Gray,
-//                        contentColor = Color.White
-//                    ),
-//                    modifier = Modifier
-//                        .weight(1f)
-//                        .height(ScaleUtil.scaleHeight(36.dp))
-//                ) {
-//                    Text(
-//                        text = if (isChecking) "Verifying..." else if (antiSpoofPassed) "Continue" else "Blocked",
-//                        fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(14.dp).toSp() },
-//                        fontWeight = FontWeight.W500
-//                    )
-//                }
-//            }
-//        }
-//    }
-//}
-//
-//fun getDocumentName(documentType: Int): String {
-//    return when (documentType) {
-//        1 -> "ID card"
-//        2 -> "passport"
-//        3 -> "driver's license"
-//        else -> "document"
-//    }
-//}
-//
-//
-//
