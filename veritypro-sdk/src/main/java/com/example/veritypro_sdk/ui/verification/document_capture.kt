@@ -33,14 +33,18 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import java.io.File
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.runtime.saveable.rememberSaveable
 import android.view.HapticFeedbackConstants
@@ -721,7 +725,7 @@ fun DocumentCaptureScreen(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color(0xFF373D4B))
+            .background(Color.Black)
     ) {
         // ... inside DocumentCaptureScreen ...
 
@@ -858,552 +862,364 @@ fun DocumentCaptureScreen(
             return@Box
         }
 
-        Column(
-            modifier = Modifier
-                .fillMaxSize(),
-            horizontalAlignment = Alignment.CenterHorizontally
-        ) {
-            // Even spacing — matches design mockup
-            Spacer(modifier = Modifier.weight(0.3f))
-
-            Text(
-                text = mainInstruction,
-                color = Color.White,
-                fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(15.dp).toSp() },
-                fontWeight = FontWeight.W500,
-                textAlign = TextAlign.Center,
-                modifier = Modifier.padding(horizontal = ScaleUtil.scaleWidth(32.dp))
-            )
-
-            Spacer(modifier = Modifier.weight(0.15f))
-
-            // Camera frame with corner indicator overlay
-            val detectionState = when {
-                verificationPassed -> DetectionState.SUCCESS
-                verificationError.isNotEmpty() -> DetectionState.FAILED
-                isCapturing || isProcessing -> DetectionState.CAPTURING
-                mlPassed && distanceGuidance?.isOptimal == true -> DetectionState.LOCKED
-                mlPassed -> DetectionState.DETECTING
-                else -> DetectionState.SEARCHING
+        // ── Layer 0: Full-screen camera preview ──
+        if (cameraErrorMessage == null) {
+            AndroidView(factory = { previewView }, modifier = Modifier.fillMaxSize())
+        } else {
+            Box(
+                modifier = Modifier.fillMaxSize().background(Color.Black),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier.padding(24.dp)
+                ) {
+                    Text("Camera Error", color = Color(0xFFEF4444), fontWeight = FontWeight.Bold, fontSize = 18.sp, textAlign = TextAlign.Center)
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Text(cameraErrorMessage ?: "", color = Color.White.copy(alpha = 0.7f), fontSize = 14.sp, textAlign = TextAlign.Center)
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Button(
+                            onClick = {
+                                cameraErrorMessage = null
+                                cameraReady = false
+                                CameraUtils.bindSmartCamera(
+                                    context = context,
+                                    lifecycleOwner = lifecycleOwner,
+                                    previewView = previewView,
+                                    imageCapture = imageCapture,
+                                    useDetection = false,
+                                    onFacesDetected = null,
+                                    onCameraReady = { report ->
+                                        capabilityReport = report
+                                        cameraReady = true
+                                        cameraErrorMessage = null
+                                    },
+                                    onCameraError = { errorMsg ->
+                                        cameraErrorMessage = errorMsg
+                                        cameraReady = false
+                                    }
+                                )
+                            },
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF3B82F6))
+                        ) { Text("Retry") }
+                        OutlinedButton(onClick = onBack) { Text("Cancel") }
+                    }
+                }
             }
-            Log.d("DocumentCapture", "State: $detectionState (mlPassed=$mlPassed, distOptimal=${distanceGuidance?.isOptimal}, coverage=${distanceGuidance?.frameCoverage})")
+        }
 
-            // Auto-capture: countdown when LOCKED, fire capture at 2 seconds
-            LaunchedEffect(detectionState) {
-                if (detectionState == DetectionState.LOCKED) {
-                    // H-6: Don't start countdown while an error is still on-screen.
-                    // The error auto-dismisses after 4s; if the document is still
-                    // held correctly the next ML loop will re-enter LOCKED naturally.
-                    if (verificationError.isNotEmpty()) return@LaunchedEffect
-                    view.performHapticFeedback(android.view.HapticFeedbackConstants.VIRTUAL_KEY)
-                    val start = System.currentTimeMillis()
-                    while (isActive) {
-                        val elapsed = System.currentTimeMillis() - start
-                        autoCaptureProgress = (elapsed / GuidanceConfig.COUNTDOWN_DURATION_MS.toFloat()).coerceIn(0f, 1f)
-                        if (elapsed >= GuidanceConfig.COUNTDOWN_DURATION_MS) {
-                            view.performHapticFeedback(android.view.HapticFeedbackConstants.CONFIRM)
-                            // Auto-capture: drain buffer and verify (same flow as manual button)
-                            if (!isCapturing && !isProcessing) {
-                                Log.d("DocumentCapture", "Auto-capture: countdown complete, draining buffer")
-                                frozenBitmap?.recycle()
-                                frozenBitmap = previewView.bitmap
-                                isProcessing = true
-                                isCapturing = false
-                                captureAttemptCount++
-                                processingStatus = if (isBackSide) "Processing..." else "Verifying..."
+        // Detection state — drives scrim, corner brackets and button visuals
+        val detectionState = when {
+            verificationPassed -> DetectionState.SUCCESS
+            verificationError.isNotEmpty() -> DetectionState.FAILED
+            isCapturing || isProcessing -> DetectionState.CAPTURING
+            mlPassed && distanceGuidance?.isOptimal == true -> DetectionState.LOCKED
+            mlPassed -> DetectionState.DETECTING
+            else -> DetectionState.SEARCHING
+        }
+        Log.d("DocumentCapture", "State: $detectionState (mlPassed=$mlPassed, distOptimal=${distanceGuidance?.isOptimal}, coverage=${distanceGuidance?.frameCoverage})")
 
-                                // FIX: Do NOT turn off torch here — leave it on during the capture
-                                // so the high-res photo is taken under the same lighting as the
-                                // frozen preview. Torch is turned off after highResCapture.await().
+        // Auto-capture: countdown when LOCKED, fire capture at 2 seconds
+        LaunchedEffect(detectionState) {
+            if (detectionState == DetectionState.LOCKED) {
+                // H-6: Don't start countdown while an error is still on-screen.
+                // The error auto-dismisses after 4s; if the document is still
+                // held correctly the next ML loop will re-enter LOCKED naturally.
+                if (verificationError.isNotEmpty()) return@LaunchedEffect
+                view.performHapticFeedback(android.view.HapticFeedbackConstants.VIRTUAL_KEY)
+                val start = System.currentTimeMillis()
+                while (isActive) {
+                    val elapsed = System.currentTimeMillis() - start
+                    autoCaptureProgress = (elapsed / GuidanceConfig.COUNTDOWN_DURATION_MS.toFloat()).coerceIn(0f, 1f)
+                    if (elapsed >= GuidanceConfig.COUNTDOWN_DURATION_MS) {
+                        view.performHapticFeedback(android.view.HapticFeedbackConstants.CONFIRM)
+                        // Auto-capture: drain buffer and verify (same flow as manual button)
+                        if (!isCapturing && !isProcessing) {
+                            Log.d("DocumentCapture", "Auto-capture: countdown complete, draining buffer")
+                            frozenBitmap?.recycle()
+                            frozenBitmap = previewView.bitmap
+                            isProcessing = true
+                            isCapturing = false
+                            captureAttemptCount++
+                            processingStatus = if (isBackSide) "Processing..." else "Verifying..."
 
-                                val bufferedBitmaps = BurstCaptureUtils.drainBuffer()
-                                Log.d("DocumentCapture", "Auto-capture: drained ${bufferedBitmaps.size} frames")
+                            // FIX: Do NOT turn off torch here — leave it on during the capture
+                            // so the high-res photo is taken under the same lighting as the
+                            // frozen preview. Torch is turned off after highResCapture.await().
 
-                                coroutineScope.launch {
-                                    try {
-                                        // High-res capture in parallel with burst frame saving
-                                        val highResCapture = async(Dispatchers.IO) {
-                                            BurstCaptureUtils.captureBurst(
-                                                context = context,
-                                                imageCapture = imageCapture,
-                                                frameCount = 1,
-                                                delayMs = 0
-                                            ).firstOrNull()
-                                        }
+                            val bufferedBitmaps = BurstCaptureUtils.drainBuffer()
+                            Log.d("DocumentCapture", "Auto-capture: drained ${bufferedBitmaps.size} frames")
 
-                                        val frames = withContext(Dispatchers.IO) {
-                                            bufferedBitmaps.mapIndexedNotNull { index, bmp ->
-                                                try {
-                                                    val file = java.io.File(context.cacheDir, "burst_frame_${System.currentTimeMillis()}_$index.jpg")
-                                                    file.outputStream().use { out ->
-                                                        bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 95, out)
-                                                    }
-                                                    file
-                                                } catch (e: Exception) {
-                                                    Log.w("DocumentCapture", "Auto-capture: failed to save frame $index: ${e.message}")
-                                                    null
-                                                } finally {
-                                                    bmp.recycle()
-                                                }
-                                            }
-                                        }
+                            coroutineScope.launch {
+                                try {
+                                    // High-res capture in parallel with burst frame saving
+                                    val highResCapture = async(Dispatchers.IO) {
+                                        BurstCaptureUtils.captureBurst(
+                                            context = context,
+                                            imageCapture = imageCapture,
+                                            frameCount = 1,
+                                            delayMs = 0
+                                        ).firstOrNull()
+                                    }
 
-                                        val highResFile = highResCapture.await()
-                                        Log.d("DocumentCapture", "Auto-capture high-res: ${highResFile?.name ?: "failed"}")
-
-                                        // FIX: Turn off torch AFTER capture so the captured image
-                                        // matches the lighting shown in the frozen preview.
-                                        if (torchEnabled) {
-                                            withContext(Dispatchers.Main) {
-                                                CameraUtils.setTorch(false)
-                                                // torchEnabled updates automatically via CameraUtils.torchStateFlow
-                                            }
-                                        }
-
-                                        // Apply 4-stage sharpening pipeline to high-res file (iOS parity).
-                                        // Mirrors iOS ManualCaptureCameraView.applySharpeningFilter().
-                                        if (highResFile != null && highResFile.exists()) {
+                                    val frames = withContext(Dispatchers.IO) {
+                                        bufferedBitmaps.mapIndexedNotNull { index, bmp ->
                                             try {
-                                                val bmp = BitmapFactory.decodeFile(highResFile.path)
-                                                if (bmp != null) {
-                                                    val sharpened = ImageSharpeningUtils.applySharpeningPipeline(bmp)
-                                                    highResFile.outputStream().use { out ->
-                                                        sharpened.compress(android.graphics.Bitmap.CompressFormat.JPEG, 95, out)
-                                                    }
-                                                    if (sharpened !== bmp) bmp.recycle()
-                                                    Log.d("DocumentCapture", "Auto-capture: sharpening applied")
+                                                val file = java.io.File(context.cacheDir, "burst_frame_${System.currentTimeMillis()}_$index.jpg")
+                                                file.outputStream().use { out ->
+                                                    bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 95, out)
                                                 }
+                                                file
                                             } catch (e: Exception) {
-                                                Log.w("DocumentCapture", "Auto-capture: sharpening failed, using original: ${e.message}")
-                                            }
-
-                                            // FIX: Update frozenBitmap to a thumbnail of the actual
-                                            // captured image so the processing overlay shows the
-                                            // same content as the preview/confirmation screen.
-                                            try {
-                                                val opts = android.graphics.BitmapFactory.Options().apply { inSampleSize = 4 }
-                                                val thumb = android.graphics.BitmapFactory.decodeFile(highResFile.path, opts)
-                                                if (thumb != null) {
-                                                    withContext(Dispatchers.Main) {
-                                                        frozenBitmap?.recycle()
-                                                        frozenBitmap = thumb
-                                                    }
-                                                }
-                                            } catch (e: Exception) {
-                                                Log.w("DocumentCapture", "Auto-capture: frozen bitmap update skipped: ${e.message}")
+                                                Log.w("DocumentCapture", "Auto-capture: failed to save frame $index: ${e.message}")
+                                                null
+                                            } finally {
+                                                bmp.recycle()
                                             }
                                         }
+                                    }
 
-                                        // POST-CAPTURE QUALITY GATE: validate the FINAL image that
-                                        // will be uploaded — preview-frame gates cannot vouch for it
-                                        // (session 76bc252d: rotated, blown-out, unreadable-portrait
-                                        // capture sailed through and caused a false hard-decline).
-                                        // Also bakes EXIF rotation into the pixels, and silently
-                                        // retakes once after an AE kick if the HAL returned a black
-                                        // frame (wedged-precapture recovery, audit RC2).
-                                        if (highResFile != null && highResFile.exists()) {
-                                            val verdict = validateWithAeRecovery(
-                                                context, imageCapture, highResFile, isFrontSide = !isBackSide
-                                            )
-                                            if (!verdict.ok) {
-                                                Log.w("DocumentCapture", "Auto-capture rejected by post-capture gate: ${verdict.reason}")
-                                                highResFile.delete()
-                                                BurstCaptureUtils.cleanupBurstFiles(frames)
+                                    val highResFile = highResCapture.await()
+                                    Log.d("DocumentCapture", "Auto-capture high-res: ${highResFile?.name ?: "failed"}")
+
+                                    // FIX: Turn off torch AFTER capture so the captured image
+                                    // matches the lighting shown in the frozen preview.
+                                    if (torchEnabled) {
+                                        withContext(Dispatchers.Main) {
+                                            CameraUtils.setTorch(false)
+                                            // torchEnabled updates automatically via CameraUtils.torchStateFlow
+                                        }
+                                    }
+
+                                    // Apply 4-stage sharpening pipeline to high-res file (iOS parity).
+                                    // Mirrors iOS ManualCaptureCameraView.applySharpeningFilter().
+                                    if (highResFile != null && highResFile.exists()) {
+                                        try {
+                                            val bmp = BitmapFactory.decodeFile(highResFile.path)
+                                            if (bmp != null) {
+                                                val sharpened = ImageSharpeningUtils.applySharpeningPipeline(bmp)
+                                                highResFile.outputStream().use { out ->
+                                                    sharpened.compress(android.graphics.Bitmap.CompressFormat.JPEG, 95, out)
+                                                }
+                                                if (sharpened !== bmp) bmp.recycle()
+                                                Log.d("DocumentCapture", "Auto-capture: sharpening applied")
+                                            }
+                                        } catch (e: Exception) {
+                                            Log.w("DocumentCapture", "Auto-capture: sharpening failed, using original: ${e.message}")
+                                        }
+
+                                        // FIX: Update frozenBitmap to a thumbnail of the actual
+                                        // captured image so the processing overlay shows the
+                                        // same content as the preview/confirmation screen.
+                                        try {
+                                            val opts = android.graphics.BitmapFactory.Options().apply { inSampleSize = 4 }
+                                            val thumb = android.graphics.BitmapFactory.decodeFile(highResFile.path, opts)
+                                            if (thumb != null) {
                                                 withContext(Dispatchers.Main) {
-                                                    verificationError = verdict.userMessage
-                                                    isProcessing = false
-                                                    isCapturing = false
-                                                    frozenBitmap = null
+                                                    frozenBitmap?.recycle()
+                                                    frozenBitmap = thumb
                                                 }
-                                                return@launch
                                             }
+                                        } catch (e: Exception) {
+                                            Log.w("DocumentCapture", "Auto-capture: frozen bitmap update skipped: ${e.message}")
                                         }
+                                    }
 
-                                        if (frames.size < 3) {
-                                            Log.w("DocumentCapture", "Auto-capture: only ${frames.size} frames, falling back to ImageCapture")
-                                            highResFile?.delete()
+                                    // POST-CAPTURE QUALITY GATE: validate the FINAL image that
+                                    // will be uploaded — preview-frame gates cannot vouch for it
+                                    // (session 76bc252d: rotated, blown-out, unreadable-portrait
+                                    // capture sailed through and caused a false hard-decline).
+                                    // Also bakes EXIF rotation into the pixels, and silently
+                                    // retakes once after an AE kick if the HAL returned a black
+                                    // frame (wedged-precapture recovery, audit RC2).
+                                    if (highResFile != null && highResFile.exists()) {
+                                        val verdict = validateWithAeRecovery(
+                                            context, imageCapture, highResFile, isFrontSide = !isBackSide
+                                        )
+                                        if (!verdict.ok) {
+                                            Log.w("DocumentCapture", "Auto-capture rejected by post-capture gate: ${verdict.reason}")
+                                            highResFile.delete()
                                             BurstCaptureUtils.cleanupBurstFiles(frames)
-                                            val fallbackFrames = BurstCaptureUtils.captureBurst(
-                                                context = context,
-                                                imageCapture = imageCapture,
-                                                frameCount = 6,
-                                                delayMs = 50
-                                            )
-                                            if (fallbackFrames.isEmpty()) {
-                                                withContext(Dispatchers.Main) {
-                                                    verificationError = "Failed to capture frames. Please try again."
-                                                    isProcessing = false
-                                                    isCapturing = false
-                                                    frozenBitmap = null
-                                                }
-                                                return@launch
+                                            withContext(Dispatchers.Main) {
+                                                verificationError = verdict.userMessage
+                                                isProcessing = false
+                                                isCapturing = false
+                                                frozenBitmap = null
                                             }
-                                            // L-4: Apply sharpening to fallback frames (ImageCapture
-                                            // frames miss the pipeline applied to ring-buffer path).
-                                            withContext(Dispatchers.IO) {
-                                                fallbackFrames.forEach { file ->
-                                                    try {
-                                                        val bmp = BitmapFactory.decodeFile(file.path)
-                                                        if (bmp != null) {
-                                                            val sharpened = ImageSharpeningUtils.applySharpeningPipeline(bmp)
-                                                            file.outputStream().use { out ->
-                                                                sharpened.compress(android.graphics.Bitmap.CompressFormat.JPEG, 95, out)
-                                                            }
-                                                            if (sharpened !== bmp) bmp.recycle()
-                                                        }
-                                                    } catch (e: Exception) {
-                                                        Log.w("DocumentCapture", "Auto-capture fallback: sharpening failed for ${file.name}: ${e.message}")
-                                                    }
-                                                }
-                                            }
-                                            verifyAndHandleResult(
-                                                frames = fallbackFrames,
-                                                documentType = documentType,
-                                                capturedFiles = capturedFiles,
-                                                isBackSide = isBackSide,
-                                                kycSessionId = kycSessionId,
-                                                onPass = { passedFrames, burstScore ->
-                                                    lastBurstScore = burstScore
-                                                    view.performHapticFeedback(android.view.HapticFeedbackConstants.CONFIRM)
-                                                    verificationPassed = true
-                                                    burstFiles = passedFrames
-                                                    previewPath = passedFrames.first().path
-                                                },
-                                                onFail = { error ->
-                                                    view.performHapticFeedback(android.view.HapticFeedbackConstants.REJECT)
-                                                    verificationError = error
-                                                }
-                                            )
                                             return@launch
                                         }
+                                    }
 
-                                        // FIX: Pass highResFile so verifyAndHandleResult can:
-                                        // (a) append it as the final burst frame for the backend, and
-                                        // (b) run local DocumentAntiSpoofChecker at full resolution.
+                                    if (frames.size < 3) {
+                                        Log.w("DocumentCapture", "Auto-capture: only ${frames.size} frames, falling back to ImageCapture")
+                                        highResFile?.delete()
+                                        BurstCaptureUtils.cleanupBurstFiles(frames)
+                                        val fallbackFrames = BurstCaptureUtils.captureBurst(
+                                            context = context,
+                                            imageCapture = imageCapture,
+                                            frameCount = 6,
+                                            delayMs = 50
+                                        )
+                                        if (fallbackFrames.isEmpty()) {
+                                            withContext(Dispatchers.Main) {
+                                                verificationError = "Failed to capture frames. Please try again."
+                                                isProcessing = false
+                                                isCapturing = false
+                                                frozenBitmap = null
+                                            }
+                                            return@launch
+                                        }
+                                        // L-4: Apply sharpening to fallback frames (ImageCapture
+                                        // frames miss the pipeline applied to ring-buffer path).
+                                        withContext(Dispatchers.IO) {
+                                            fallbackFrames.forEach { file ->
+                                                try {
+                                                    val bmp = BitmapFactory.decodeFile(file.path)
+                                                    if (bmp != null) {
+                                                        val sharpened = ImageSharpeningUtils.applySharpeningPipeline(bmp)
+                                                        file.outputStream().use { out ->
+                                                            sharpened.compress(android.graphics.Bitmap.CompressFormat.JPEG, 95, out)
+                                                        }
+                                                        if (sharpened !== bmp) bmp.recycle()
+                                                    }
+                                                } catch (e: Exception) {
+                                                    Log.w("DocumentCapture", "Auto-capture fallback: sharpening failed for ${file.name}: ${e.message}")
+                                                }
+                                            }
+                                        }
                                         verifyAndHandleResult(
-                                            frames = frames,
+                                            frames = fallbackFrames,
                                             documentType = documentType,
                                             capturedFiles = capturedFiles,
                                             isBackSide = isBackSide,
                                             kycSessionId = kycSessionId,
-                                            highResFile = highResFile,
                                             onPass = { passedFrames, burstScore ->
                                                 lastBurstScore = burstScore
                                                 view.performHapticFeedback(android.view.HapticFeedbackConstants.CONFIRM)
                                                 verificationPassed = true
                                                 burstFiles = passedFrames
-                                                previewPath = highResFile?.takeIf { it.exists() }?.path
-                                                    ?: passedFrames.first().path
+                                                previewPath = passedFrames.first().path
                                             },
                                             onFail = { error ->
-                                                highResFile?.delete()
                                                 view.performHapticFeedback(android.view.HapticFeedbackConstants.REJECT)
                                                 verificationError = error
                                             }
                                         )
-                                    } catch (e: CancellationException) {
-                                        throw e
-                                    } catch (e: Exception) {
-                                        Log.e("DocumentCapture", "Auto-capture verification failed", e)
-                                        withContext(Dispatchers.Main) {
-                                            verificationError = "An error occurred. Please try again."
+                                        return@launch
+                                    }
+
+                                    // FIX: Pass highResFile so verifyAndHandleResult can:
+                                    // (a) append it as the final burst frame for the backend, and
+                                    // (b) run local DocumentAntiSpoofChecker at full resolution.
+                                    verifyAndHandleResult(
+                                        frames = frames,
+                                        documentType = documentType,
+                                        capturedFiles = capturedFiles,
+                                        isBackSide = isBackSide,
+                                        kycSessionId = kycSessionId,
+                                        highResFile = highResFile,
+                                        onPass = { passedFrames, burstScore ->
+                                            lastBurstScore = burstScore
+                                            view.performHapticFeedback(android.view.HapticFeedbackConstants.CONFIRM)
+                                            verificationPassed = true
+                                            burstFiles = passedFrames
+                                            previewPath = highResFile?.takeIf { it.exists() }?.path
+                                                ?: passedFrames.first().path
+                                        },
+                                        onFail = { error ->
+                                            highResFile?.delete()
+                                            view.performHapticFeedback(android.view.HapticFeedbackConstants.REJECT)
+                                            verificationError = error
                                         }
-                                    } finally {
-                                        withContext(Dispatchers.Main) {
-                                            isProcessing = false
-                                            isCapturing = false
-                                            processingStatus = ""
-                                            // M-2: recycle before nulling to release native bitmap memory immediately
-                                            frozenBitmap?.recycle()
-                                            frozenBitmap = null
-                                        }
+                                    )
+                                } catch (e: CancellationException) {
+                                    throw e
+                                } catch (e: Exception) {
+                                    Log.e("DocumentCapture", "Auto-capture verification failed", e)
+                                    withContext(Dispatchers.Main) {
+                                        verificationError = "An error occurred. Please try again."
+                                    }
+                                } finally {
+                                    withContext(Dispatchers.Main) {
+                                        isProcessing = false
+                                        isCapturing = false
+                                        processingStatus = ""
+                                        // M-2: recycle before nulling to release native bitmap memory immediately
+                                        frozenBitmap?.recycle()
+                                        frozenBitmap = null
                                     }
                                 }
                             }
-                            break
                         }
-                        delay(16) // ~60fps
+                        break
                     }
-                } else {
-                    autoCaptureProgress = 0f
+                    delay(16) // ~60fps
                 }
+            } else {
+                autoCaptureProgress = 0f
             }
+        }
 
+        // ── Layer 1: Scrim with ID-1 cutout, corner brackets, guidance text ──
+        CameraScrimWithCutout(
+            state = detectionState,
+            isPassport = documentType == 1,
+            showWarmup = !mlFirstResultReceived,
+            autoCaptureProgress = autoCaptureProgress,
+            modifier = Modifier.fillMaxSize()
+        )
+
+        // ── Layer 2: Full-screen processing overlay ──
+        if (isProcessing && frozenBitmap != null) {
             Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .aspectRatio(327f / 191f)
-                    .padding(horizontal = ScaleUtil.scaleWidth(24.dp))
+                modifier = Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.88f)),
+                contentAlignment = Alignment.Center
             ) {
-                // Camera error overlay
-                if (cameraErrorMessage != null) {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .background(
-                                Color.Black.copy(alpha = 0.85f),
-                                RoundedCornerShape(ScaleUtil.scaleWidth(8.dp))
-                            ),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Column(
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.Center,
-                            modifier = Modifier.padding(24.dp)
-                        ) {
-                            Text(
-                                text = "Camera Error",
-                                color = Color(0xFFEF4444),
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 18.sp,
-                                textAlign = TextAlign.Center
-                            )
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Text(
-                                text = cameraErrorMessage ?: "",
-                                color = Color.White.copy(alpha = 0.7f),
-                                fontSize = 14.sp,
-                                textAlign = TextAlign.Center
-                            )
-                            Spacer(modifier = Modifier.height(16.dp))
-                            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                                Button(
-                                    onClick = {
-                                        cameraErrorMessage = null
-                                        cameraReady = false
-                                        // Re-bind camera
-                                        CameraUtils.bindSmartCamera(
-                                            context = context,
-                                            lifecycleOwner = lifecycleOwner,
-                                            previewView = previewView,
-                                            imageCapture = imageCapture,
-                                            useDetection = false,
-                                            onFacesDetected = null,
-                                            onCameraReady = { report ->
-                                                capabilityReport = report
-                                                cameraReady = true
-                                                cameraErrorMessage = null
-                                            },
-                                            onCameraError = { errorMsg ->
-                                                cameraErrorMessage = errorMsg
-                                                cameraReady = false
-                                            }
-                                        )
-                                    },
-                                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF3B82F6))
-                                ) { Text("Retry") }
-                                OutlinedButton(onClick = onBack) { Text("Cancel") }
-                            }
-                        }
-                    }
-                } else {
-                    // Camera preview
-                    AndroidView(
-                        factory = { previewView },
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .clip(RoundedCornerShape(ScaleUtil.scaleWidth(8.dp)))
-                    )
-                }
-
-                // Frozen frame + processing overlay with hero thumbnail + sub-steps
-                if (isProcessing && frozenBitmap != null) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier.padding(horizontal = 32.dp)
+                ) {
                     Image(
                         bitmap = frozenBitmap!!.asImageBitmap(),
-                        contentDescription = "Processing...",
+                        contentDescription = "Captured document",
                         modifier = Modifier
-                            .fillMaxSize()
-                            .clip(RoundedCornerShape(ScaleUtil.scaleWidth(8.dp)))
+                            .fillMaxWidth()
+                            .aspectRatio(if (documentType == 1) 1.414f else 1.586f)
+                            .clip(RoundedCornerShape(12.dp))
                     )
-
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .background(
-                                GuidanceConfig.OVERLAY_DARK,
-                                RoundedCornerShape(ScaleUtil.scaleWidth(8.dp))
-                            ),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Column(
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.Center,
-                            modifier = Modifier.padding(horizontal = 24.dp)
-                        ) {
-                            // Hero thumbnail
-                            Image(
-                                bitmap = frozenBitmap!!.asImageBitmap(),
-                                contentDescription = "Captured document",
-                                modifier = Modifier
-                                    .size(260.dp, 180.dp)
-                                    .clip(RoundedCornerShape(12.dp))
-                            )
-                            Spacer(modifier = Modifier.height(16.dp))
-
-                            // Status indicator
-                            if (verificationPassed) {
-                                Text("✓", color = GuidanceConfig.STATE_GREEN, fontSize = 32.sp, fontWeight = FontWeight.Bold)
-                            } else if (verificationError.isNotEmpty()) {
-                                Text("✗", color = GuidanceConfig.STATE_ERROR, fontSize = 32.sp, fontWeight = FontWeight.Bold)
-                            } else {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(36.dp),
-                                    color = Color.White,
-                                    strokeWidth = 3.dp
-                                )
-                            }
-                            Spacer(modifier = Modifier.height(8.dp))
-
-                            Text(
-                                text = processingStatus.ifEmpty { "Processing..." },
-                                color = Color.White,
-                                fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(15.dp).toSp() },
-                                fontWeight = FontWeight.W600
-                            )
-
-                            // L-1: Removed fake static ProcessingSubStep indicators.
-                            // Static 80%/60% values were hardcoded and did not reflect
-                            // actual backend progress — misleading to users.
-                        }
+                    Spacer(modifier = Modifier.height(24.dp))
+                    if (verificationPassed) {
+                        Text("✓", color = GuidanceConfig.STATE_GREEN, fontSize = 48.sp, fontWeight = FontWeight.Bold)
+                    } else if (verificationError.isNotEmpty()) {
+                        Text("✗", color = GuidanceConfig.STATE_ERROR, fontSize = 48.sp, fontWeight = FontWeight.Bold)
+                    } else {
+                        CircularProgressIndicator(modifier = Modifier.size(48.dp), color = Color.White, strokeWidth = 3.dp)
                     }
-                }
-
-                // Corner indicators + status badge overlay
-                DocumentDetectionOverlay(
-                    state = detectionState,
-                    modifier = Modifier.fillMaxSize()
-                )
-            }
-
-            // Distance meter bar — bottom sheet with progress bar + checklist
-            val barProgress = when (detectionState) {
-                DetectionState.SEARCHING -> 0f
-                DetectionState.DETECTING -> (distanceGuidance?.frameCoverage ?: 0f).coerceIn(0f, 0.75f) / 0.75f * 0.75f
-                DetectionState.LOCKED -> 1f
-                // L-2: hold bar at 1f during capture/processing so it doesn't
-                // snap back to 0 while the upload spinner is running.
-                DetectionState.CAPTURING -> 1f
-                else -> 0f
-            }
-
-            // C-2: Use structured qualitySignals when the backend sends them.
-            // Fall back to fragile hint-text matching only for older backend versions
-            // that don't yet send the qualitySignals object.
-            val qualitySignals = mlQualitySignals
-            val goodLighting = qualitySignals?.goodLighting
-                ?: run {
-                    val h = mlHint.lowercase()
-                    !h.contains("dark") && !h.contains("dim") &&
-                        !h.contains("bright") && !h.contains("light")
-                }
-            val noGlare = qualitySignals?.noGlare
-                ?: run {
-                    val h = mlHint.lowercase()
-                    !h.contains("glare") && !h.contains("reflect") && !h.contains("shine")
-                }
-
-            DistanceMeterBar(
-                detectionState = detectionState,
-                barProgress = barProgress,
-                docDetected = mlPassed,
-                goodLighting = goodLighting,
-                distanceOptimal = distanceGuidance?.isOptimal == true,
-                noGlare = noGlare,
-                countdownProgress = autoCaptureProgress
-            )
-
-            // Legacy distance guidance indicator (kept for states not covered by bottom sheet)
-            distanceGuidance?.let { guidance ->
-                val guidanceColor = when (guidance.state) {
-                    DistanceState.PERFECT -> GuidanceConfig.STATE_GREEN
-                    DistanceState.SLIGHTLY_CLOSE, DistanceState.SLIGHTLY_FAR -> GuidanceConfig.STATE_AMBER
-                    DistanceState.TOO_CLOSE, DistanceState.TOO_FAR -> GuidanceConfig.STATE_ERROR
-                    DistanceState.NO_DOCUMENT -> Color.Gray
-                }
-
-                if (guidance.state != DistanceState.PERFECT && guidance.state != DistanceState.NO_DOCUMENT) {
-                    Row(
-                        modifier = Modifier
-                            .background(guidanceColor.copy(alpha = 0.9f), RoundedCornerShape(20.dp))
-                            .padding(horizontal = 16.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            text = when (guidance.state) {
-                                DistanceState.TOO_CLOSE -> "Move farther away"
-                                DistanceState.SLIGHTLY_CLOSE -> "Slightly too close"
-                                DistanceState.SLIGHTLY_FAR -> "Move a bit closer"
-                                DistanceState.TOO_FAR -> "Move much closer"
-                                else -> guidance.message
-                            },
-                            color = Color.White,
-                            fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(13.dp).toSp() },
-                            fontWeight = FontWeight.W500
-                        )
-                    }
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text(
+                        text = processingStatus.ifEmpty { "Processing..." },
+                        color = Color.White,
+                        fontSize = 17.sp,
+                        fontWeight = FontWeight.W600
+                    )
                 }
             }
+        }
 
-            Spacer(modifier = Modifier.weight(0.1f))
-
-            bottomInstruction?.let {
-                Text(
-                    text = it,
-                    color = Color.White,
-                    fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(14.dp).toSp() },
-                    fontWeight = FontWeight.W400,
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(
-                            horizontal = ScaleUtil.scaleWidth(32.dp)
-                        )
-                )
-            }
-
-            // ML hint feedback (e.g. "Wrong document type", "Show passport data page")
-            if (mlHint.isNotEmpty()) {
-                Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(8.dp)))
-                Text(
-                    text = mlHint,
-                    color = Color(0xFFFF8A65),
-                    fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(13.dp).toSp() },
-                    fontWeight = FontWeight.W500,
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = ScaleUtil.scaleWidth(24.dp))
-                        .background(
-                            Color(0x33FF5722),
-                            RoundedCornerShape(8.dp)
-                        )
-                        .padding(horizontal = 12.dp, vertical = 8.dp)
-                )
-            }
-
-            // Flexible space — pushes button toward bottom
-            Spacer(modifier = Modifier.weight(0.3f))
+        // ── Layer 3: Capture button + state label (bottom of screen) ──
+        Column(
+            modifier = Modifier.fillMaxSize(),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Spacer(modifier = Modifier.weight(1f))
 
             // Capture button — always tappable so customers are never left wondering
             // why the button doesn't respond. The backend validates quality and returns
             // a clear retry message if the photo isn't good enough.
             Box(
                 modifier = Modifier
-                    .size(ScaleUtil.scaleWidth(72.dp))
-                    .border(
-                        width = ScaleUtil.scaleWidth(4.dp),
-                        color = buttonBorderColor,
-                        shape = CircleShape
-                    )
-                    .background(
-                        if (isProcessing) Color.Gray
-                        else buttonInnerColor.copy(alpha = when {
-                            !mlFirstResultReceived -> 0.40f
-                            mlPassed -> 1f
-                            else -> 0.45f
-                        }),
-                        CircleShape
-                    )
+                    .size(ScaleUtil.scaleWidth(80.dp))
                     .clickable(enabled = !isProcessing) {
                         // Haptic feedback on capture tap (matches iOS native button feel)
                         view.performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
@@ -1638,20 +1454,46 @@ fun DocumentCaptureScreen(
                             }
                         }
                     }
-                    .padding(ScaleUtil.scaleWidth(16.dp)),
+                    ,
                 contentAlignment = Alignment.Center
             ) {
+                Canvas(modifier = Modifier.fillMaxSize()) {
+                    val center = Offset(size.width / 2f, size.height / 2f)
+                    val outerRadius = size.minDimension / 2f
+                    val ringStroke = 2.dp.toPx()
+                    val fillRadius = outerRadius - ringStroke - 5.dp.toPx()
+                    drawCircle(
+                        color = when {
+                            isProcessing -> Color.Gray.copy(alpha = 0.4f)
+                            detectionState == DetectionState.LOCKED -> Color(0xFF0400E5)
+                            else -> Color.White.copy(alpha = 0.92f)
+                        },
+                        radius = fillRadius,
+                        center = center
+                    )
+                    drawCircle(
+                        color = Color.White.copy(alpha = 0.30f),
+                        radius = outerRadius - ringStroke / 2f,
+                        center = center,
+                        style = Stroke(width = ringStroke)
+                    )
+                    if (detectionState == DetectionState.LOCKED && autoCaptureProgress > 0f) {
+                        drawArc(
+                            color = Color.White,
+                            startAngle = -90f,
+                            sweepAngle = 360f * autoCaptureProgress,
+                            useCenter = false,
+                            topLeft = Offset(ringStroke, ringStroke),
+                            size = Size(size.width - 2 * ringStroke, size.height - 2 * ringStroke),
+                            style = Stroke(width = 3.dp.toPx())
+                        )
+                    }
+                }
                 if (isProcessing) {
                     CircularProgressIndicator(
                         color = Color.White,
-                        strokeWidth = 2.dp,
-                        modifier = Modifier.size(24.dp)
-                    )
-                } else {
-                    Box(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .background(buttonInnerColor, CircleShape)
+                        strokeWidth = 2.5.dp,
+                        modifier = Modifier.size(28.dp)
                     )
                 }
             }
