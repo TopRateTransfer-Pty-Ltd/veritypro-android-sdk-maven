@@ -1398,7 +1398,7 @@ fun DocumentCaptureScreen(
                     .background(
                         if (isProcessing) Color.Gray
                         else buttonInnerColor.copy(alpha = when {
-                            !mlFirstResultReceived -> 0.25f
+                            !mlFirstResultReceived -> 0.40f
                             mlPassed -> 1f
                             else -> 0.45f
                         }),
@@ -1660,7 +1660,7 @@ fun DocumentCaptureScreen(
 
             Text(
                 text = when {
-                    !mlFirstResultReceived -> "Scanning document..."
+                    !mlFirstResultReceived -> "Getting the camera ready..."
                     mlPassed -> "Hold still to auto-capture  •  or tap now"
                     else -> "Tap to capture  •  or hold still to auto-capture"
                 },
