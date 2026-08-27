@@ -175,16 +175,25 @@ fun ProtoDocumentPreviewScreen(
     LaunchedEffect(imagePath) {
         pass = null; hint = "Checking your photo…"
         val file = File(imagePath)
-        // 1) presence / type / side
-        vm.mlPredictDocument(file, docTypeInt, isBack) { docOk, pHint, _ ->
-            if (!docOk) {
-                pass = false
-                hint = pHint.ifBlank { "Couldn't read the document clearly. Retake." }
-            } else {
-                // 2) anti-spoof burst verification
-                vm.mlVerifyBurst(listOf(file), docTypeInt, isBack) { isReal, vHint, _ ->
-                    pass = isReal
-                    hint = if (isReal) "Clear and readable" else vHint.ifBlank { "Verification failed. Retake." }
+        if (isBack) {
+            // BACK: the front-oriented predict (presence/type of a photo-page) does not apply to the
+            // back of a licence/ID — that side is validated by anti-spoof (+ barcode/MRZ). Gate on the
+            // verify-burst anti-spoof check only, matching the legacy back-side flow.
+            vm.mlVerifyBurst(listOf(file), docTypeInt, isBackSide =true) { isReal, vHint, _ ->
+                pass = isReal
+                hint = if (isReal) "Back captured" else vHint.ifBlank { "Retake the back of your document." }
+            }
+        } else {
+            // FRONT: presence / type / side, then anti-spoof.
+            vm.mlPredictDocument(file, docTypeInt, isBackSide =false) { docOk, pHint, _ ->
+                if (!docOk) {
+                    pass = false
+                    hint = pHint.ifBlank { "Couldn't read the document clearly. Retake." }
+                } else {
+                    vm.mlVerifyBurst(listOf(file), docTypeInt, isBackSide =false) { isReal, vHint, _ ->
+                        pass = isReal
+                        hint = if (isReal) "Clear and readable" else vHint.ifBlank { "Verification failed. Retake." }
+                    }
                 }
             }
         }

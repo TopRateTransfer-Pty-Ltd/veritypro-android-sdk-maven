@@ -83,8 +83,11 @@ fun ProtoVerificationScreen(
     var frontPath by remember { mutableStateOf<String?>(null) }
     var backPath by remember { mutableStateOf<String?>(null) }
     val context = LocalContext.current
-    val cameraPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        if (granted) stage = ProtoStage.BeforeShoot
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions(),
+    ) { grants ->
+        // Camera is required to advance; coarse location consent is requested alongside it (optional).
+        if (grants[Manifest.permission.CAMERA] == true) stage = ProtoStage.BeforeShoot
     }
 
     // Fire the real backend session creation when the user consents and continues.
@@ -132,9 +135,17 @@ fun ProtoVerificationScreen(
 
         ProtoStage.CameraAccess -> ProtoCameraAccessScreen(
             onAllow = {
-                val granted = ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
+                val camGranted = ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
                     PackageManager.PERMISSION_GRANTED
-                if (granted) stage = ProtoStage.BeforeShoot else cameraPermission.launch(Manifest.permission.CAMERA)
+                val locGranted = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) ==
+                    PackageManager.PERMISSION_GRANTED
+                if (camGranted && locGranted) {
+                    stage = ProtoStage.BeforeShoot
+                } else {
+                    permissionLauncher.launch(
+                        arrayOf(Manifest.permission.CAMERA, Manifest.permission.ACCESS_COARSE_LOCATION),
+                    )
+                }
             },
             onNotNow = onExit,
             onBack = { stage = ProtoStage.ChooseId },
