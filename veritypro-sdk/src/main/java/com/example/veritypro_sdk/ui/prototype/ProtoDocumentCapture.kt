@@ -194,21 +194,19 @@ fun ProtoDocumentPreviewScreen(
     onRetake: () -> Unit,
 ) {
     val bmp = remember(imagePath) { BitmapFactory.decodeFile(imagePath) }
-    // null = checking, true = passed, false = rejected
-    var pass by remember(imagePath) { mutableStateOf<Boolean?>(null) }
+    // outcome: null = checking, "PASS" (accept), "RETRY" (recoverable — auto-retake),
+    // "REJECT" (terminal spoof/tamper — manual only, no auto-loop).
+    var outcome by remember(imagePath) { mutableStateOf<String?>(null) }
     var hint by remember(imagePath) { mutableStateOf("Checking your photo…") }
 
     LaunchedEffect(imagePath) {
-        pass = null; hint = "Checking your photo…"
+        outcome = null; hint = "Checking your photo…"
         val file = File(imagePath)
         if (V2CaptureConfig.useV2CaptureVerify) {
             // ── V2 device-first path: POST /docai/v2/kyc/doc/capture-verify ──
-            // Single authoritative call (primary still + >=3 PAD frames) → VERIFIED / RETRY /
-            // REJECTED / MANUAL_REVIEW. Server is the sole authority; we render its state.
             val primary = BitmapFactory.decodeFile(imagePath)
             if (primary == null || padFrames.size < MLV2Repository.MIN_PAD_FRAMES) {
-                pass = false
-                hint = "Not enough frames captured. Hold steady and retake."
+                outcome = "RETRY"; hint = "Not enough frames captured. Hold steady."
                 return@LaunchedEffect
             }
             val side = if (isBack) "BACK" else "FRONT"
@@ -222,33 +220,41 @@ fun ProtoDocumentPreviewScreen(
             )
             when (res) {
                 is Resource.Success -> when (res.data.state) {
-                    MLCaptureState.VERIFIED -> { pass = true; hint = "Document verified" }
-                    MLCaptureState.MANUAL_REVIEW -> { pass = true; hint = "Submitted for review" }
-                    MLCaptureState.RETRY -> { pass = false; hint = res.data.retry?.hint ?: "Please retake." }
-                    else -> { pass = false; hint = "Not accepted (${res.data.reasonCode})." }
+                    MLCaptureState.VERIFIED -> { outcome = "PASS"; hint = "Document verified" }
+                    MLCaptureState.MANUAL_REVIEW -> { outcome = "PASS"; hint = "Submitted for review" }
+                    MLCaptureState.RETRY -> { outcome = "RETRY"; hint = res.data.retry?.hint ?: "Please retake." }
+                    else -> { outcome = "REJECT"; hint = "Not accepted (${res.data.reasonCode})." }
                 }
-                is Resource.Error -> { pass = false; hint = res.message }
+                is Resource.Error -> { outcome = "RETRY"; hint = res.message }
                 else -> {}
             }
         } else if (isBack) {
             // v1 BACK: anti-spoof only (front-oriented predict doesn't apply to the back).
             vm.mlVerifyBurst(listOf(file), docTypeInt, isBackSide = true) { isReal, vHint, _ ->
-                pass = isReal
+                outcome = if (isReal) "PASS" else "RETRY"
                 hint = if (isReal) "Back captured" else vHint.ifBlank { "Retake the back of your document." }
             }
         } else {
             // v1 FRONT: presence / type / side, then anti-spoof.
             vm.mlPredictDocument(file, docTypeInt, isBackSide = false) { docOk, pHint, _ ->
                 if (!docOk) {
-                    pass = false
-                    hint = pHint.ifBlank { "Couldn't read the document clearly. Retake." }
+                    outcome = "RETRY"; hint = pHint.ifBlank { "Couldn't read the document clearly." }
                 } else {
                     vm.mlVerifyBurst(listOf(file), docTypeInt, isBackSide = false) { isReal, vHint, _ ->
-                        pass = isReal
-                        hint = if (isReal) "Clear and readable" else vHint.ifBlank { "Verification failed. Retake." }
+                        outcome = if (isReal) "PASS" else "RETRY"
+                        hint = if (isReal) "Clear and readable" else vHint.ifBlank { "Verification failed." }
                     }
                 }
             }
+        }
+    }
+
+    // AUTO-RETAKE: a recoverable failure (RETRY) sends the user straight back to the camera after a
+    // brief hint. Terminal REJECT (spoof/tamper) stays manual so a hard fail doesn't loop.
+    LaunchedEffect(outcome) {
+        if (outcome == "RETRY") {
+            delay(1800)
+            onRetake()
         }
     }
 
@@ -275,18 +281,23 @@ fun ProtoDocumentPreviewScreen(
                 }
             }
             Spacer(Modifier.height(16.dp))
-            when (pass) {
+            when (outcome) {
                 null -> MonoLabel(
                     if (V2CaptureConfig.useV2CaptureVerify) "VERIFYING · V2 CAPTURE-VERIFY…"
                     else "VERIFYING · MLPREDICT + VERIFYBURST…",
                     Proto.Amber, size = 11,
                 )
-                true -> {
+                "PASS" -> {
                     MonoLabel("✓ DOCUMENT VERIFIED", Proto.Green, size = 11)
                     Spacer(Modifier.height(4.dp))
                     MonoLabel("✓ ${hint.uppercase()}", Proto.Green, size = 11)
                 }
-                false -> {
+                "RETRY" -> {
+                    MonoLabel("↺ RETAKING…", Proto.Amber, size = 11)
+                    Spacer(Modifier.height(6.dp))
+                    Text(hint, color = Proto.Ink, fontFamily = ProtoDisplay, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                }
+                else -> {
                     MonoLabel("✕ NOT ACCEPTED", Proto.Danger, size = 11)
                     Spacer(Modifier.height(6.dp))
                     Text(hint, color = Proto.Danger, fontFamily = ProtoDisplay, fontSize = 14.sp, fontWeight = FontWeight.Medium)
@@ -294,12 +305,17 @@ fun ProtoDocumentPreviewScreen(
             }
         }
         Column(Modifier.padding(24.dp)) {
-            ProtoPrimaryButton("Looks good", enabled = pass == true, onClick = onLooksGood)
-            Spacer(Modifier.height(10.dp))
-            Text(
-                "Retake", color = Proto.Sub, fontFamily = ProtoDisplay, fontSize = 14.sp, fontWeight = FontWeight.Bold,
-                modifier = Modifier.fillMaxWidth().protoClick(onRetake).padding(12.dp), textAlign = TextAlign.Center,
-            )
+            if (outcome == "RETRY") {
+                // Auto-retaking; offer an immediate manual retake too.
+                ProtoPrimaryButton("Retake now", background = Proto.Ink, onClick = onRetake)
+            } else {
+                ProtoPrimaryButton("Looks good", enabled = outcome == "PASS", onClick = onLooksGood)
+                Spacer(Modifier.height(10.dp))
+                Text(
+                    "Retake", color = Proto.Sub, fontFamily = ProtoDisplay, fontSize = 14.sp, fontWeight = FontWeight.Bold,
+                    modifier = Modifier.fillMaxWidth().protoClick(onRetake).padding(12.dp), textAlign = TextAlign.Center,
+                )
+            }
         }
     }
 }
