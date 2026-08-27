@@ -46,7 +46,7 @@ import com.example.veritypro_sdk.services.Resource
 import com.example.veritypro_sdk.ui.verification.VerityProViewModel
 import com.example.veritypro_sdk.utils.VerityOption
 
-private enum class ProtoStage { Welcome, Connecting, ChooseId, CameraAccess, BeforeShoot, Capture }
+private enum class ProtoStage { Welcome, Connecting, ChooseId, CameraAccess, BeforeShoot, Capture, DocPreview, CaptureDone }
 
 /**
  * API-CONNECTED prototype flow (neo-brutalist, VerityPro KYC SDK.dc.html).
@@ -64,6 +64,7 @@ fun ProtoVerificationScreen(
     val docsState by vm.countryDocumentsState.collectAsState()
     var stage by remember { mutableStateOf(ProtoStage.Welcome) }
     var chosen by remember { mutableStateOf<CountryDocumentItem?>(null) }
+    var capturedPath by remember { mutableStateOf<String?>(null) }
     val context = LocalContext.current
     val cameraPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (granted) stage = ProtoStage.BeforeShoot
@@ -130,12 +131,29 @@ fun ProtoVerificationScreen(
             onBack = { stage = ProtoStage.CameraAccess },
         )
 
-        ProtoStage.Capture -> ProtoProcessingScreen(
-            kicker = "DOCUMENT · ${chosen?.documentType?.uppercase() ?: ""}",
-            title = "Camera capture",
-            message = "Live camera + on-device coaching runs here. Next slice: the existing capture " +
-                "pipeline (mlPredict / verifyBurst) rendered neo-brutalist.",
-            module = Proto.Flamingo,
+        ProtoStage.Capture -> ProtoDocumentCaptureScreen(
+            docLabel = chosen?.documentType ?: "Document",
+            sideLabel = "Front",
+            onCaptured = { path ->
+                vm.setCapturedDocumentPaths(front = path, back = null, video = null)
+                capturedPath = path
+                stage = ProtoStage.DocPreview
+            },
+            onClose = { stage = ProtoStage.BeforeShoot },
+        )
+
+        ProtoStage.DocPreview -> ProtoDocumentPreviewScreen(
+            imagePath = capturedPath ?: "",
+            onLooksGood = { stage = ProtoStage.CaptureDone },
+            onRetake = { stage = ProtoStage.Capture },
+        )
+
+        ProtoStage.CaptureDone -> ProtoProcessingScreen(
+            kicker = "BIOMETRIC · NEXT",
+            title = "Now a quick\nselfie",
+            message = "Document captured and saved to the session. Next slice: selfie intro + AWS " +
+                "liveness (beginLiveness / awsSessionId / livenessResult).",
+            module = Proto.Teal,
         )
     }
 }
