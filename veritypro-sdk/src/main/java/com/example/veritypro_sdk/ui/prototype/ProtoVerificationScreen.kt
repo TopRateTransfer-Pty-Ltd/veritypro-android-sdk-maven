@@ -41,6 +41,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.amplifyframework.AmplifyException
+import com.amplifyframework.auth.cognito.AWSCognitoAuthPlugin
+import com.amplifyframework.core.Amplify
 import com.example.veritypro_sdk.services.CountryDocumentItem
 import com.example.veritypro_sdk.services.Resource
 import com.example.veritypro_sdk.ui.verification.SelfieCaptureScreen
@@ -94,6 +97,18 @@ fun ProtoVerificationScreen(
     var retakeAttempts by remember { mutableStateOf(0) }
     val maxAutoRetakes = 3
     val context = LocalContext.current
+
+    // Ensure Amplify is configured for the liveness detector (idempotent). The real SDK Activity
+    // configures it, but the prototype may be hosted by a plain Activity that doesn't.
+    LaunchedEffect(Unit) {
+        try {
+            Amplify.addPlugin(AWSCognitoAuthPlugin())
+            Amplify.configure(context.applicationContext)
+        } catch (e: AmplifyException) {
+            // already configured, or config missing — safe to continue
+        }
+    }
+
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
     ) { grants ->
