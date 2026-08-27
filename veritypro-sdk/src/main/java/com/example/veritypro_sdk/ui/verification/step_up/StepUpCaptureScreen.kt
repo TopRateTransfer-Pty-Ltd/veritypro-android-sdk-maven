@@ -50,8 +50,7 @@ import androidx.compose.ui.unit.sp
 import com.amplifyframework.auth.AWSCredentialsProvider
 import com.amplifyframework.ui.liveness.model.FaceLivenessDetectionException
 import com.amplifyframework.ui.liveness.ui.FaceLivenessDetector
-import com.amplifyframework.ui.liveness.ui.LivenessColorScheme
-import com.example.veritypro_sdk.services.BeginLivenessCredentials
+import com.example.veritypro_sdk.services.BeginLivenessData
 import com.example.veritypro_sdk.services.LivenessCredentialsProvider
 import com.example.veritypro_sdk.services.RetrofitInstance
 import com.example.veritypro_sdk.services.StepUpCompleteRequest
@@ -96,7 +95,7 @@ fun StepUpCaptureScreen(
     challengeId: String,
     stepUpToken: String,
     subjectId: String,
-    livenessCredentials: BeginLivenessCredentials,
+    livenessCredentials: BeginLivenessData,
     apiKey: String,
     remainingSeconds: Int = 300,
     riskReason: String? = null,
@@ -307,7 +306,7 @@ private fun PulsingLockIcon() {
 
 @Composable
 private fun LivenessContent(
-    livenessCredentials: BeginLivenessCredentials,
+    livenessCredentials: BeginLivenessData,
     onSuccess: (String, ByteArray) -> Unit,
     onSuccessSubmit: suspend (String, ByteArray) -> Unit,
     onCancel: () -> Unit,
@@ -324,14 +323,12 @@ private fun LivenessContent(
     }
 
     FaceLivenessDetector(
-        sessionId = livenessCredentials.sessionId,
+        sessionId = livenessCredentials.awsSessionId ?: "",
         region = livenessCredentials.region ?: "ap-southeast-2",
         disableStartView = false,
         onComplete = {
-            // AWS signals liveness complete — selfie capture is in onError(FaceLivenessSessionNotFoundException)
-            // The selfie was captured and signalled via onError in practice; use the sessionId.
-            livenessSessionId = livenessCredentials.sessionId
-            selfieBytes = ByteArray(0) // SDK captures selfie server-side; send empty placeholder.
+            livenessSessionId = livenessCredentials.awsSessionId ?: ""
+            selfieBytes = ByteArray(0)
             pendingSubmit = true
         },
         onError = { error ->
@@ -341,8 +338,9 @@ private fun LivenessContent(
                 else -> onError(Exception(error.message ?: "Liveness error"))
             }
         },
-        credentialsProvider = LivenessCredentialsProvider(livenessCredentials) as? AWSCredentialsProvider<*>,
-        colorScheme = LivenessColorScheme.default(),
+        credentialsProvider = livenessCredentials.credentials?.let {
+            LivenessCredentialsProvider(it) as? AWSCredentialsProvider<*>
+        },
     )
 }
 
