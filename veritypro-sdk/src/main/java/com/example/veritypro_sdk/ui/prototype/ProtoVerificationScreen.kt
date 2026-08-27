@@ -43,10 +43,11 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.veritypro_sdk.services.CountryDocumentItem
 import com.example.veritypro_sdk.services.Resource
+import com.example.veritypro_sdk.ui.verification.SelfieCaptureScreen
 import com.example.veritypro_sdk.ui.verification.VerityProViewModel
 import com.example.veritypro_sdk.utils.VerityOption
 
-private enum class ProtoStage { Welcome, Connecting, ChooseId, CameraAccess, BeforeShoot, Capture, DocPreview, CaptureDone }
+private enum class ProtoStage { Welcome, Connecting, ChooseId, CameraAccess, BeforeShoot, Capture, DocPreview, SelfieIntro, Liveness, AllComplete }
 
 // SDK document-type int (MLDocumentType.fromSdkType): 1=ID Card, 2=Passport, 3=Driver's Licence.
 private fun protoDocTypeInt(name: String?): Int {
@@ -66,7 +67,7 @@ private fun protoSides(name: String?): List<Boolean> =
  * API-CONNECTED prototype flow (neo-brutalist, VerityPro KYC SDK.dc.html).
  * Real wiring via [VerityProViewModel]: `createKyc(options)` creates the backend session and the
  * Choose-ID screen is populated from the live `countryDocumentsState`, not static data.
- * Camera capture + AWS liveness screens follow (reuse the existing capture pipeline).
+ * Camera capture + liveness screens follow (reuse the existing capture pipeline).
  */
 @Composable
 fun ProtoVerificationScreen(
@@ -76,6 +77,10 @@ fun ProtoVerificationScreen(
     val vm: VerityProViewModel = viewModel()
     val kyc by vm.kycState.collectAsState()
     val docsState by vm.countryDocumentsState.collectAsState()
+    val beginState by vm.beginLivenessState.collectAsState()
+    val livenessRegion by vm.livenessRegion.collectAsState()
+    val livenessCredentials by vm.livenessCredentials.collectAsState()
+    var livenessApproved by remember { mutableStateOf(false) }
     var stage by remember { mutableStateOf(ProtoStage.Welcome) }
     var chosen by remember { mutableStateOf<CountryDocumentItem?>(null) }
     var capturedPath by remember { mutableStateOf<String?>(null) }
@@ -199,7 +204,7 @@ fun ProtoVerificationScreen(
                         stage = ProtoStage.Capture
                     } else {
                         vm.setCapturedDocumentPaths(front = frontPath, back = backPath, video = null)
-                        stage = ProtoStage.CaptureDone
+                        stage = ProtoStage.SelfieIntro
                     }
                 },
                 onRetake = {
@@ -209,13 +214,50 @@ fun ProtoVerificationScreen(
             )
         }
 
-        ProtoStage.CaptureDone -> ProtoProcessingScreen(
-            kicker = "BIOMETRIC · NEXT",
-            title = "Now a quick\nselfie",
-            message = "Document verified and saved (front${if (backPath != null) " + back" else ""}). " +
-                "Next slice: selfie intro + AWS liveness (beginLiveness / awsSessionId / livenessResult).",
-            module = Proto.Teal,
+        ProtoStage.SelfieIntro -> ProtoSelfieIntroScreen(
+            onReady = {
+                vm.startBeginLiveness(vm.getSessionId(), forceRetry = true)
+                stage = ProtoStage.Liveness
+            },
+            onBack = { stage = ProtoStage.Welcome },
         )
+
+        ProtoStage.Liveness -> when (val bs = beginState) {
+            is Resource.Success -> {
+                val aws = bs.data.awsSessionId
+                if (aws.isNullOrBlank()) {
+                    ProtoProcessingScreen("BIOMETRIC", "Preparing the\nliveness check", "One moment…", Proto.Teal)
+                } else {
+                    // Reuse the SDK's functional liveness component (its UI shows no vendor names).
+                    SelfieCaptureScreen(
+                        sessionIdFromCreateKyc = vm.getSessionId(),
+                        awsSessionId = aws,
+                        livenessId = null,
+                        region = livenessRegion,
+                        credentials = livenessCredentials,
+                        viewModel = vm,
+                        onBack = { stage = ProtoStage.SelfieIntro },
+                        onLivenessComplete = { livenessId, _ ->
+                            vm.verifyLivenessResult(livenessId ?: aws) { ok ->
+                                livenessApproved = ok
+                                stage = ProtoStage.AllComplete
+                            }
+                        },
+                    )
+                }
+            }
+            is Resource.Error -> ProtoErrorScreen(
+                kicker = "BIOMETRIC",
+                title = "Couldn't start the check",
+                // Generic copy — never surface backend/vendor identifiers from the raw error.
+                message = "We couldn't start the liveness check. Please try again.",
+                onRetry = { stage = ProtoStage.SelfieIntro },
+                onExit = onExit,
+            )
+            else -> ProtoProcessingScreen("BIOMETRIC · LIVENESS", "Starting the\nliveness check", "One moment…", Proto.Teal)
+        }
+
+        ProtoStage.AllComplete -> ProtoAllCompleteScreen(approved = livenessApproved, onDone = onExit)
     }
 }
 
