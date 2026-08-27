@@ -1,6 +1,8 @@
 package com.example.veritypro_sdk.ui.prototype
 
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.os.Build
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
 import androidx.camera.view.PreviewView
@@ -26,8 +28,17 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import com.example.veritypro_sdk.services.MLCaptureState
+import com.example.veritypro_sdk.services.MLDeviceSignals
+import com.example.veritypro_sdk.services.MLDocumentType
+import com.example.veritypro_sdk.services.MLV2Repository
+import com.example.veritypro_sdk.services.Resource
+import com.example.veritypro_sdk.ui.verification.V2CaptureConfig
 import com.example.veritypro_sdk.ui.verification.VerityProViewModel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -53,14 +64,16 @@ import java.io.File
 fun ProtoDocumentCaptureScreen(
     docLabel: String,
     sideLabel: String,
-    onCaptured: (String) -> Unit,
+    onCaptured: (String, List<Bitmap>) -> Unit,
     onClose: () -> Unit,
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
+    val scope = rememberCoroutineScope()
     val imageCapture = remember { CameraUtils.createSmartImageCapture(context, withVideoCapture = false) }
     var capturing by remember { mutableStateOf(false) }
     var cameraReady by remember { mutableStateOf(false) }
+    var previewRef by remember { mutableStateOf<PreviewView?>(null) }
 
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         AndroidView(
@@ -74,6 +87,7 @@ fun ProtoDocumentCaptureScreen(
                         if (st == PreviewView.StreamState.STREAMING) cameraReady = true
                     }
                 }.also { pv ->
+                    previewRef = pv
                     CameraUtils.bindSmartCamera(ctx, lifecycleOwner, pv, imageCapture)
                 }
             },
@@ -132,19 +146,30 @@ fun ProtoDocumentCaptureScreen(
                     modifier = Modifier.fillMaxWidth().protoClick {
                         if (cameraReady && !capturing) {
                             capturing = true
-                            val file = File(context.cacheDir, "proto_doc_${sideLabel.lowercase()}.jpg")
-                            val opts = ImageCapture.OutputFileOptions.Builder(file).build()
-                            imageCapture.takePicture(
-                                opts, ContextCompat.getMainExecutor(context),
-                                object : ImageCapture.OnImageSavedCallback {
-                                    override fun onImageSaved(result: ImageCapture.OutputFileResults) {
-                                        onCaptured(file.absolutePath)
-                                    }
-                                    override fun onError(exc: ImageCaptureException) {
-                                        capturing = false
-                                    }
-                                },
-                            )
+                            scope.launch {
+                                // Collect >=3 distinct PAD frames from the live preview (for the v2
+                                // device-first capture-verify contract), spaced so the server's
+                                // distinctness check has real timing + content variation to see.
+                                val pads = ArrayList<Bitmap>()
+                                repeat(5) {
+                                    previewRef?.bitmap?.let { pads.add(it) }
+                                    delay(70)
+                                }
+                                // Primary full-resolution still.
+                                val file = File(context.cacheDir, "proto_doc_${sideLabel.lowercase()}.jpg")
+                                val opts = ImageCapture.OutputFileOptions.Builder(file).build()
+                                imageCapture.takePicture(
+                                    opts, ContextCompat.getMainExecutor(context),
+                                    object : ImageCapture.OnImageSavedCallback {
+                                        override fun onImageSaved(result: ImageCapture.OutputFileResults) {
+                                            onCaptured(file.absolutePath, pads)
+                                        }
+                                        override fun onError(exc: ImageCaptureException) {
+                                            capturing = false
+                                        }
+                                    },
+                                )
+                            }
                         }
                     }.padding(vertical = 18.dp),
                 )
@@ -164,33 +189,61 @@ fun ProtoDocumentPreviewScreen(
     imagePath: String,
     docTypeInt: Int,
     isBack: Boolean,
+    padFrames: List<Bitmap>,
     onLooksGood: () -> Unit,
     onRetake: () -> Unit,
 ) {
     val bmp = remember(imagePath) { BitmapFactory.decodeFile(imagePath) }
-    // null = checking, true = passed both checks, false = rejected
+    // null = checking, true = passed, false = rejected
     var pass by remember(imagePath) { mutableStateOf<Boolean?>(null) }
     var hint by remember(imagePath) { mutableStateOf("Checking your photo…") }
 
     LaunchedEffect(imagePath) {
         pass = null; hint = "Checking your photo…"
         val file = File(imagePath)
-        if (isBack) {
-            // BACK: the front-oriented predict (presence/type of a photo-page) does not apply to the
-            // back of a licence/ID — that side is validated by anti-spoof (+ barcode/MRZ). Gate on the
-            // verify-burst anti-spoof check only, matching the legacy back-side flow.
-            vm.mlVerifyBurst(listOf(file), docTypeInt, isBackSide =true) { isReal, vHint, _ ->
+        if (V2CaptureConfig.useV2CaptureVerify) {
+            // ── V2 device-first path: POST /docai/v2/kyc/doc/capture-verify ──
+            // Single authoritative call (primary still + >=3 PAD frames) → VERIFIED / RETRY /
+            // REJECTED / MANUAL_REVIEW. Server is the sole authority; we render its state.
+            val primary = BitmapFactory.decodeFile(imagePath)
+            if (primary == null || padFrames.size < MLV2Repository.MIN_PAD_FRAMES) {
+                pass = false
+                hint = "Not enough frames captured. Hold steady and retake."
+                return@LaunchedEffect
+            }
+            val side = if (isBack) "BACK" else "FRONT"
+            val res = MLV2Repository().captureVerify(
+                captureSessionId = "proto-$docTypeInt-$side",
+                side = side,
+                docTypeExpected = MLDocumentType.fromSdkType(docTypeInt),
+                primary = primary,
+                padFrames = padFrames,
+                deviceSignals = MLDeviceSignals(captureMode = "MANUAL", deviceModel = Build.MODEL),
+            )
+            when (res) {
+                is Resource.Success -> when (res.data.state) {
+                    MLCaptureState.VERIFIED -> { pass = true; hint = "Document verified" }
+                    MLCaptureState.MANUAL_REVIEW -> { pass = true; hint = "Submitted for review" }
+                    MLCaptureState.RETRY -> { pass = false; hint = res.data.retry?.hint ?: "Please retake." }
+                    else -> { pass = false; hint = "Not accepted (${res.data.reasonCode})." }
+                }
+                is Resource.Error -> { pass = false; hint = res.message }
+                else -> {}
+            }
+        } else if (isBack) {
+            // v1 BACK: anti-spoof only (front-oriented predict doesn't apply to the back).
+            vm.mlVerifyBurst(listOf(file), docTypeInt, isBackSide = true) { isReal, vHint, _ ->
                 pass = isReal
                 hint = if (isReal) "Back captured" else vHint.ifBlank { "Retake the back of your document." }
             }
         } else {
-            // FRONT: presence / type / side, then anti-spoof.
-            vm.mlPredictDocument(file, docTypeInt, isBackSide =false) { docOk, pHint, _ ->
+            // v1 FRONT: presence / type / side, then anti-spoof.
+            vm.mlPredictDocument(file, docTypeInt, isBackSide = false) { docOk, pHint, _ ->
                 if (!docOk) {
                     pass = false
                     hint = pHint.ifBlank { "Couldn't read the document clearly. Retake." }
                 } else {
-                    vm.mlVerifyBurst(listOf(file), docTypeInt, isBackSide =false) { isReal, vHint, _ ->
+                    vm.mlVerifyBurst(listOf(file), docTypeInt, isBackSide = false) { isReal, vHint, _ ->
                         pass = isReal
                         hint = if (isReal) "Clear and readable" else vHint.ifBlank { "Verification failed. Retake." }
                     }
@@ -223,7 +276,11 @@ fun ProtoDocumentPreviewScreen(
             }
             Spacer(Modifier.height(16.dp))
             when (pass) {
-                null -> MonoLabel("VERIFYING · MLPREDICT + VERIFYBURST…", Proto.Amber, size = 11)
+                null -> MonoLabel(
+                    if (V2CaptureConfig.useV2CaptureVerify) "VERIFYING · V2 CAPTURE-VERIFY…"
+                    else "VERIFYING · MLPREDICT + VERIFYBURST…",
+                    Proto.Amber, size = 11,
+                )
                 true -> {
                     MonoLabel("✓ DOCUMENT VERIFIED", Proto.Green, size = 11)
                     Spacer(Modifier.height(4.dp))

@@ -79,6 +79,7 @@ fun ProtoVerificationScreen(
     var stage by remember { mutableStateOf(ProtoStage.Welcome) }
     var chosen by remember { mutableStateOf<CountryDocumentItem?>(null) }
     var capturedPath by remember { mutableStateOf<String?>(null) }
+    var capturedPads by remember { mutableStateOf<List<android.graphics.Bitmap>>(emptyList()) }
     var sideIndex by remember { mutableStateOf(0) }
     var frontPath by remember { mutableStateOf<String?>(null) }
     var backPath by remember { mutableStateOf<String?>(null) }
@@ -165,9 +166,10 @@ fun ProtoVerificationScreen(
             ProtoDocumentCaptureScreen(
                 docLabel = chosen?.documentType ?: "Document",
                 sideLabel = if (isBack) "Back" else "Front",
-                onCaptured = { path ->
+                onCaptured = { path, pads ->
                     if (isBack) backPath = path else frontPath = path
                     capturedPath = path
+                    capturedPads = pads
                     stage = ProtoStage.DocPreview
                 },
                 onClose = { stage = ProtoStage.BeforeShoot },
@@ -182,6 +184,7 @@ fun ProtoVerificationScreen(
                 imagePath = capturedPath ?: "",
                 docTypeInt = protoDocTypeInt(chosen?.documentType),
                 isBack = isBack,
+                padFrames = capturedPads,
                 onLooksGood = {
                     if (sideIndex < sides.lastIndex) {
                         // more sides to capture (e.g. the back of a licence / ID card)
