@@ -22,10 +22,12 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import com.example.veritypro_sdk.ui.verification.VerityProViewModel
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -58,6 +60,7 @@ fun ProtoDocumentCaptureScreen(
     val lifecycleOwner = LocalLifecycleOwner.current
     val imageCapture = remember { CameraUtils.createSmartImageCapture(context, withVideoCapture = false) }
     var capturing by remember { mutableStateOf(false) }
+    var cameraReady by remember { mutableStateOf(false) }
 
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         AndroidView(
@@ -66,6 +69,10 @@ fun ProtoDocumentCaptureScreen(
                 PreviewView(ctx).apply {
                     implementationMode = PreviewView.ImplementationMode.COMPATIBLE
                     scaleType = PreviewView.ScaleType.FILL_CENTER
+                    // Gate the shutter on the actual preview stream so we never capture a black frame.
+                    previewStreamState.observe(lifecycleOwner) { st ->
+                        if (st == PreviewView.StreamState.STREAMING) cameraReady = true
+                    }
                 }.also { pv ->
                     CameraUtils.bindSmartCamera(ctx, lifecycleOwner, pv, imageCapture)
                 }
@@ -98,7 +105,14 @@ fun ProtoDocumentCaptureScreen(
                 }
                 Spacer(Modifier.height(16.dp))
                 Box(Modifier.background(Color(0xCC171717)).padding(horizontal = 14.dp, vertical = 8.dp)) {
-                    MonoLabel(if (capturing) "CAPTURING…" else "HOLD STEADY · FILL THE FRAME", Color.White, size = 12)
+                    MonoLabel(
+                        when {
+                            !cameraReady -> "STARTING CAMERA…"
+                            capturing -> "CAPTURING…"
+                            else -> "HOLD STEADY · FILL THE FRAME"
+                        },
+                        Color.White, size = 12,
+                    )
                 }
             }
         }
@@ -111,11 +125,12 @@ fun ProtoDocumentCaptureScreen(
                 modifier = Modifier.width(120.dp),
             ) {
                 Text(
-                    if (capturing) "…" else "CAPTURE",
-                    color = Proto.Ink, fontFamily = ProtoDisplay, fontSize = 15.sp, fontWeight = FontWeight.Black,
+                    if (!cameraReady) "…" else if (capturing) "…" else "CAPTURE",
+                    color = if (cameraReady) Proto.Ink else Color(0xFF9AA0A6),
+                    fontFamily = ProtoDisplay, fontSize = 15.sp, fontWeight = FontWeight.Black,
                     textAlign = TextAlign.Center,
                     modifier = Modifier.fillMaxWidth().protoClick {
-                        if (!capturing) {
+                        if (cameraReady && !capturing) {
                             capturing = true
                             val file = File(context.cacheDir, "proto_doc_${sideLabel.lowercase()}.jpg")
                             val opts = ImageCapture.OutputFileOptions.Builder(file).build()
@@ -138,14 +153,43 @@ fun ProtoDocumentCaptureScreen(
     }
 }
 
-/** Screen 6 — check your photo (captured preview + verdict). */
+/**
+ * Screen 6 — check your photo (captured preview + REAL ML verdict).
+ * Every capture runs mlPredictDocument (presence/type/side) then mlVerifyBurst (anti-spoof);
+ * "Looks good" is gated on the ML pass — fail-closed, per KYC rules.
+ */
 @Composable
 fun ProtoDocumentPreviewScreen(
+    vm: VerityProViewModel,
     imagePath: String,
+    docTypeInt: Int,
+    isBack: Boolean,
     onLooksGood: () -> Unit,
     onRetake: () -> Unit,
 ) {
     val bmp = remember(imagePath) { BitmapFactory.decodeFile(imagePath) }
+    // null = checking, true = passed both checks, false = rejected
+    var pass by remember(imagePath) { mutableStateOf<Boolean?>(null) }
+    var hint by remember(imagePath) { mutableStateOf("Checking your photo…") }
+
+    LaunchedEffect(imagePath) {
+        pass = null; hint = "Checking your photo…"
+        val file = File(imagePath)
+        // 1) presence / type / side
+        vm.mlPredictDocument(file, docTypeInt, isBack) { docOk, pHint, _ ->
+            if (!docOk) {
+                pass = false
+                hint = pHint.ifBlank { "Couldn't read the document clearly. Retake." }
+            } else {
+                // 2) anti-spoof burst verification
+                vm.mlVerifyBurst(listOf(file), docTypeInt, isBack) { isReal, vHint, _ ->
+                    pass = isReal
+                    hint = if (isReal) "Clear and readable" else vHint.ifBlank { "Verification failed. Retake." }
+                }
+            }
+        }
+    }
+
     Column(Modifier.fillMaxSize().background(Proto.Canvas)) {
         ProtoTopBar(step = null, onBack = onRetake)
         Column(Modifier.fillMaxWidth().weight(1f).padding(horizontal = 24.dp)) {
@@ -168,15 +212,23 @@ fun ProtoDocumentPreviewScreen(
                     Box(Modifier.fillMaxWidth().aspectRatio(1.586f).background(Color(0xFFEEF0F4)))
                 }
             }
-            Spacer(Modifier.height(14.dp))
-            Row {
-                MonoLabel("✓ ALL FOUR CORNERS VISIBLE", Proto.Green, size = 11)
+            Spacer(Modifier.height(16.dp))
+            when (pass) {
+                null -> MonoLabel("VERIFYING · MLPREDICT + VERIFYBURST…", Proto.Amber, size = 11)
+                true -> {
+                    MonoLabel("✓ DOCUMENT VERIFIED", Proto.Green, size = 11)
+                    Spacer(Modifier.height(4.dp))
+                    MonoLabel("✓ ${hint.uppercase()}", Proto.Green, size = 11)
+                }
+                false -> {
+                    MonoLabel("✕ NOT ACCEPTED", Proto.Danger, size = 11)
+                    Spacer(Modifier.height(6.dp))
+                    Text(hint, color = Proto.Danger, fontFamily = ProtoDisplay, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                }
             }
-            Spacer(Modifier.height(4.dp))
-            Row { MonoLabel("✓ TEXT IS SHARP", Proto.Green, size = 11) }
         }
         Column(Modifier.padding(24.dp)) {
-            ProtoPrimaryButton("Looks good", onClick = onLooksGood)
+            ProtoPrimaryButton("Looks good", enabled = pass == true, onClick = onLooksGood)
             Spacer(Modifier.height(10.dp))
             Text(
                 "Retake", color = Proto.Sub, fontFamily = ProtoDisplay, fontSize = 14.sp, fontWeight = FontWeight.Bold,

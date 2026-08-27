@@ -48,6 +48,20 @@ import com.example.veritypro_sdk.utils.VerityOption
 
 private enum class ProtoStage { Welcome, Connecting, ChooseId, CameraAccess, BeforeShoot, Capture, DocPreview, CaptureDone }
 
+// SDK document-type int (MLDocumentType.fromSdkType): 1=ID Card, 2=Passport, 3=Driver's Licence.
+private fun protoDocTypeInt(name: String?): Int {
+    val n = name?.lowercase() ?: ""
+    return when {
+        "passport" in n -> 2
+        "driver" in n || "licence" in n || "license" in n -> 3
+        else -> 1
+    }
+}
+
+// Passport = front only; Driver's Licence & ID Card = front + back. List of isBack flags.
+private fun protoSides(name: String?): List<Boolean> =
+    if (protoDocTypeInt(name) == 2) listOf(false) else listOf(false, true)
+
 /**
  * API-CONNECTED prototype flow (neo-brutalist, VerityPro KYC SDK.dc.html).
  * Real wiring via [VerityProViewModel]: `createKyc(options)` creates the backend session and the
@@ -65,6 +79,9 @@ fun ProtoVerificationScreen(
     var stage by remember { mutableStateOf(ProtoStage.Welcome) }
     var chosen by remember { mutableStateOf<CountryDocumentItem?>(null) }
     var capturedPath by remember { mutableStateOf<String?>(null) }
+    var sideIndex by remember { mutableStateOf(0) }
+    var frontPath by remember { mutableStateOf<String?>(null) }
+    var backPath by remember { mutableStateOf<String?>(null) }
     val context = LocalContext.current
     val cameraPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (granted) stage = ProtoStage.BeforeShoot
@@ -109,7 +126,7 @@ fun ProtoVerificationScreen(
             ProtoChooseIdScreen(
                 documents = docs,
                 onBack = { stage = ProtoStage.Welcome },
-                onPick = { chosen = it; stage = ProtoStage.CameraAccess },
+                onPick = { chosen = it; sideIndex = 0; frontPath = null; backPath = null; stage = ProtoStage.CameraAccess },
             )
         }
 
@@ -131,28 +148,48 @@ fun ProtoVerificationScreen(
             onBack = { stage = ProtoStage.CameraAccess },
         )
 
-        ProtoStage.Capture -> ProtoDocumentCaptureScreen(
-            docLabel = chosen?.documentType ?: "Document",
-            sideLabel = "Front",
-            onCaptured = { path ->
-                vm.setCapturedDocumentPaths(front = path, back = null, video = null)
-                capturedPath = path
-                stage = ProtoStage.DocPreview
-            },
-            onClose = { stage = ProtoStage.BeforeShoot },
-        )
+        ProtoStage.Capture -> {
+            val sides = protoSides(chosen?.documentType)
+            val isBack = sides.getOrElse(sideIndex) { false }
+            ProtoDocumentCaptureScreen(
+                docLabel = chosen?.documentType ?: "Document",
+                sideLabel = if (isBack) "Back" else "Front",
+                onCaptured = { path ->
+                    if (isBack) backPath = path else frontPath = path
+                    capturedPath = path
+                    stage = ProtoStage.DocPreview
+                },
+                onClose = { stage = ProtoStage.BeforeShoot },
+            )
+        }
 
-        ProtoStage.DocPreview -> ProtoDocumentPreviewScreen(
-            imagePath = capturedPath ?: "",
-            onLooksGood = { stage = ProtoStage.CaptureDone },
-            onRetake = { stage = ProtoStage.Capture },
-        )
+        ProtoStage.DocPreview -> {
+            val sides = protoSides(chosen?.documentType)
+            val isBack = sides.getOrElse(sideIndex) { false }
+            ProtoDocumentPreviewScreen(
+                vm = vm,
+                imagePath = capturedPath ?: "",
+                docTypeInt = protoDocTypeInt(chosen?.documentType),
+                isBack = isBack,
+                onLooksGood = {
+                    if (sideIndex < sides.lastIndex) {
+                        // more sides to capture (e.g. the back of a licence / ID card)
+                        sideIndex += 1
+                        stage = ProtoStage.Capture
+                    } else {
+                        vm.setCapturedDocumentPaths(front = frontPath, back = backPath, video = null)
+                        stage = ProtoStage.CaptureDone
+                    }
+                },
+                onRetake = { stage = ProtoStage.Capture },
+            )
+        }
 
         ProtoStage.CaptureDone -> ProtoProcessingScreen(
             kicker = "BIOMETRIC · NEXT",
             title = "Now a quick\nselfie",
-            message = "Document captured and saved to the session. Next slice: selfie intro + AWS " +
-                "liveness (beginLiveness / awsSessionId / livenessResult).",
+            message = "Document verified and saved (front${if (backPath != null) " + back" else ""}). " +
+                "Next slice: selfie intro + AWS liveness (beginLiveness / awsSessionId / livenessResult).",
             module = Proto.Teal,
         )
     }
