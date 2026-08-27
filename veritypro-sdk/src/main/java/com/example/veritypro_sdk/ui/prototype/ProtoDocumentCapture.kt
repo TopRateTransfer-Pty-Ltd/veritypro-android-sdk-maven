@@ -190,6 +190,7 @@ fun ProtoDocumentPreviewScreen(
     docTypeInt: Int,
     isBack: Boolean,
     padFrames: List<Bitmap>,
+    autoRetake: Boolean = true,
     onLooksGood: () -> Unit,
     onRetake: () -> Unit,
 ) {
@@ -251,8 +252,8 @@ fun ProtoDocumentPreviewScreen(
 
     // AUTO-RETAKE: a recoverable failure (RETRY) sends the user straight back to the camera after a
     // brief hint. Terminal REJECT (spoof/tamper) stays manual so a hard fail doesn't loop.
-    LaunchedEffect(outcome) {
-        if (outcome == "RETRY") {
+    LaunchedEffect(outcome, autoRetake) {
+        if (outcome == "RETRY" && autoRetake) {
             delay(1800)
             onRetake()
         }
@@ -293,9 +294,12 @@ fun ProtoDocumentPreviewScreen(
                     MonoLabel("✓ ${hint.uppercase()}", Proto.Green, size = 11)
                 }
                 "RETRY" -> {
-                    MonoLabel("↺ RETAKING…", Proto.Amber, size = 11)
+                    MonoLabel(
+                        if (autoRetake) "↺ RETAKING…" else "✕ STILL NOT ACCEPTED",
+                        if (autoRetake) Proto.Amber else Proto.Danger, size = 11,
+                    )
                     Spacer(Modifier.height(6.dp))
-                    Text(hint, color = Proto.Ink, fontFamily = ProtoDisplay, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                    Text(hint, color = if (autoRetake) Proto.Ink else Proto.Danger, fontFamily = ProtoDisplay, fontSize = 14.sp, fontWeight = FontWeight.Medium)
                 }
                 else -> {
                     MonoLabel("✕ NOT ACCEPTED", Proto.Danger, size = 11)

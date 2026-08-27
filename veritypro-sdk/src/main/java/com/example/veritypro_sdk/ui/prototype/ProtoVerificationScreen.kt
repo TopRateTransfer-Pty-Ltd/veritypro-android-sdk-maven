@@ -83,6 +83,11 @@ fun ProtoVerificationScreen(
     var sideIndex by remember { mutableStateOf(0) }
     var frontPath by remember { mutableStateOf<String?>(null) }
     var backPath by remember { mutableStateOf<String?>(null) }
+    // Cap the auto-retake loop: after this many consecutive failed attempts on a side, stop
+    // auto-returning to the camera and show a manual failure (so a persistently-failing capture
+    // — e.g. a document the server won't accept — can never loop forever).
+    var retakeAttempts by remember { mutableStateOf(0) }
+    val maxAutoRetakes = 3
     val context = LocalContext.current
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
@@ -130,7 +135,7 @@ fun ProtoVerificationScreen(
             ProtoChooseIdScreen(
                 documents = docs,
                 onBack = { stage = ProtoStage.Welcome },
-                onPick = { chosen = it; sideIndex = 0; frontPath = null; backPath = null; stage = ProtoStage.CameraAccess },
+                onPick = { chosen = it; sideIndex = 0; frontPath = null; backPath = null; retakeAttempts = 0; stage = ProtoStage.CameraAccess },
             )
         }
 
@@ -185,7 +190,9 @@ fun ProtoVerificationScreen(
                 docTypeInt = protoDocTypeInt(chosen?.documentType),
                 isBack = isBack,
                 padFrames = capturedPads,
+                autoRetake = retakeAttempts < maxAutoRetakes,
                 onLooksGood = {
+                    retakeAttempts = 0
                     if (sideIndex < sides.lastIndex) {
                         // more sides to capture (e.g. the back of a licence / ID card)
                         sideIndex += 1
@@ -195,7 +202,10 @@ fun ProtoVerificationScreen(
                         stage = ProtoStage.CaptureDone
                     }
                 },
-                onRetake = { stage = ProtoStage.Capture },
+                onRetake = {
+                    retakeAttempts += 1
+                    stage = ProtoStage.Capture
+                },
             )
         }
 
