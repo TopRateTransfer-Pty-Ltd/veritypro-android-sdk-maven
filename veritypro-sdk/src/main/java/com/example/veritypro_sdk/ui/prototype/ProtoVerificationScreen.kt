@@ -1,5 +1,9 @@
 package com.example.veritypro_sdk.ui.prototype
 
+import android.Manifest
+import android.content.pm.PackageManager
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
@@ -31,16 +35,18 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.veritypro_sdk.services.CountryDocumentItem
 import com.example.veritypro_sdk.services.Resource
 import com.example.veritypro_sdk.ui.verification.VerityProViewModel
 import com.example.veritypro_sdk.utils.VerityOption
 
-private enum class ProtoStage { Welcome, Connecting, ChooseId, DocumentNext }
+private enum class ProtoStage { Welcome, Connecting, ChooseId, CameraAccess, BeforeShoot, Capture }
 
 /**
  * API-CONNECTED prototype flow (neo-brutalist, VerityPro KYC SDK.dc.html).
@@ -58,6 +64,10 @@ fun ProtoVerificationScreen(
     val docsState by vm.countryDocumentsState.collectAsState()
     var stage by remember { mutableStateOf(ProtoStage.Welcome) }
     var chosen by remember { mutableStateOf<CountryDocumentItem?>(null) }
+    val context = LocalContext.current
+    val cameraPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) stage = ProtoStage.BeforeShoot
+    }
 
     // Fire the real backend session creation when the user consents and continues.
     LaunchedEffect(stage) {
@@ -98,15 +108,33 @@ fun ProtoVerificationScreen(
             ProtoChooseIdScreen(
                 documents = docs,
                 onBack = { stage = ProtoStage.Welcome },
-                onPick = { chosen = it; stage = ProtoStage.DocumentNext },
+                onPick = { chosen = it; stage = ProtoStage.CameraAccess },
             )
         }
 
-        ProtoStage.DocumentNext -> ProtoProcessingScreen(
+        ProtoStage.CameraAccess -> ProtoCameraAccessScreen(
+            onAllow = {
+                val granted = ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
+                    PackageManager.PERMISSION_GRANTED
+                if (granted) stage = ProtoStage.BeforeShoot else cameraPermission.launch(Manifest.permission.CAMERA)
+            },
+            onNotNow = onExit,
+            onBack = { stage = ProtoStage.ChooseId },
+        )
+
+        ProtoStage.BeforeShoot -> ProtoBeforeShootScreen(
+            docLabel = chosen?.documentType ?: "Document",
+            sideLabel = "Front",
+            onOpenCamera = { stage = ProtoStage.Capture },
+            onSkip = { stage = ProtoStage.Capture },
+            onBack = { stage = ProtoStage.CameraAccess },
+        )
+
+        ProtoStage.Capture -> ProtoProcessingScreen(
             kicker = "DOCUMENT · ${chosen?.documentType?.uppercase() ?: ""}",
-            title = "Opening camera…",
-            message = "Next: capture ${chosen?.documentType ?: "your document"}. " +
-                "Camera + liveness screens wire into the existing capture pipeline.",
+            title = "Camera capture",
+            message = "Live camera + on-device coaching runs here. Next slice: the existing capture " +
+                "pipeline (mlPredict / verifyBurst) rendered neo-brutalist.",
             module = Proto.Flamingo,
         )
     }
