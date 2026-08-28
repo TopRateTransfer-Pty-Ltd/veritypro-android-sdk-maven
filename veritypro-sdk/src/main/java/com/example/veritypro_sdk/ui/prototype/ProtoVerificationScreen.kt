@@ -49,7 +49,26 @@ import com.example.veritypro_sdk.services.Resource
 import com.example.veritypro_sdk.ui.verification.VerityProViewModel
 import com.example.veritypro_sdk.utils.VerityOption
 
-private enum class ProtoStage { Welcome, Connecting, ChooseId, CameraAccess, BeforeShoot, Capture, DocPreview, SelfieIntro, Liveness, Submitting, AllComplete }
+private enum class ProtoStage { Welcome, Connecting, ChooseId, CameraAccess, BeforeShoot, Capture, DocPreview, SelfieIntro, Liveness, AddressUpload, EddUpload, Submitting, AllComplete }
+
+// Ordered active modules for this product (document → biometric → address → edd).
+private fun protoModuleOrder(options: VerityOption): List<String> {
+    val w = protoWants(options)
+    return buildList {
+        if (w.document) add("DOCUMENT")
+        if (w.biometric) add("BIOMETRIC")
+        if (w.address) add("ADDRESS")
+        if (w.edd) add("EDD")
+    }.ifEmpty { listOf("DOCUMENT") }
+}
+
+// The stage that starts a given module.
+private fun stageForModule(module: String): ProtoStage = when (module) {
+    "BIOMETRIC" -> ProtoStage.SelfieIntro
+    "ADDRESS" -> ProtoStage.AddressUpload
+    "EDD" -> ProtoStage.EddUpload
+    else -> ProtoStage.ChooseId // DOCUMENT
+}
 
 // SDK document-type int (MLDocumentType.fromSdkType): 1=ID Card, 2=Passport, 3=Driver's Licence.
 private fun protoDocTypeInt(name: String?): Int {
@@ -123,7 +142,11 @@ fun ProtoVerificationScreen(
     val beginState by vm.beginLivenessState.collectAsState()
     val livenessRegion by vm.livenessRegion.collectAsState()
     val livenessCredentials by vm.livenessCredentials.collectAsState()
+    val addressState by vm.addressState.collectAsState()
+    val eddState by vm.eddState.collectAsState()
     var livenessApproved by remember { mutableStateOf(false) }
+    // Overall terminal outcome shown on the completion screen (submission accepted end-to-end).
+    var flowOk by remember { mutableStateOf(false) }
     var stage by remember { mutableStateOf(ProtoStage.Welcome) }
     var chosen by remember { mutableStateOf<CountryDocumentItem?>(null) }
     var capturedPath by remember { mutableStateOf<String?>(null) }
@@ -134,6 +157,8 @@ fun ProtoVerificationScreen(
     var frontVideo by remember { mutableStateOf<String?>(null) }
     var backVideo by remember { mutableStateOf<String?>(null) }
     var livenessId by remember { mutableStateOf<String?>(null) }
+    var moduleQueue by remember { mutableStateOf<List<String>>(emptyList()) }
+    var moduleIndex by remember { mutableStateOf(0) }
     // Cap the auto-retake loop: after this many consecutive failed attempts on a side, stop
     // auto-returning to the camera and show a manual failure (so a persistently-failing capture
     // — e.g. a document the server won't accept — can never loop forever).
@@ -167,9 +192,23 @@ fun ProtoVerificationScreen(
     }
     // Advance to Choose-ID once the session is live and the region documents have loaded.
     LaunchedEffect(kyc, docsState) {
-        if (stage == ProtoStage.Connecting && kyc is Resource.Success<*> && docsState is Resource.Success<*>) {
-            stage = ProtoStage.ChooseId
+        if (stage == ProtoStage.Connecting && kyc is Resource.Success<*>) {
+            val queue = protoModuleOrder(options)
+            val first = queue.firstOrNull() ?: "DOCUMENT"
+            // Only the document module needs the region documents list; other products can start
+            // without waiting for it.
+            if (first == "DOCUMENT" && docsState !is Resource.Success<*>) return@LaunchedEffect
+            moduleQueue = queue
+            moduleIndex = 0
+            stage = stageForModule(first)
         }
+    }
+
+    // Move to the next active module, or submit once every module is done.
+    fun advanceModule() {
+        val next = moduleIndex + 1
+        moduleIndex = next
+        stage = if (next < moduleQueue.size) stageForModule(moduleQueue[next]) else ProtoStage.Submitting
     }
 
     when (stage) {
@@ -265,9 +304,7 @@ fun ProtoVerificationScreen(
                         stage = ProtoStage.Capture
                     } else {
                         vm.setCapturedDocumentPaths(front = frontPath, back = backPath, video = null)
-                        // Only run the biometric/liveness step when this product requires it;
-                        // document-only products go straight to submit.
-                        stage = if (protoWants(options).biometric) ProtoStage.SelfieIntro else ProtoStage.Submitting
+                        advanceModule()
                     }
                 },
                 onRetake = {
@@ -300,7 +337,7 @@ fun ProtoVerificationScreen(
                             livenessId = bs.data.id ?: aws
                             vm.verifyLivenessResult(livenessId ?: aws) { ok ->
                                 livenessApproved = ok
-                                stage = ProtoStage.Submitting
+                                advanceModule()
                             }
                         },
                         onError = { stage = ProtoStage.SelfieIntro },
@@ -318,40 +355,102 @@ fun ProtoVerificationScreen(
             else -> ProtoProcessingScreen("BIOMETRIC · LIVENESS", "Starting the\nliveness check", "One moment…", Proto.Teal)
         }
 
-        ProtoStage.Submitting -> {
-            // Real backend submission: document + device + location + IP + security assessment +
-            // compressed document clip, keyed to session + liveness IDs.
-            var phase by remember { mutableStateOf("start") }
-            LaunchedEffect(Unit) {
-                protoSubmitVerification(
-                    context = context,
-                    vm = vm,
-                    docTypeInt = protoDocTypeInt(chosen?.documentType),
-                    frontPath = frontPath,
-                    backPath = backPath,
-                    videoPath = frontVideo ?: backVideo,
-                    livenessId = livenessId ?: "",
-                    livenessConfidence = null,
-                    captureAttempts = retakeAttempts + 1,
-                )
-            }
-            LaunchedEffect(kyc) {
-                when (val k = kyc) {
-                    is Resource.Loading -> if (k.message.contains("Submitting", ignoreCase = true)) phase = "submitting"
-                    is Resource.Success -> if (phase == "submitting") stage = ProtoStage.AllComplete
-                    is Resource.Error -> if (phase == "submitting") { livenessApproved = false; stage = ProtoStage.AllComplete }
+        ProtoStage.AddressUpload -> {
+            var phase by remember { mutableStateOf("idle") }
+            LaunchedEffect(addressState) {
+                when (addressState) {
+                    is Resource.Loading -> phase = "submitting"
+                    is Resource.Success<*> -> if (phase == "submitting") advanceModule()
                     else -> {}
+                }
+            }
+            ProtoUploadScreen(
+                kicker = "ADDRESS",
+                title = "Proof of address",
+                subtitle = "Dated in the last 3 months, showing your full name and address.",
+                docTypes = listOf("Utility bill" to 1, "Bank statement" to 2, "Council or tax letter" to 3),
+                accent = Proto.Brand,
+                step = null,
+                submitting = addressState is Resource.Loading,
+                errorMsg = (addressState as? Resource.Error)?.let { "Couldn't submit. Please try again." },
+                onSubmit = { type, file ->
+                    vm.submitAddressDocument(vm.getSessionId(), file, type, "", "", options.apiKey, context)
+                },
+                onBack = onExit,
+            )
+        }
+
+        ProtoStage.EddUpload -> {
+            var phase by remember { mutableStateOf("idle") }
+            LaunchedEffect(eddState) {
+                when (eddState) {
+                    is Resource.Loading -> phase = "submitting"
+                    is Resource.Success<*> -> if (phase == "submitting") advanceModule()
+                    else -> {}
+                }
+            }
+            ProtoUploadScreen(
+                kicker = "ENHANCED DUE DILIGENCE",
+                title = "Source of funds",
+                subtitle = "Upload an income document — payslip, statement or tax return.",
+                docTypes = listOf("Payslip" to 1, "Bank statement" to 2, "Tax return" to 3),
+                accent = Proto.Indigo,
+                step = null,
+                submitting = eddState is Resource.Loading,
+                errorMsg = (eddState as? Resource.Error)?.let { "Couldn't submit. Please try again." },
+                onSubmit = { type, file ->
+                    vm.submitEddDocument(vm.getSessionId(), "${options.firstName} ${options.lastName}", file, type, options.apiKey, context)
+                },
+                onBack = onExit,
+            )
+        }
+
+        ProtoStage.Submitting -> {
+            // Only document/KYC flows post the full multipart verification here. Address, EDD and
+            // biometric-only flows already submitted inside their own module — so those just finish.
+            val hasDocument = protoWants(options).document
+            if (hasDocument) {
+                // Real backend submission: document + device + location + IP + security assessment +
+                // compressed document clip, keyed to session + liveness IDs.
+                var phase by remember { mutableStateOf("start") }
+                LaunchedEffect(Unit) {
+                    protoSubmitVerification(
+                        context = context,
+                        vm = vm,
+                        docTypeInt = protoDocTypeInt(chosen?.documentType),
+                        frontPath = frontPath,
+                        backPath = backPath,
+                        videoPath = frontVideo ?: backVideo,
+                        livenessId = livenessId ?: "",
+                        livenessConfidence = null,
+                        captureAttempts = retakeAttempts + 1,
+                    )
+                }
+                LaunchedEffect(kyc) {
+                    when (val k = kyc) {
+                        is Resource.Loading -> if (k.message.contains("Submitting", ignoreCase = true)) phase = "submitting"
+                        is Resource.Success -> if (phase == "submitting") { flowOk = true; stage = ProtoStage.AllComplete }
+                        is Resource.Error -> if (phase == "submitting") { flowOk = false; stage = ProtoStage.AllComplete }
+                        else -> {}
+                    }
+                }
+            } else {
+                // No document module — the prior module(s) already posted their evidence.
+                LaunchedEffect(Unit) {
+                    flowOk = if (protoWants(options).biometric) livenessApproved else true
+                    stage = ProtoStage.AllComplete
                 }
             }
             ProtoProcessingScreen(
                 kicker = "SUBMITTING",
-                title = "Submitting your\nverification",
-                message = "Sending your document, device and location securely…",
+                title = if (hasDocument) "Submitting your\nverification" else "Finishing\nup",
+                message = if (hasDocument) "Sending your document, device and location securely…"
+                else "Wrapping up your verification…",
                 module = Proto.Brand,
             )
         }
 
-        ProtoStage.AllComplete -> ProtoAllCompleteScreen(approved = livenessApproved, onDone = onExit)
+        ProtoStage.AllComplete -> ProtoAllCompleteScreen(approved = flowOk, onDone = onExit)
     }
 }
 
@@ -400,8 +499,6 @@ private fun ProtoChooseIdScreen(
                     MonoLabel("NO DOCUMENTS RETURNED FOR THIS REGION", Proto.Sub, size = 12)
                 }
             }
-            Spacer(Modifier.height(16.dp))
-            MonoLabel("SELECTINGDOCUMENT · allowedDocumentTypes = ${documents.size}", Proto.Sub, size = 11)
             Spacer(Modifier.height(24.dp))
         }
     }

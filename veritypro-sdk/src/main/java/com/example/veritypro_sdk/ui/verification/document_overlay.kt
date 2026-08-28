@@ -303,16 +303,18 @@ fun CameraScrimWithCutout(
         val screenWPx = constraints.maxWidth.toFloat()
         val screenHPx = constraints.maxHeight.toFloat()
 
-        val cutoutWPx = minOf(screenWPx - with(density) { 32.dp.toPx() }, with(density) { 340.dp.toPx() })
+        // Frame fills ~92% of screen width; starts at 22% from top so there is
+        // minimal dead space above and maximum room below for the capture button.
+        val cutoutWPx = screenWPx - with(density) { 16.dp.toPx() }
         val aspectRatio = if (isPassport) 1.414f else 1.586f
         val cutoutHPx = cutoutWPx / aspectRatio
         val cutoutLeft = (screenWPx - cutoutWPx) / 2f
-        val cutoutTop = screenHPx * 0.47f - cutoutHPx / 2f
+        val cutoutTop = screenHPx * 0.22f
 
         Canvas(Modifier.fillMaxSize()) {
-            val cornerRadiusPx = with(density) { 8.dp.toPx() }
-            val armPx = with(density) { 24.dp.toPx() }
-            val strokePx = with(density) { 3.dp.toPx() }
+            val cornerRadiusPx = with(density) { 10.dp.toPx() }
+            val armPx = with(density) { 30.dp.toPx() }
+            val strokePx = with(density) { 3.5.dp.toPx() }
 
             // Scrim with transparent cutout via EvenOdd path fill
             val path = Path().apply {

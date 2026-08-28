@@ -84,6 +84,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
+import com.example.veritypro_sdk.utils.DocumentBackValidator
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.first
@@ -448,6 +449,15 @@ fun DocumentCaptureScreen(
             return@LaunchedEffect
         }
 
+        // V2 mode: capture is manual — user taps the button. No ML live loop.
+        // Brief delay for AE/AF to settle, then mark camera ready for UI.
+        if (V2CaptureConfig.useV2CaptureVerify) {
+            Log.d("DocumentCapture", "V2 mode: skipping ML live loop, user drives capture")
+            delay(500)
+            mlFirstResultReceived = true
+            return@LaunchedEffect
+        }
+
         val mlRepository = MLRepository()
         val docTypeExpected = MLDocumentType.fromSdkType(documentType ?: 1)
         Log.d("DocumentCapture", "ML Live loop started: docType=$docTypeExpected, isBackSide=$isBackSide, cameraReady=$cameraReady")
@@ -603,19 +613,32 @@ fun DocumentCaptureScreen(
                                     // gating on it deadlocked glossy IDs. The multi-frame burst
                                     // stage (Laplacian sharpness + anti-spoof) is the authoritative
                                     // quality gate and rejects genuinely unreadable captures.
-                                    distanceGuidance = if (response.docOk || (isCapturingBack && mlFirstResultReceived)) {
-                                        DistanceGuidance(
+                                    distanceGuidance = when {
+                                        response.docOk -> DistanceGuidance(
                                             state = DistanceState.PERFECT,
                                             frameCoverage = GuidanceConfig.OPTIMAL_COVERAGE_TARGET,
-                                            message = when {
-                                                glarePresent -> "Document detected — reduce glare for best quality"
-                                                isCapturingBack -> "Keep the back of your document centered"
-                                                else -> "Document detected"
-                                            },
+                                            message = if (glarePresent)
+                                                "Document detected — reduce glare for best quality"
+                                            else
+                                                "Document detected",
                                             isOptimal = true
                                         )
-                                    } else {
-                                        null
+                                        // Back-side: the TFLite model cannot classify document backs
+                                        // (no portrait photo → always docOk=false). Once ML has
+                                        // warmed up, treat any frame as "ready" and fire auto-capture.
+                                        // The pre-preview DocumentBackValidator gate (running on the
+                                        // full-resolution captured image) is the real content check —
+                                        // it rejects carpet/objects before the preview is ever shown.
+                                        isCapturingBack && mlFirstResultReceived -> DistanceGuidance(
+                                            state = DistanceState.PERFECT,
+                                            frameCoverage = GuidanceConfig.OPTIMAL_COVERAGE_TARGET,
+                                            message = if (glarePresent)
+                                                "Document detected — reduce glare for best quality"
+                                            else
+                                                "Keep the back of your document centered",
+                                            isOptimal = true
+                                        )
+                                        else -> null
                                     }
                                     Log.d("DocumentCapture", "Distance: docOk=${response.docOk}, back=$isCapturingBack, mlPassed=$mlPassed, optimal=${distanceGuidance?.isOptimal}")
                                 }
@@ -756,8 +779,16 @@ fun DocumentCaptureScreen(
                     BurstCaptureUtils.cleanupBurstFiles(burstFiles)
                     burstFiles = emptyList()
                     previewPath = null
-                    verificationPassed = false // Reset verification state on retake
+                    verificationPassed = false
                     verificationError = ""
+                    // Reset ML detection state so the camera restarts from SEARCHING
+                    // on retake. Without this, mlPassed/distanceGuidance remain true
+                    // from the previous capture and the camera immediately relocks on
+                    // whatever is in frame (background, carpet, etc.) before a new ML
+                    // result arrives — causing an instant re-capture loop.
+                    mlPassed = false
+                    distanceGuidance = null
+                    mlFirstResultReceived = false
                 },
                 onContinue = { file ->
                     if (!needsTwoSides) {
@@ -937,7 +968,9 @@ fun DocumentCaptureScreen(
         Log.d("DocumentCapture", "State: $detectionState (mlPassed=$mlPassed, distOptimal=${distanceGuidance?.isOptimal}, coverage=${distanceGuidance?.frameCoverage})")
 
         // Auto-capture: countdown when LOCKED, fire capture at 2 seconds
+        // V2 mode skips this — capture is always manual (user taps the button).
         LaunchedEffect(detectionState) {
+            if (V2CaptureConfig.useV2CaptureVerify) return@LaunchedEffect
             if (detectionState == DetectionState.LOCKED) {
                 // H-6: Don't start countdown while an error is still on-screen.
                 // The error auto-dismisses after 4s; if the document is still
@@ -1504,6 +1537,7 @@ fun DocumentCaptureScreen(
                     drawCircle(
                         color = when {
                             isProcessing -> Color.Gray.copy(alpha = 0.4f)
+                            V2CaptureConfig.useV2CaptureVerify && cameraReady -> Color(0xFF0400E5)
                             detectionState == DetectionState.LOCKED -> Color(0xFF0400E5)
                             else -> Color.White.copy(alpha = 0.92f)
                         },
@@ -1516,7 +1550,7 @@ fun DocumentCaptureScreen(
                         center = center,
                         style = Stroke(width = ringStroke)
                     )
-                    if (detectionState == DetectionState.LOCKED && autoCaptureProgress > 0f) {
+                    if (!V2CaptureConfig.useV2CaptureVerify && detectionState == DetectionState.LOCKED && autoCaptureProgress > 0f) {
                         drawArc(
                             color = Color.White,
                             startAngle = -90f,
@@ -1541,11 +1575,15 @@ fun DocumentCaptureScreen(
 
             Text(
                 text = when {
+                    V2CaptureConfig.useV2CaptureVerify -> when {
+                        !cameraReady -> "Getting the camera ready..."
+                        else -> "Position your document, then tap to capture"
+                    }
                     !mlFirstResultReceived -> "Getting the camera ready..."
                     mlPassed -> "Hold still to auto-capture  •  or tap now"
                     else -> "Tap to capture  •  or hold still to auto-capture"
                 },
-                color = if (!mlFirstResultReceived)
+                color = if (V2CaptureConfig.useV2CaptureVerify && !cameraReady || !V2CaptureConfig.useV2CaptureVerify && !mlFirstResultReceived)
                     Color.White.copy(alpha = scanningAlpha)
                 else
                     Color.White.copy(alpha = 0.75f),
@@ -1741,15 +1779,17 @@ private suspend fun verifyAndHandleResult(
                 padFrames = padBmps,
                 deviceSignals = signals,
             )
+
             withContext(Dispatchers.Main) {
                 when (res) {
                     is Resource.Success -> {
                         val r = res.data
-                        Log.d("DocumentCapture", "V2 capture-verify: state=${r.state} reason=${r.reasonCode} decisionId=${r.decisionId}")
+                        Log.d("DocumentCapture", "V2 capture-verify: state=${r.state} reason=${r.reasonCode} docType=${r.decision.docType} side=${r.decision.side} decisionId=${r.decisionId}")
                         when (r.state) {
-                            // Accepted (or accepted-pending human review) → proceed.
-                            MLCaptureState.VERIFIED, MLCaptureState.MANUAL_REVIEW ->
+                            // OpenAI Vision verified document type and side — server is sole authority.
+                            MLCaptureState.VERIFIED, MLCaptureState.MANUAL_REVIEW -> {
                                 onPass(burstFrames, r.decision.confidence?.toDouble() ?: 0.0)
+                            }
                             // Recoverable → re-capture with the server's guidance.
                             MLCaptureState.RETRY -> {
                                 BurstCaptureUtils.cleanupBurstFiles(frames)
@@ -1822,6 +1862,30 @@ private suspend fun verifyAndHandleResult(
         sideExpected = sideExpected
     )
 
+    // PRE-PREVIEW GATE (back side only): run document content validation BEFORE
+    // showing the preview screen. verify-burst is an image-quality gate only —
+    // it returns PASS for any non-blurry image, including carpet or random objects.
+    // DocumentBackValidator checks actual content: barcode, MRZ, text, no face.
+    // If validation fails, onFail is called and previewPath is never set —
+    // the user sees a brief error on the capture screen and returns to SEARCHING.
+    var backContentValidation: DocumentBackValidator.BackValidationResult? = null
+    if (isBackSide && result is Resource.Success && result.data.decision == MLDecision.PASS) {
+        val imageFile = highResFile?.takeIf { it.exists() } ?: frames.firstOrNull()
+        if (imageFile != null) {
+            val bmp = withContext(Dispatchers.IO) { BitmapFactory.decodeFile(imageFile.path) }
+            if (bmp != null) {
+                backContentValidation = withContext(Dispatchers.Default) {
+                    try {
+                        DocumentBackValidator.validateDocumentBack(bmp)
+                    } finally {
+                        bmp.recycle()
+                    }
+                }
+                Log.d("DocumentCapture", "Pre-preview back content: valid=${backContentValidation?.isValid} barcode=${backContentValidation?.hasBarcode} text=${backContentValidation?.textCount} face=${backContentValidation?.hasFace}")
+            }
+        }
+    }
+
     withContext(Dispatchers.Main) {
         when (result) {
             is Resource.Success -> {
@@ -1831,6 +1895,19 @@ private suspend fun verifyAndHandleResult(
                 Log.d("DocumentCapture", "Verify-burst result: ${response.decision}, conf=${response.confidence}, hint=${response.hint}")
 
                 if (passed) {
+                    // Back-side content gate: reject if DocumentBackValidator found no
+                    // document content. The user never sees the preview for an invalid capture.
+                    if (isBackSide) {
+                        val contentOk = backContentValidation?.isValid ?: false
+                        if (!contentOk) {
+                            val contentError = backContentValidation?.message
+                                ?: "No document detected. Please position the back of your ID within the frame."
+                            Log.w("DocumentCapture", "Pre-preview back gate REJECTED: $contentError")
+                            BurstCaptureUtils.cleanupBurstFiles(frames)
+                            onFail(contentError)
+                            return@withContext
+                        }
+                    }
                     // Soft gate: ML backend is authoritative for anti-spoof.
                     // Local detection is informational — log warnings but don't
                     // override the backend decision. The heuristic autocorrelation
