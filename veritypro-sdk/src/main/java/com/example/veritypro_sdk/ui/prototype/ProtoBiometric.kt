@@ -133,10 +133,16 @@ fun ProtoLivenessScreen(
     }
 }
 
-/** Terminal — verification complete. */
+/**
+ * Terminal — verification complete. Copy is dynamic per product: [title] and [subtitle] are
+ * computed by the orchestrator from the modules actually completed (identity document, selfie,
+ * proof of address, income), so a document-only run never claims a liveness check, etc.
+ */
 @Composable
 fun ProtoAllCompleteScreen(
     approved: Boolean,
+    title: String,
+    subtitle: String,
     onDone: () -> Unit,
 ) {
     Column(
@@ -152,14 +158,13 @@ fun ProtoAllCompleteScreen(
         }
         Spacer(Modifier.height(24.dp))
         Text(
-            if (approved) "You're all done" else "Almost there",
+            title,
             color = Proto.Ink, fontFamily = ProtoDisplay, fontSize = 34.sp, fontWeight = FontWeight.Black,
             textAlign = TextAlign.Center, lineHeight = 36.sp,
         )
         Spacer(Modifier.height(12.dp))
         Text(
-            if (approved) "Your identity and liveness checks passed. You can close this — we'll notify you."
-            else "We're finishing your checks. You can close this — we'll notify you when it's done.",
+            subtitle,
             color = Proto.Sub, fontFamily = ProtoDisplay, fontSize = 15.sp, textAlign = TextAlign.Center,
         )
         Spacer(Modifier.height(28.dp))

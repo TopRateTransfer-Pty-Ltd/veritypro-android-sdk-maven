@@ -114,6 +114,29 @@ private fun protoWants(options: VerityOption): ProtoWants {
     }
 }
 
+// Dynamic completion copy — reflects the modules actually completed so the terminal screen never
+// over-claims (e.g. a document-only run must not say "liveness checks passed").
+private fun protoCompletionCopy(options: VerityOption, approved: Boolean): Pair<String, String> {
+    if (!approved) {
+        return "Almost there" to
+            "We're finishing your checks. You can close this — we'll notify you when it's done."
+    }
+    val w = protoWants(options)
+    val items = buildList {
+        if (w.document) add("identity document")
+        if (w.biometric) add("selfie")
+        if (w.address) add("proof of address")
+        if (w.edd) add("income details")
+    }.ifEmpty { listOf("verification") }
+    val list = when (items.size) {
+        1 -> items[0]
+        2 -> "${items[0]} and ${items[1]}"
+        else -> items.dropLast(1).joinToString(", ") + " and " + items.last()
+    }
+    return "You're all done" to
+        "We've received your $list. You can close this — we'll notify you when your checks are complete."
+}
+
 // The dynamic "what we'll need" rows on the welcome screen, per requested product.
 private fun protoIntroModules(options: VerityOption): List<ProtoModuleItem> {
     val w = protoWants(options)
@@ -443,7 +466,15 @@ fun ProtoVerificationScreen(
             )
         }
 
-        ProtoStage.AllComplete -> ProtoAllCompleteScreen(approved = flowOk, onDone = onExit)
+        ProtoStage.AllComplete -> {
+            val (doneTitle, doneSubtitle) = protoCompletionCopy(options, flowOk)
+            ProtoAllCompleteScreen(
+                approved = flowOk,
+                title = doneTitle,
+                subtitle = doneSubtitle,
+                onDone = onExit,
+            )
+        }
     }
 }
 
