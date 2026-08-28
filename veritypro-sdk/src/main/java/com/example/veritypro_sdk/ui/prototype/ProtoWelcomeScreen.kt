@@ -32,13 +32,8 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
-private data class Module(val title: String, val subtitle: String, val color: Color, val circle: Boolean)
-
-private val welcomeModules = listOf(
-    Module("A photo of your ID", "Passport, licence or ID card", Proto.Flamingo, circle = false),
-    Module("A quick selfie", "Liveness check, no photos kept", Proto.Teal, circle = true),
-    Module("Two documents", "Proof of address and income", Proto.GoldenFizz, circle = false),
-)
+/** One requirement row on the welcome screen — the set is dynamic per verification product. */
+data class ProtoModuleItem(val title: String, val subtitle: String, val color: Color, val circle: Boolean)
 
 /**
  * Screen 1 — Welcome / consent (VerityPro KYC SDK.dc.html).
@@ -47,6 +42,7 @@ private val welcomeModules = listOf(
  */
 @Composable
 fun ProtoWelcomeScreen(
+    modules: List<ProtoModuleItem>,
     onGetStarted: () -> Unit = {},
     onPrivacy: () -> Unit = {},
 ) {
@@ -88,7 +84,7 @@ fun ProtoWelcomeScreen(
             Modifier.fillMaxWidth().padding(26.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            welcomeModules.forEach { m ->
+            modules.forEach { m ->
                 BrutalBox {
                     Row(
                         Modifier.padding(horizontal = 16.dp, vertical = 14.dp),

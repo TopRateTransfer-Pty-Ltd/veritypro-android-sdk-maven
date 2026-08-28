@@ -70,6 +70,42 @@ private fun protoSides(name: String?): List<Boolean> =
 private fun protoFrameAspect(name: String?): Float =
     if (protoDocTypeInt(name) == 2) 1.42f else 1.586f
 
+// Which verification modules this product requires. Driven by requiredModules when present, else
+// mapped from the VerityMode: DOCUMENT=doc, BIOMETRIC=doc+selfie, LIVENESS_ONLY=selfie, ADDRESS,
+// EDD, COMBINED=all.
+private data class ProtoWants(val document: Boolean, val biometric: Boolean, val address: Boolean, val edd: Boolean)
+
+private fun protoWants(options: VerityOption): ProtoWants {
+    val req = options.requiredModules?.map { it.uppercase() }.orEmpty()
+    val mode = options.mode.uppercase()
+    return if (req.isNotEmpty()) {
+        ProtoWants(
+            document = req.any { it.contains("DOCUMENT") },
+            biometric = req.any { it.contains("BIOMETRIC") || it.contains("LIVENESS") },
+            address = req.any { it.contains("ADDRESS") },
+            edd = req.any { it.contains("EDD") },
+        )
+    } else {
+        ProtoWants(
+            document = mode in setOf("DOCUMENT", "BIOMETRIC", "COMBINED"),
+            biometric = mode in setOf("BIOMETRIC", "LIVENESS_ONLY", "COMBINED"),
+            address = mode in setOf("ADDRESS", "COMBINED"),
+            edd = mode in setOf("EDD", "COMBINED"),
+        )
+    }
+}
+
+// The dynamic "what we'll need" rows on the welcome screen, per requested product.
+private fun protoIntroModules(options: VerityOption): List<ProtoModuleItem> {
+    val w = protoWants(options)
+    val out = mutableListOf<ProtoModuleItem>()
+    if (w.document) out.add(ProtoModuleItem("A photo of your ID", "Passport, licence or ID card", Proto.Flamingo, false))
+    if (w.biometric) out.add(ProtoModuleItem("A quick selfie", "Liveness check, no photos kept", Proto.Teal, true))
+    if (w.address) out.add(ProtoModuleItem("Proof of address", "A recent bill or bank statement", Proto.GoldenFizz, false))
+    if (w.edd) out.add(ProtoModuleItem("Proof of income", "Payslip, statement or tax return", Proto.Indigo, false))
+    return out.ifEmpty { listOf(ProtoModuleItem("A photo of your ID", "Passport, licence or ID card", Proto.Flamingo, false)) }
+}
+
 /**
  * API-CONNECTED prototype flow (neo-brutalist, VerityPro KYC SDK.dc.html).
  * Real wiring via [VerityProViewModel]: `createKyc(options)` creates the backend session and the
@@ -138,6 +174,7 @@ fun ProtoVerificationScreen(
 
     when (stage) {
         ProtoStage.Welcome -> ProtoWelcomeScreen(
+            modules = protoIntroModules(options),
             onGetStarted = { stage = ProtoStage.Connecting },
             onPrivacy = {},
         )
@@ -228,7 +265,9 @@ fun ProtoVerificationScreen(
                         stage = ProtoStage.Capture
                     } else {
                         vm.setCapturedDocumentPaths(front = frontPath, back = backPath, video = null)
-                        stage = ProtoStage.SelfieIntro
+                        // Only run the biometric/liveness step when this product requires it;
+                        // document-only products go straight to submit.
+                        stage = if (protoWants(options).biometric) ProtoStage.SelfieIntro else ProtoStage.Submitting
                     }
                 },
                 onRetake = {
