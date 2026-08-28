@@ -116,6 +116,41 @@ object CameraUtils {
     fun getDocumentVideoTier(context: Context): DocumentVideoTier =
         if (isConcurrentVideoSafe(context)) DocumentVideoTier.HD else DocumentVideoTier.SD
 
+    /**
+     * Bind Preview + VideoCapture ONLY (no ImageCapture) so a session clip records at full quality
+     * without collapsing the still. This is the first phase of the sequenced record-then-photo
+     * capture used on devices that cannot bind a full-resolution still and video concurrently.
+     * [onReady] fires once the preview is streaming; [onError] on any bind failure (fail-safe).
+     */
+    fun bindVideoRecording(
+        context: Context,
+        lifecycleOwner: LifecycleOwner,
+        previewView: PreviewView,
+        videoCapture: VideoCapture<Recorder>,
+        onReady: (() -> Unit)? = null,
+        onError: ((String) -> Unit)? = null,
+    ) {
+        val future = ProcessCameraProvider.getInstance(context)
+        future.addListener({
+            try {
+                val provider = future.get()
+                val preview = Preview.Builder()
+                    .build()
+                    .also { it.surfaceProvider = previewView.surfaceProvider }
+                val selector = CameraSelector.Builder()
+                    .requireLensFacing(CameraSelector.LENS_FACING_BACK)
+                    .build()
+                provider.unbindAll()
+                provider.bindToLifecycle(lifecycleOwner, selector, preview, videoCapture)
+                Log.i(TAG, "bindVideoRecording: Preview + VideoCapture bound (record-first phase)")
+                onReady?.invoke()
+            } catch (e: Exception) {
+                Log.e(TAG, "bindVideoRecording failed: ${e.message}", e)
+                onError?.invoke(e.message ?: "Could not start the camera.")
+            }
+        }, ContextCompat.getMainExecutor(context))
+    }
+
     @OptIn(ExperimentalGetImage::class)
     fun bindSmartCamera(
         context: Context,

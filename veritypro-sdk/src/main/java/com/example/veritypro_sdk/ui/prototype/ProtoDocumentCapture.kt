@@ -74,15 +74,49 @@ fun ProtoDocumentCaptureScreen(
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val scope = rememberCoroutineScope()
-    val imageCapture = remember { CameraUtils.createSmartImageCapture(context, withVideoCapture = true) }
+    // Sequenced capture: record a session clip (Preview + VideoCapture) FIRST, then rebind to
+    // Preview + ImageCapture for the full-resolution still. This yields BOTH a compressed video AND
+    // an uncollapsed still even on limited-hardware devices that can't bind them together.
+    // ImageCapture is created WITHOUT concurrent video, so the still is never quality-collapsed.
+    val imageCapture = remember { CameraUtils.createSmartImageCapture(context, withVideoCapture = false) }
     val videoRecorder = remember { VerityVideoRecorder(context) }
     val videoCapture = remember { videoRecorder.buildVideoCapture(DocumentVideoTier.SD) }
+    var capturePhase by remember { mutableStateOf("recording") }   // "recording" -> "shooting"
     var capturing by remember { mutableStateOf(false) }
     var cameraReady by remember { mutableStateOf(false) }
-    var videoRecording by remember { mutableStateOf(false) }
+    var shootTriggered by remember { mutableStateOf(false) }
     var previewRef by remember { mutableStateOf<PreviewView?>(null) }
-    var pendingPrimary by remember { mutableStateOf<String?>(null) }
+    var capturedVideoPath by remember { mutableStateOf<String?>(null) }
     var pendingPads by remember { mutableStateOf<List<Bitmap>>(emptyList()) }
+
+    // Take the full-resolution still and deliver it with the recorded clip.
+    fun shootStill() {
+        if (shootTriggered) return
+        shootTriggered = true
+        val file = File(context.cacheDir, "proto_doc_${sideLabel.lowercase()}.jpg")
+        val opts = ImageCapture.OutputFileOptions.Builder(file).build()
+        imageCapture.takePicture(
+            opts, ContextCompat.getMainExecutor(context),
+            object : ImageCapture.OnImageSavedCallback {
+                override fun onImageSaved(result: ImageCapture.OutputFileResults) {
+                    onCaptured(file.absolutePath, pendingPads, capturedVideoPath)
+                }
+                override fun onError(exc: ImageCaptureException) {
+                    capturing = false; shootTriggered = false
+                }
+            },
+        )
+    }
+
+    // Rebind to Preview + ImageCapture (no video) so the still is full-resolution, then shoot after a
+    // short settle. We trigger the shot directly (not via the StreamState observer, which does not
+    // reliably re-fire STREAMING after a rebind) — takePicture itself waits for a valid frame.
+    fun rebindForPhoto() {
+        val pv = previewRef ?: return
+        capturePhase = "shooting"
+        CameraUtils.bindSmartCamera(context, lifecycleOwner, pv, imageCapture, videoCapture = null)
+        scope.launch { delay(700); shootStill() }
+    }
 
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         AndroidView(
@@ -97,23 +131,23 @@ fun ProtoDocumentCaptureScreen(
                     }
                 }.also { pv ->
                     previewRef = pv
-                    CameraUtils.bindSmartCamera(
-                        ctx, lifecycleOwner, pv, imageCapture,
-                        videoCapture = videoCapture,
-                        onVideoCaptureBound = { bound ->
-                            // Record a compressed (SD, <=8 MiB) document clip once video is bound.
-                            // Fail-safe: if it never binds/records, capture proceeds with video=null.
-                            if (bound && !videoRecording) {
-                                videoRecording = true
-                                videoRecorder.startRecording(
-                                    videoCapture, VerityVideoModule.DOCUMENT,
-                                    sideLabel.lowercase(), DocumentVideoTier.SD,
-                                ) { file ->
-                                    // Finalised (after stopRecording) — deliver still + pads + video.
-                                    val p = pendingPrimary
-                                    if (p != null) onCaptured(p, pendingPads, file?.absolutePath)
-                                }
+                    // Phase 1 — record the session clip (Preview + VideoCapture only). onStopped (after
+                    // the CAPTURE tap, or on failure) delivers the file and switches to the photo phase.
+                    CameraUtils.bindVideoRecording(
+                        ctx, lifecycleOwner, pv, videoCapture,
+                        onReady = {
+                            videoRecorder.startRecording(
+                                videoCapture, VerityVideoModule.DOCUMENT,
+                                sideLabel.lowercase(), DocumentVideoTier.SD,
+                            ) { file ->
+                                capturedVideoPath = file?.absolutePath
+                                rebindForPhoto()
                             }
+                        },
+                        onError = {
+                            // Couldn't record — capture the photo directly (video stays null).
+                            capturePhase = "shooting"
+                            CameraUtils.bindSmartCamera(ctx, lifecycleOwner, pv, imageCapture, videoCapture = null)
                         },
                     )
                 }
@@ -184,26 +218,13 @@ fun ProtoDocumentCaptureScreen(
                                     delay(70)
                                 }
                                 pendingPads = pads
-                                // Primary full-resolution still.
-                                val file = File(context.cacheDir, "proto_doc_${sideLabel.lowercase()}.jpg")
-                                val opts = ImageCapture.OutputFileOptions.Builder(file).build()
-                                imageCapture.takePicture(
-                                    opts, ContextCompat.getMainExecutor(context),
-                                    object : ImageCapture.OnImageSavedCallback {
-                                        override fun onImageSaved(result: ImageCapture.OutputFileResults) {
-                                            pendingPrimary = file.absolutePath
-                                            if (videoRecording) {
-                                                // stop -> onStopped -> onCaptured(primary, pads, video)
-                                                videoRecorder.stopRecording()
-                                            } else {
-                                                onCaptured(file.absolutePath, pads, null)
-                                            }
-                                        }
-                                        override fun onError(exc: ImageCaptureException) {
-                                            capturing = false
-                                        }
-                                    },
-                                )
+                                if (capturePhase == "recording") {
+                                    // Stop the clip → onStopped → rebindForPhoto → shootStill.
+                                    videoRecorder.stopRecording()
+                                } else {
+                                    // Photo-only fallback (video never bound): shoot the still now.
+                                    shootStill()
+                                }
                             }
                         }
                     }.padding(vertical = 18.dp),
