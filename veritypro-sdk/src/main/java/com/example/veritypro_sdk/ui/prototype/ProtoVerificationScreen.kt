@@ -49,7 +49,7 @@ import com.example.veritypro_sdk.services.Resource
 import com.example.veritypro_sdk.ui.verification.VerityProViewModel
 import com.example.veritypro_sdk.utils.VerityOption
 
-private enum class ProtoStage { Welcome, Connecting, ChooseId, CameraAccess, BeforeShoot, Capture, DocPreview, SelfieIntro, Liveness, AddressUpload, EddUpload, Submitting, AllComplete }
+private enum class ProtoStage { Welcome, Connecting, ChooseId, CameraAccess, BeforeShoot, Capture, DocPreview, PairChecking, AddressEntry, SelfieIntro, Liveness, AddressUpload, EddUpload, Submitting, AllComplete }
 
 // Ordered active modules for this product (document → biometric → address → edd).
 private fun protoModuleOrder(options: VerityOption): List<String> {
@@ -65,7 +65,7 @@ private fun protoModuleOrder(options: VerityOption): List<String> {
 // The stage that starts a given module.
 private fun stageForModule(module: String): ProtoStage = when (module) {
     "BIOMETRIC" -> ProtoStage.SelfieIntro
-    "ADDRESS" -> ProtoStage.AddressUpload
+    "ADDRESS" -> ProtoStage.AddressEntry   // enter address → create session → upload proof
     "EDD" -> ProtoStage.EddUpload
     else -> ProtoStage.ChooseId // DOCUMENT
 }
@@ -166,7 +166,9 @@ fun ProtoVerificationScreen(
     val livenessRegion by vm.livenessRegion.collectAsState()
     val livenessCredentials by vm.livenessCredentials.collectAsState()
     val addressState by vm.addressState.collectAsState()
+    val addressCreateState by vm.addressCreateState.collectAsState()
     val eddState by vm.eddState.collectAsState()
+    var addressStreet by remember { mutableStateOf(options.streetAddress ?: "") }
     var livenessApproved by remember { mutableStateOf(false) }
     // Overall terminal outcome shown on the completion screen (submission accepted end-to-end).
     var flowOk by remember { mutableStateOf(false) }
@@ -216,13 +218,9 @@ fun ProtoVerificationScreen(
     // Advance to Choose-ID once the session is live and the region documents have loaded.
     LaunchedEffect(kyc, docsState) {
         if (stage == ProtoStage.Connecting && kyc is Resource.Success<*>) {
-            val queue = protoModuleOrder(options)
-            val first = queue.firstOrNull() ?: "DOCUMENT"
-            // Only the document module needs the region documents list; other products can start
-            // without waiting for it.
+            val first = moduleQueue.firstOrNull() ?: "DOCUMENT"
+            // The document module needs the region documents list; biometric-first does not.
             if (first == "DOCUMENT" && docsState !is Resource.Success<*>) return@LaunchedEffect
-            moduleQueue = queue
-            moduleIndex = 0
             stage = stageForModule(first)
         }
     }
@@ -237,7 +235,18 @@ fun ProtoVerificationScreen(
     when (stage) {
         ProtoStage.Welcome -> ProtoWelcomeScreen(
             modules = protoIntroModules(options),
-            onGetStarted = { stage = ProtoStage.Connecting },
+            onGetStarted = {
+                val queue = protoModuleOrder(options)
+                moduleQueue = queue
+                moduleIndex = 0
+                // Only DOCUMENT / BIOMETRIC need the KYC session (Connecting → createKyc). ADDRESS and
+                // EDD have their own creation calls (createAddressVerification / createEddCase), so an
+                // address- or EDD-first product goes straight to its module — its own call surfaces
+                // any entitlement error at the right step, not a spurious KYC error.
+                val first = queue.first()
+                stage = if (first == "DOCUMENT" || first == "BIOMETRIC") ProtoStage.Connecting
+                        else stageForModule(first)
+            },
             onPrivacy = {},
         )
 
@@ -327,13 +336,47 @@ fun ProtoVerificationScreen(
                         stage = ProtoStage.Capture
                     } else {
                         vm.setCapturedDocumentPaths(front = frontPath, back = backPath, video = null)
-                        advanceModule()
+                        // Cross-check front+back before leaving the document module.
+                        stage = ProtoStage.PairChecking
                     }
                 },
                 onRetake = {
                     retakeAttempts += 1
                     stage = ProtoStage.Capture
                 },
+            )
+        }
+
+        ProtoStage.PairChecking -> {
+            // Front+back cross-check via /v2/kyc/doc/pair-check. Degrades gracefully: if the endpoint
+            // is unavailable (not deployed) or OK/manual, proceed; only a PAIR_RETRY sends the user
+            // back to recapture the flagged side.
+            LaunchedEffect(Unit) {
+                val docTypeStr = com.example.veritypro_sdk.services.MLDocumentType.fromSdkType(
+                    protoDocTypeInt(chosen?.documentType),
+                )
+                val res = com.example.veritypro_sdk.services.MLV2Repository().pairCheck(
+                    captureSessionId = vm.getSessionId().ifBlank { "proto-${protoDocTypeInt(chosen?.documentType)}" },
+                    docTypeExpected = docTypeStr,
+                )
+                val pair = (res as? Resource.Success)?.data
+                if (pair != null && pair.state == com.example.veritypro_sdk.services.MLPairState.PAIR_RETRY) {
+                    // Send the user back to recapture the flagged side.
+                    val sides = protoSides(chosen?.documentType)
+                    sideIndex = if ((pair.retrySide ?: "").uppercase() == "FRONT") 0 else sides.lastIndex
+                    if ((pair.retrySide ?: "").uppercase() == "FRONT") frontPath = null else backPath = null
+                    retakeAttempts = 0
+                    stage = ProtoStage.Capture
+                } else {
+                    // PAIR_OK, PAIR_MANUAL_REVIEW, or endpoint unavailable → continue the flow.
+                    advanceModule()
+                }
+            }
+            ProtoProcessingScreen(
+                kicker = "DOCUMENT",
+                title = "Checking your\ndocument",
+                message = "Making sure the front and back match…",
+                module = Proto.Flamingo,
             )
         }
 
@@ -378,7 +421,31 @@ fun ProtoVerificationScreen(
             else -> ProtoProcessingScreen("BIOMETRIC · LIVENESS", "Starting the\nliveness check", "One moment…", Proto.Teal)
         }
 
+        ProtoStage.AddressEntry -> {
+            // Step 1: capture the address + register the verification session (create).
+            var phase by remember { mutableStateOf("idle") }
+            LaunchedEffect(addressCreateState) {
+                when (addressCreateState) {
+                    is Resource.Loading -> phase = "creating"
+                    is Resource.Success<*> -> if (phase == "creating") stage = ProtoStage.AddressUpload
+                    else -> {}
+                }
+            }
+            ProtoAddressEntryScreen(
+                initial = addressStreet,
+                submitting = addressCreateState is Resource.Loading,
+                errorMsg = (addressCreateState as? Resource.Error)?.let { "Couldn't start address verification. Please try again." },
+                onSubmit = { street ->
+                    addressStreet = street
+                    vm.createAddressVerification(options, street)
+                },
+                onBack = onExit,
+            )
+        }
+
         ProtoStage.AddressUpload -> {
+            // Step 2: upload the proof-of-address document to the created session.
+            // Address doc types (backend enum): 1 = Utility Bill, 2 = Account Statement.
             var phase by remember { mutableStateOf("idle") }
             LaunchedEffect(addressState) {
                 when (addressState) {
@@ -390,20 +457,22 @@ fun ProtoVerificationScreen(
             ProtoUploadScreen(
                 kicker = "ADDRESS",
                 title = "Proof of address",
-                subtitle = "Dated in the last 3 months, showing your full name and address.",
-                docTypes = listOf("Utility bill" to 1, "Bank statement" to 2, "Council or tax letter" to 3),
+                subtitle = "Dated in the last 3 months, showing your name and the address you entered.",
+                docTypes = listOf("Utility bill" to 1, "Bank / account statement" to 2),
                 accent = Proto.Brand,
                 step = null,
                 submitting = addressState is Resource.Loading,
                 errorMsg = (addressState as? Resource.Error)?.let { "Couldn't submit. Please try again." },
                 onSubmit = { type, file ->
-                    vm.submitAddressDocument(vm.getSessionId(), file, type, "", "", options.apiKey, context)
+                    vm.submitAddressDocument(vm.getAddressSessionId(), file, type, "", "", options.apiKey, context)
                 },
                 onBack = onExit,
             )
         }
 
         ProtoStage.EddUpload -> {
+            // EDD: upload an income document that carries the source-of-funds information.
+            // EDD doc types (backend enum): 0 = Bank Statement, 1 = Pay Slip, 2 = Tax Return.
             var phase by remember { mutableStateOf("idle") }
             LaunchedEffect(eddState) {
                 when (eddState) {
@@ -415,14 +484,17 @@ fun ProtoVerificationScreen(
             ProtoUploadScreen(
                 kicker = "ENHANCED DUE DILIGENCE",
                 title = "Source of funds",
-                subtitle = "Upload an income document — payslip, statement or tax return.",
-                docTypes = listOf("Payslip" to 1, "Bank statement" to 2, "Tax return" to 3),
+                subtitle = "Upload an income document showing your source of funds.",
+                docTypes = listOf("Pay slip" to 1, "Bank statement" to 0, "Tax return" to 2),
                 accent = Proto.Indigo,
                 step = null,
                 submitting = eddState is Resource.Loading,
                 errorMsg = (eddState as? Resource.Error)?.let { "Couldn't submit. Please try again." },
                 onSubmit = { type, file ->
-                    vm.submitEddDocument(vm.getSessionId(), "${options.firstName} ${options.lastName}", file, type, options.apiKey, context)
+                    // Subject = the KYC session when present; otherwise the integration id (EDD-only
+                    // products have no KYC session).
+                    val subject = vm.getSessionId().ifBlank { options.integrationId }
+                    vm.submitEddDocument(subject, "${options.firstName} ${options.lastName}", file, type, options.apiKey, context)
                 },
                 onBack = onExit,
             )

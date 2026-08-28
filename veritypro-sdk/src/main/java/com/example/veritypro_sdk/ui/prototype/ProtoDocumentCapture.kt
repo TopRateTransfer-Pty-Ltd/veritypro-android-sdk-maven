@@ -247,8 +247,11 @@ fun ProtoDocumentPreviewScreen(
                 return@LaunchedEffect
             }
             val side = if (isBack) "BACK" else "FRONT"
+            // STABLE session id across FRONT and BACK (side is a separate field) so the server can
+            // pair-check both sides under one key. Fall back to a per-doc id if no KYC session yet.
+            val captureSession = vm.getSessionId().ifBlank { "proto-$docTypeInt" }
             val res = MLV2Repository().captureVerify(
-                captureSessionId = "proto-$docTypeInt-$side",
+                captureSessionId = captureSession,
                 side = side,
                 docTypeExpected = MLDocumentType.fromSdkType(docTypeInt),
                 primary = primary,

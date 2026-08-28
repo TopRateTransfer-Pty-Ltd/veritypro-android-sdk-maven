@@ -153,6 +153,24 @@ class VerityProViewModel(
     private val _addressState = MutableStateFlow<Resource<AddressVerificationResponse>?>(null)
     val addressState: StateFlow<Resource<AddressVerificationResponse>?> = _addressState
 
+    // Address verification has its OWN session (create → then upload the proof document to it).
+    private val _addressCreateState = MutableStateFlow<Resource<AddressVerificationResponse>?>(null)
+    val addressCreateState: StateFlow<Resource<AddressVerificationResponse>?> = _addressCreateState
+    private var addressSessionId: String = ""
+    fun getAddressSessionId(): String = addressSessionId
+
+    /** Register an address-verification session for [street]; captures the returned sessionId. */
+    fun createAddressVerification(options: VerityOption, street: String) {
+        viewModelScope.launch {
+            _addressCreateState.value = Resource.Loading("Setting up address verification...")
+            val result = repository.createAddressVerification(options.copy(streetAddress = street))
+            if (result is Resource.Success) {
+                addressSessionId = result.data.sessionId
+            }
+            _addressCreateState.value = result
+        }
+    }
+
     fun submitAddressDocument(
         sessionId: String,
         file: File,

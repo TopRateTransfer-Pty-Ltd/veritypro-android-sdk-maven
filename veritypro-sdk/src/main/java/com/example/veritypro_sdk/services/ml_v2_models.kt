@@ -149,3 +149,30 @@ object MLCaptureState {
     const val REJECTED = "REJECTED"           // terminal fail (spoof/tamper/invalid)
     const val MANUAL_REVIEW = "MANUAL_REVIEW" // deferred to human ops — show pending
 }
+
+/**
+ * Front+back pair cross-check — POST /v2/kyc/doc/pair-check. Called once BOTH sides are VERIFIED,
+ * before submission. Keyed by the SAME stable [captureSessionId] used for each side's capture-verify
+ * (the side is not part of the id). The server holds the per-side decisions and cross-validates them.
+ */
+data class MLPairCheckRequest(
+    @SerializedName("captureSessionId") val captureSessionId: String,
+    @SerializedName("docTypeExpected") val docTypeExpected: String? = null,
+    @SerializedName("policyVersion") val policyVersion: String? = null
+)
+
+data class MLPairCheckResponse(
+    @SerializedName("captureSessionId") val captureSessionId: String,
+    @SerializedName("state") val state: String,           // PAIR_OK | PAIR_RETRY | PAIR_MANUAL_REVIEW
+    @SerializedName("reasonCode") val reasonCode: String,
+    @SerializedName("retrySide") val retrySide: String? = null,   // FRONT | BACK
+    @SerializedName("hint") val hint: String? = null,
+    @SerializedName("docType") val docType: String? = null,
+    @SerializedName("policyVersion") val policyVersion: String? = null
+)
+
+object MLPairState {
+    const val PAIR_OK = "PAIR_OK"
+    const val PAIR_RETRY = "PAIR_RETRY"
+    const val PAIR_MANUAL_REVIEW = "PAIR_MANUAL_REVIEW"
+}
