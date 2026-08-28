@@ -31,8 +31,10 @@ data class AddressDocType(val id: Int, val name: String)
 // ── EDD (Enhanced Due Diligence) ──
 
 data class EddCaseResponse(
-    val caseId: String,
-    val status: String
+    // Nullable: a wrapped error / empty body can deserialize to null despite the create contract,
+    // so callers must treat a null caseId as failure (never a silent success).
+    val caseId: String? = null,
+    val status: String? = null
 )
 
 data class EddCaseStatusResponse(

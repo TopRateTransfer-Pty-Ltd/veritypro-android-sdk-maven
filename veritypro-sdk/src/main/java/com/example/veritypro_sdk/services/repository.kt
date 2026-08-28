@@ -621,8 +621,14 @@ class ApiRepository {
                 apiKey = apiKey
             )
 
-            Log.d("Verity", "EDD case created: ${response.caseId}")
-            Resource.Success(response)
+            if (response.caseId.isNullOrBlank()) {
+                // No caseId back = not a real create (e.g. a wrapped 4xx/empty body). Fail, don't fake.
+                Log.e("Verity", "EDD create returned no caseId (status=${response.status}) — treating as failure")
+                Resource.Error("Couldn't create the EDD case. Please try again.")
+            } else {
+                Log.d("Verity", "EDD case created: ${response.caseId}")
+                Resource.Success(response)
+            }
         } catch (e: CancellationException) {
             throw e
         } catch (e: IOException) {
