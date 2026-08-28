@@ -53,6 +53,9 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.example.veritypro_sdk.utils.CameraUtils
+import com.example.veritypro_sdk.utils.DocumentVideoTier
+import com.example.veritypro_sdk.utils.VerityVideoModule
+import com.example.veritypro_sdk.utils.VerityVideoRecorder
 import java.io.File
 
 /**
@@ -65,16 +68,21 @@ fun ProtoDocumentCaptureScreen(
     docLabel: String,
     sideLabel: String,
     frameAspect: Float = 1.586f,
-    onCaptured: (String, List<Bitmap>) -> Unit,
+    onCaptured: (String, List<Bitmap>, String?) -> Unit,
     onClose: () -> Unit,
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val scope = rememberCoroutineScope()
-    val imageCapture = remember { CameraUtils.createSmartImageCapture(context, withVideoCapture = false) }
+    val imageCapture = remember { CameraUtils.createSmartImageCapture(context, withVideoCapture = true) }
+    val videoRecorder = remember { VerityVideoRecorder(context) }
+    val videoCapture = remember { videoRecorder.buildVideoCapture(DocumentVideoTier.SD) }
     var capturing by remember { mutableStateOf(false) }
     var cameraReady by remember { mutableStateOf(false) }
+    var videoRecording by remember { mutableStateOf(false) }
     var previewRef by remember { mutableStateOf<PreviewView?>(null) }
+    var pendingPrimary by remember { mutableStateOf<String?>(null) }
+    var pendingPads by remember { mutableStateOf<List<Bitmap>>(emptyList()) }
 
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         AndroidView(
@@ -89,7 +97,25 @@ fun ProtoDocumentCaptureScreen(
                     }
                 }.also { pv ->
                     previewRef = pv
-                    CameraUtils.bindSmartCamera(ctx, lifecycleOwner, pv, imageCapture)
+                    CameraUtils.bindSmartCamera(
+                        ctx, lifecycleOwner, pv, imageCapture,
+                        videoCapture = videoCapture,
+                        onVideoCaptureBound = { bound ->
+                            // Record a compressed (SD, <=8 MiB) document clip once video is bound.
+                            // Fail-safe: if it never binds/records, capture proceeds with video=null.
+                            if (bound && !videoRecording) {
+                                videoRecording = true
+                                videoRecorder.startRecording(
+                                    videoCapture, VerityVideoModule.DOCUMENT,
+                                    sideLabel.lowercase(), DocumentVideoTier.SD,
+                                ) { file ->
+                                    // Finalised (after stopRecording) — deliver still + pads + video.
+                                    val p = pendingPrimary
+                                    if (p != null) onCaptured(p, pendingPads, file?.absolutePath)
+                                }
+                            }
+                        },
+                    )
                 }
             },
         )
@@ -157,6 +183,7 @@ fun ProtoDocumentCaptureScreen(
                                     previewRef?.bitmap?.let { pads.add(it) }
                                     delay(70)
                                 }
+                                pendingPads = pads
                                 // Primary full-resolution still.
                                 val file = File(context.cacheDir, "proto_doc_${sideLabel.lowercase()}.jpg")
                                 val opts = ImageCapture.OutputFileOptions.Builder(file).build()
@@ -164,7 +191,13 @@ fun ProtoDocumentCaptureScreen(
                                     opts, ContextCompat.getMainExecutor(context),
                                     object : ImageCapture.OnImageSavedCallback {
                                         override fun onImageSaved(result: ImageCapture.OutputFileResults) {
-                                            onCaptured(file.absolutePath, pads)
+                                            pendingPrimary = file.absolutePath
+                                            if (videoRecording) {
+                                                // stop -> onStopped -> onCaptured(primary, pads, video)
+                                                videoRecorder.stopRecording()
+                                            } else {
+                                                onCaptured(file.absolutePath, pads, null)
+                                            }
                                         }
                                         override fun onError(exc: ImageCaptureException) {
                                             capturing = false

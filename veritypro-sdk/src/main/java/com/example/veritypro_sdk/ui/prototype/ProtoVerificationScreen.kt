@@ -49,7 +49,7 @@ import com.example.veritypro_sdk.services.Resource
 import com.example.veritypro_sdk.ui.verification.VerityProViewModel
 import com.example.veritypro_sdk.utils.VerityOption
 
-private enum class ProtoStage { Welcome, Connecting, ChooseId, CameraAccess, BeforeShoot, Capture, DocPreview, SelfieIntro, Liveness, AllComplete }
+private enum class ProtoStage { Welcome, Connecting, ChooseId, CameraAccess, BeforeShoot, Capture, DocPreview, SelfieIntro, Liveness, Submitting, AllComplete }
 
 // SDK document-type int (MLDocumentType.fromSdkType): 1=ID Card, 2=Passport, 3=Driver's Licence.
 private fun protoDocTypeInt(name: String?): Int {
@@ -95,6 +95,9 @@ fun ProtoVerificationScreen(
     var sideIndex by remember { mutableStateOf(0) }
     var frontPath by remember { mutableStateOf<String?>(null) }
     var backPath by remember { mutableStateOf<String?>(null) }
+    var frontVideo by remember { mutableStateOf<String?>(null) }
+    var backVideo by remember { mutableStateOf<String?>(null) }
+    var livenessId by remember { mutableStateOf<String?>(null) }
     // Cap the auto-retake loop: after this many consecutive failed attempts on a side, stop
     // auto-returning to the camera and show a manual failure (so a persistently-failing capture
     // — e.g. a document the server won't accept — can never loop forever).
@@ -196,8 +199,8 @@ fun ProtoVerificationScreen(
                 docLabel = chosen?.documentType ?: "Document",
                 sideLabel = if (isBack) "Back" else "Front",
                 frameAspect = protoFrameAspect(chosen?.documentType),
-                onCaptured = { path, pads ->
-                    if (isBack) backPath = path else frontPath = path
+                onCaptured = { path, pads, video ->
+                    if (isBack) { backPath = path; backVideo = video } else { frontPath = path; frontVideo = video }
                     capturedPath = path
                     capturedPads = pads
                     stage = ProtoStage.DocPreview
@@ -255,9 +258,10 @@ fun ProtoVerificationScreen(
                         region = livenessRegion,
                         credentials = livenessCredentials,
                         onComplete = {
-                            vm.verifyLivenessResult(bs.data.id ?: aws) { ok ->
+                            livenessId = bs.data.id ?: aws
+                            vm.verifyLivenessResult(livenessId ?: aws) { ok ->
                                 livenessApproved = ok
-                                stage = ProtoStage.AllComplete
+                                stage = ProtoStage.Submitting
                             }
                         },
                         onError = { stage = ProtoStage.SelfieIntro },
@@ -273,6 +277,39 @@ fun ProtoVerificationScreen(
                 onExit = onExit,
             )
             else -> ProtoProcessingScreen("BIOMETRIC · LIVENESS", "Starting the\nliveness check", "One moment…", Proto.Teal)
+        }
+
+        ProtoStage.Submitting -> {
+            // Real backend submission: document + device + location + IP + security assessment +
+            // compressed document clip, keyed to session + liveness IDs.
+            var phase by remember { mutableStateOf("start") }
+            LaunchedEffect(Unit) {
+                protoSubmitVerification(
+                    context = context,
+                    vm = vm,
+                    docTypeInt = protoDocTypeInt(chosen?.documentType),
+                    frontPath = frontPath,
+                    backPath = backPath,
+                    videoPath = frontVideo ?: backVideo,
+                    livenessId = livenessId ?: "",
+                    livenessConfidence = null,
+                    captureAttempts = retakeAttempts + 1,
+                )
+            }
+            LaunchedEffect(kyc) {
+                when (val k = kyc) {
+                    is Resource.Loading -> if (k.message.contains("Submitting", ignoreCase = true)) phase = "submitting"
+                    is Resource.Success -> if (phase == "submitting") stage = ProtoStage.AllComplete
+                    is Resource.Error -> if (phase == "submitting") { livenessApproved = false; stage = ProtoStage.AllComplete }
+                    else -> {}
+                }
+            }
+            ProtoProcessingScreen(
+                kicker = "SUBMITTING",
+                title = "Submitting your\nverification",
+                message = "Sending your document, device and location securely…",
+                module = Proto.Brand,
+            )
         }
 
         ProtoStage.AllComplete -> ProtoAllCompleteScreen(approved = livenessApproved, onDone = onExit)
