@@ -210,9 +210,14 @@ fun ProtoVerificationScreen(
     }
 
     // Fire the real backend session creation when the user consents and continues.
+    // createKyc validates requiredModules against integration entitlements. The KYC session only
+    // covers DOCUMENT + BIOMETRIC; ADDRESS and EDD are separate services with their OWN create calls,
+    // so requesting them here would wrongly 403 the whole flow if either isn't enabled. Send only the
+    // KYC-session modules so a combined flow starts even when ADDRESS/EDD entitlements differ.
     LaunchedEffect(stage) {
         if (stage == ProtoStage.Connecting) {
-            vm.createKyc(options)
+            val kycModules = protoModuleOrder(options).filter { it == "DOCUMENT" || it == "BIOMETRIC" }
+            vm.createKyc(options.copy(requiredModules = kycModules.ifEmpty { listOf("DOCUMENT") }))
         }
     }
     // Advance to Choose-ID once the session is live and the region documents have loaded.
