@@ -64,7 +64,27 @@ fun ProtoUploadScreen(
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri != null) {
             sizeError = null
-            val f = File(context.cacheDir, "proto_upload_${kicker.filter { it.isLetterOrDigit() }}.dat")
+            // Preserve the REAL type: the backend rejects a generic "image/*" MIME (it wants a
+            // specific image/* or application/pdf). Derive the extension from the picked MIME so the
+            // cache file carries a concrete type, and reject anything that isn't an image/PDF.
+            val mime = context.contentResolver.getType(uri) ?: ""
+            val ext = when (mime) {
+                "image/png" -> "png"
+                "image/jpeg", "image/jpg" -> "jpg"
+                "image/webp" -> "webp"
+                "image/gif" -> "gif"
+                "image/bmp" -> "bmp"
+                "image/tiff" -> "tiff"
+                "image/heic", "image/heif" -> "heic"
+                "application/pdf" -> "pdf"
+                else -> null
+            }
+            if (ext == null) {
+                pickedFile = null; pickedName = null
+                sizeError = "That file type isn't accepted. Use a JPG, PNG or PDF."
+                return@rememberLauncherForActivityResult
+            }
+            val f = File(context.cacheDir, "proto_upload_${kicker.filter { it.isLetterOrDigit() }}.$ext")
             val ok = runCatching {
                 context.contentResolver.openInputStream(uri)?.use { input ->
                     f.outputStream().use { input.copyTo(it) }

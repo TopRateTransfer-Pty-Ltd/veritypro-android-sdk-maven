@@ -410,7 +410,13 @@ class ApiRepository {
                     lastName = options.lastName,
                     streetAddress = options.streetAddress ?: "",
                     vendorData = options.vendorData,
-                    isO2Code = options.isO2Code
+                    isO2Code = options.isO2Code,
+                    city = options.city,
+                    stateOrProvince = options.stateOrProvince,
+                    postalCode = options.postalCode,
+                    // Always send Country so the backend always has Street + ≥1 other component
+                    // (the ISO2 code satisfies the "at least one other component" rule).
+                    country = options.isO2Code,
                 )
                 val response = RetrofitInstance.api.createAddressVerification(request, options.apiKey)
 
@@ -466,15 +472,20 @@ class ApiRepository {
         ipLocation: String,
         apiKey: String,
         context: android.content.Context? = null
-    ): Resource<AddressVerificationResponse> {
+    ): Resource<String> {
         return try {
             // Detect mime type based on file extension — support PDFs alongside images
+            // Specific MIME per type — the backend rejects a generic "image/*".
             val mimeType = when (file.extension.lowercase()) {
                 "pdf" -> "application/pdf"
                 "png" -> "image/png"
                 "jpg", "jpeg" -> "image/jpeg"
                 "heic", "heif" -> "image/heic"
-                else -> "image/*"
+                "webp" -> "image/webp"
+                "gif" -> "image/gif"
+                "bmp" -> "image/bmp"
+                "tif", "tiff" -> "image/tiff"
+                else -> "application/octet-stream"
             }
 
             val filePart = MultipartBody.Part.createFormData(
@@ -504,26 +515,32 @@ class ApiRepository {
                 apiKey = apiKey
             )
 
-            if (response.statusCode in 100..299 && response.data != null) {
-                Log.d("Verity", "Address document submitted")
-                Resource.Success(response.data)
+            // Success = 2xx envelope. Data is just a status string (201/202 Accepted), so do NOT
+            // require it to be non-null (the previous check failed here even on backend success).
+            if (response.statusCode in 100..299) {
+                Log.d("Verity", "Address document submitted (status=${response.statusCode})")
+                Resource.Success(response.data ?: response.statusMessage ?: "Submitted")
             } else {
-                Log.e("Verity", "Error submitting address document")
-                Resource.Error(response.error?.message ?: "Unable to submit address document")
+                Log.e("Verity", "Error submitting address document: status=${response.statusCode} msg=${response.statusMessage} err=${response.error?.message}")
+                Resource.Error(response.error?.message ?: response.statusMessage ?: "Unable to submit address document")
             }
         } catch (e: IOException) {
             Log.e("Verity", "Network error: ${e.message}")
             Resource.Error("No internet connection. Please check your network.")
         } catch (e: HttpException) {
             val errorBody = e.response()?.errorBody()?.string()
-            var errorMessage = "HTTP ${e.code()} Error: Unknown error"
+            // Log the raw body so the real backend reason is visible (previously discarded).
+            Log.e("Verity", "submitAddressDocument HTTP ${e.code()} body: $errorBody")
+            var errorMessage = "HTTP ${e.code()} Error"
             if (errorBody != null) {
                 try {
                     val json = JSONObject(errorBody)
-                    val errorObj = json.optJSONObject("Error")
-                    if (errorObj != null) {
-                        errorMessage = errorObj.optString("message", errorMessage)
-                    }
+                    // APIResponse envelope uses lowercase "error":{"message"} + "statusMessage".
+                    val msg = json.optJSONObject("error")?.optString("message")
+                        ?: json.optJSONObject("Error")?.optString("message")
+                        ?: json.optString("statusMessage").ifBlank { null }
+                        ?: json.optString("title").ifBlank { null }   // ASP.NET ProblemDetails
+                    if (!msg.isNullOrBlank()) errorMessage = msg
                 } catch (_: Exception) {}
             }
             Resource.Error(errorMessage)
@@ -553,12 +570,17 @@ class ApiRepository {
     ): Resource<EddCaseResponse> {
         return try {
             // Detect MIME type based on file extension — support PDFs alongside images
+            // Specific MIME per type — the backend rejects a generic "image/*".
             val mimeType = when (file.extension.lowercase()) {
                 "pdf" -> "application/pdf"
                 "png" -> "image/png"
                 "jpg", "jpeg" -> "image/jpeg"
                 "heic", "heif" -> "image/heic"
-                else -> "image/*"
+                "webp" -> "image/webp"
+                "gif" -> "image/gif"
+                "bmp" -> "image/bmp"
+                "tif", "tiff" -> "image/tiff"
+                else -> "application/octet-stream"
             }
             val filePart = MultipartBody.Part.createFormData(
                 "file",

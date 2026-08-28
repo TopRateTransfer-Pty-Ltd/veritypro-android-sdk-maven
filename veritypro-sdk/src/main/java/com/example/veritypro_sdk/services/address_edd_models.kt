@@ -10,7 +10,13 @@ data class AddAddressVerificationRequest(
     val lastName: String,
     val streetAddress: String,
     val vendorData: String,
-    @SerializedName("ISO2Code") val isO2Code: String
+    @SerializedName("ISO2Code") val isO2Code: String,
+    // The backend requires Street + at least one other component (City/State/Postal/Country).
+    // Country always accompanies streetAddress; the rest are filled from address autocomplete.
+    val city: String? = null,
+    val stateOrProvince: String? = null,
+    val postalCode: String? = null,
+    val country: String? = null,
 )
 
 data class AddressVerificationResponse(

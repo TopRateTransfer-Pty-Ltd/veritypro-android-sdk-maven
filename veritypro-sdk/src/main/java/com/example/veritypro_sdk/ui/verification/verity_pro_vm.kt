@@ -150,8 +150,9 @@ class VerityProViewModel(
     // ADDRESS VERIFICATION STATE
     // ========================================================================
 
-    private val _addressState = MutableStateFlow<Resource<AddressVerificationResponse>?>(null)
-    val addressState: StateFlow<Resource<AddressVerificationResponse>?> = _addressState
+    // Document-submit result is a status string (backend update-address-verification → APIResponse<string>).
+    private val _addressState = MutableStateFlow<Resource<String>?>(null)
+    val addressState: StateFlow<Resource<String>?> = _addressState
 
     // Address verification has its OWN session (create → then upload the proof document to it).
     private val _addressCreateState = MutableStateFlow<Resource<AddressVerificationResponse>?>(null)
@@ -182,7 +183,18 @@ class VerityProViewModel(
     ) {
         viewModelScope.launch {
             _addressState.value = Resource.Loading("Submitting address document...")
-            val result = repository.submitAddressDocument(sessionId, file, documentType, ipAddress, ipLocation, apiKey, context)
+            // The backend REQUIRES non-empty IpAddress + IpLocation (model validation → 400 otherwise).
+            // Collect them from the device when not supplied, with safe non-empty fallbacks.
+            val helper = context?.let { com.example.veritypro_sdk.utils.LocationHelper(it) }
+            val ip = ipAddress.ifBlank {
+                runCatching { helper?.getLocalIpAddress() }.getOrNull().orEmpty()
+            }.ifBlank { "0.0.0.0" }
+            val loc = ipLocation.ifBlank {
+                runCatching {
+                    helper?.getCurrentLocation()?.let { "${it.latitude},${it.longitude}" }
+                }.getOrNull().orEmpty()
+            }.ifBlank { "0,0" }
+            val result = repository.submitAddressDocument(sessionId, file, documentType, ip, loc, apiKey, context)
             _addressState.value = result
         }
     }

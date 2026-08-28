@@ -85,7 +85,7 @@ interface VerityApiService {
         @Part("SecurityAssessmentJson") securityAssessmentJson: RequestBody? = null,
         @Part("IdempotencyKey") idempotencyKey: RequestBody? = null,
         @Header("x-api-key") apiKey: String
-    ): ApiResponse<AddressVerificationResponse>
+    ): ApiResponse<String>
 
     @GET("/addressverification/address-verification/{verificationId}/documents")
     suspend fun getAddressVerificationDocuments(
