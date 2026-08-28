@@ -2,6 +2,7 @@ package com.example.veritypro_sdk.ui.prototype
 
 import android.content.Context
 import android.util.Log
+import com.example.veritypro_sdk.services.Resource
 import com.example.veritypro_sdk.services.VerificationRequestMultipart
 import com.example.veritypro_sdk.services.toMultipartBodyPart
 import com.example.veritypro_sdk.ui.verification.VerityProViewModel
@@ -23,6 +24,8 @@ import java.io.File
  * the backend, so only the LivenessId is referenced here.
  *
  * Fail-safe: any single collector that fails degrades to empty/null — the submission still fires.
+ * Returns true when the backend accepts the submission (Resource.Success), false otherwise, so the
+ * caller can advance the UI on the awaited result without racing the kycState StateFlow.
  */
 suspend fun protoSubmitVerification(
     context: Context,
@@ -34,7 +37,7 @@ suspend fun protoSubmitVerification(
     livenessId: String,
     livenessConfidence: Double?,
     captureAttempts: Int?,
-) {
+): Boolean {
     val loc = LocationHelper(context)
     val ip = runCatching { loc.getLocalIpAddress() }.getOrNull() ?: ""
     val location = runCatching { loc.getCurrentLocation() }.getOrNull()
@@ -66,7 +69,7 @@ suspend fun protoSubmitVerification(
             "security=${securityJson != null} livenessId=$livenessId",
     )
 
-    vm.updateKyc(
+    val result = vm.submitKycAwait(
         VerificationRequestMultipart(
             SessionId = vm.getSessionId(),
             LivenessId = livenessId,
@@ -85,4 +88,8 @@ suspend fun protoSubmitVerification(
             },
         ),
     )
+    if (result is Resource.Error) {
+        Log.e("ProtoSubmit", "updateKyc failed: ${result.message}")
+    }
+    return result is Resource.Success
 }

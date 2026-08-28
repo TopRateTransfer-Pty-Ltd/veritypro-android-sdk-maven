@@ -290,6 +290,20 @@ class VerityProViewModel(
         }
     }
 
+    /**
+     * Suspend variant of [updateKyc] that returns the terminal result directly. Callers can advance
+     * the UI on the awaited outcome instead of racing [kycState]: a keyed Compose effect can skip an
+     * intermediate Loading emission when the state flips quickly, which strands the caller on the
+     * submitting screen forever. Still updates [kycState] for any other observers.
+     */
+    suspend fun submitKycAwait(data: VerificationRequestMultipart): Resource<String> {
+        Log.d("Verity", "submitKycAwait - session=${data.SessionId}, front=${data.DocumentFront != null}, back=${data.DocumentBack != null}")
+        _kycState.value = Resource.Loading("Submitting KYC Verification")
+        val result = repository.updateKyc(data, apiKey)
+        _kycState.value = result
+        return result
+    }
+
     fun resetLivenessState() {
         _awsSessionId.value = null
         _livenessRegion.value = "us-east-1"

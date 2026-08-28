@@ -411,10 +411,10 @@ fun ProtoVerificationScreen(
             val hasDocument = protoWants(options).document
             if (hasDocument) {
                 // Real backend submission: document + device + location + IP + security assessment +
-                // compressed document clip, keyed to session + liveness IDs.
-                var phase by remember { mutableStateOf("start") }
+                // compressed document clip, keyed to session + liveness IDs. Await the result directly
+                // so the screen always advances (no kycState race).
                 LaunchedEffect(Unit) {
-                    protoSubmitVerification(
+                    flowOk = protoSubmitVerification(
                         context = context,
                         vm = vm,
                         docTypeInt = protoDocTypeInt(chosen?.documentType),
@@ -425,14 +425,7 @@ fun ProtoVerificationScreen(
                         livenessConfidence = null,
                         captureAttempts = retakeAttempts + 1,
                     )
-                }
-                LaunchedEffect(kyc) {
-                    when (val k = kyc) {
-                        is Resource.Loading -> if (k.message.contains("Submitting", ignoreCase = true)) phase = "submitting"
-                        is Resource.Success -> if (phase == "submitting") { flowOk = true; stage = ProtoStage.AllComplete }
-                        is Resource.Error -> if (phase == "submitting") { flowOk = false; stage = ProtoStage.AllComplete }
-                        else -> {}
-                    }
+                    stage = ProtoStage.AllComplete
                 }
             } else {
                 // No document module — the prior module(s) already posted their evidence.
