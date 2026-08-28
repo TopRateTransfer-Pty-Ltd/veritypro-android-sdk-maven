@@ -19,6 +19,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import com.amplifyframework.core.Action
 import com.amplifyframework.core.Consumer
@@ -110,6 +111,10 @@ fun ProtoLivenessScreen(
         LaunchedEffect(Unit) { onError("Couldn't start the liveness check. Please try again.") }
         return
     }
+    // Only the FIRST terminal callback counts. The AWS detector can emit a stray onError around
+    // completion; without this guard that bounced the flow back to the intro and forced a 2nd
+    // liveness. Also stops a recomposition from firing the callbacks again.
+    val handled = remember { mutableStateOf(false) }
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         MaterialTheme {
             FaceLivenessDetector(
@@ -117,8 +122,12 @@ fun ProtoLivenessScreen(
                 region = region,
                 disableStartView = true,
                 credentialsProvider = credentialsProvider,
-                onComplete = Action { onComplete() },
-                onError = Consumer { ex -> onError(ex.message ?: "Liveness check failed. Please try again.") },
+                onComplete = Action {
+                    if (!handled.value) { handled.value = true; onComplete() }
+                },
+                onError = Consumer { ex ->
+                    if (!handled.value) { handled.value = true; onError(ex.message ?: "Liveness check failed. Please try again.") }
+                },
             )
         }
     }
