@@ -117,6 +117,9 @@ dependencies {
     // Location
     implementation("com.google.android.gms:play-services-location:21.3.0")
 
+    // Google Places — address autocomplete on the address-entry screen (activated by a Places API key)
+    implementation("com.google.android.libraries.places:places:3.5.0")
+
     // Network (OkHttp + Retrofit - correct versions)
     implementation("com.squareup.okhttp3:okhttp:5.3.2")
     implementation("com.squareup.okhttp3:logging-interceptor:5.3.2")

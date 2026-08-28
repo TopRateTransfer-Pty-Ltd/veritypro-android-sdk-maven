@@ -33,6 +33,10 @@ android {
         buildConfigField "String", "API_KEY", "\"${properties.getProperty("API_KEY")}\""
         buildConfigField "String", "INTEGRATION_ID", "\"${properties.getProperty("INTEGRATION_ID")}\""
 
+        // Google Places key for address autocomplete: CI injects the GOOGLE_PLACES_API_KEY secret
+        // via env; local dev falls back to local.properties. Never hard-coded / committed.
+        def placesKey = System.getenv("GOOGLE_PLACES_API_KEY") ?: properties.getProperty("GOOGLE_PLACES_API_KEY", "")
+        buildConfigField "String", "PLACES_API_KEY", "\"${placesKey}\""
     }
 
     buildTypes {

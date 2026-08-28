@@ -435,6 +435,8 @@ fun ProtoVerificationScreen(
                 initial = addressStreet,
                 submitting = addressCreateState is Resource.Loading,
                 errorMsg = (addressCreateState as? Resource.Error)?.let { "Couldn't start address verification. Please try again." },
+                placesApiKey = options.placesApiKey,
+                countryIso2 = options.isO2Code,
                 onSubmit = { street ->
                     addressStreet = street
                     vm.createAddressVerification(options, street)
