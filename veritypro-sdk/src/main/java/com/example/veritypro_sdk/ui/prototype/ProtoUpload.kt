@@ -48,6 +48,10 @@ fun ProtoUploadScreen(
     step: String?,
     submitting: Boolean,
     errorMsg: String?,
+    // Server-enforced ceiling (Address service RequestSizeLimit + MaxFileSizeBytes = 15 MB). The
+    // backend does not expose this via API, so it is mirrored here to fail early with a clear
+    // message instead of a generic server rejection on an oversized upload.
+    maxSizeMb: Int = 15,
     onSubmit: (docTypeInt: Int, file: File) -> Unit,
     onBack: () -> Unit,
 ) {
@@ -55,9 +59,11 @@ fun ProtoUploadScreen(
     var selectedType by remember { mutableStateOf(docTypes.firstOrNull()?.second) }
     var pickedFile by remember { mutableStateOf<File?>(null) }
     var pickedName by remember { mutableStateOf<String?>(null) }
+    var sizeError by remember { mutableStateOf<String?>(null) }
 
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         if (uri != null) {
+            sizeError = null
             val f = File(context.cacheDir, "proto_upload_${kicker.filter { it.isLetterOrDigit() }}.dat")
             val ok = runCatching {
                 context.contentResolver.openInputStream(uri)?.use { input ->
@@ -65,9 +71,18 @@ fun ProtoUploadScreen(
                 }
                 f.exists() && f.length() > 0
             }.getOrDefault(false)
-            if (ok) {
-                pickedFile = f
-                pickedName = uri.lastPathSegment?.substringAfterLast('/') ?: "document"
+            when {
+                !ok -> { pickedFile = null; pickedName = null }
+                f.length() > maxSizeMb * 1024L * 1024L -> {
+                    // Too large — reject before upload; the server would otherwise 413.
+                    pickedFile = null; pickedName = null
+                    sizeError = "That file is ${f.length() / (1024 * 1024)} MB — the maximum is $maxSizeMb MB."
+                    f.delete()
+                }
+                else -> {
+                    pickedFile = f
+                    pickedName = uri.lastPathSegment?.substringAfterLast('/') ?: "document"
+                }
             }
         }
     }
@@ -125,13 +140,14 @@ fun ProtoUploadScreen(
                         textAlign = TextAlign.Center,
                     )
                     Spacer(Modifier.height(2.dp))
-                    MonoLabel("PDF, JPG OR PNG · MAX 10 MB", Proto.Sub, size = 10)
+                    MonoLabel("PDF, JPG OR PNG · MAX $maxSizeMb MB", Proto.Sub, size = 10)
                 }
             }
 
             Spacer(Modifier.height(14.dp))
             when {
                 submitting -> MonoLabel("SUBMITTING…", Proto.Amber, size = 11)
+                sizeError != null -> Text(sizeError!!, color = Proto.Danger, fontFamily = ProtoDisplay, fontSize = 14.sp, fontWeight = FontWeight.Medium)
                 errorMsg != null -> Text(errorMsg, color = Proto.Danger, fontFamily = ProtoDisplay, fontSize = 14.sp, fontWeight = FontWeight.Medium)
             }
 

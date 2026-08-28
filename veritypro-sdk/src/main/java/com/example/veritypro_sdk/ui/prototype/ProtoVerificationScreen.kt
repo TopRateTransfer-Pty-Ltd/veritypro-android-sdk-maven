@@ -464,7 +464,8 @@ fun ProtoVerificationScreen(
                 accent = Proto.Brand,
                 step = null,
                 submitting = addressState is Resource.Loading,
-                errorMsg = (addressState as? Resource.Error)?.let { "Couldn't submit. Please try again." },
+                // Surface the actual backend reason (e.g. size/format/processing) instead of hiding it.
+                errorMsg = (addressState as? Resource.Error)?.message?.ifBlank { "Couldn't submit. Please try again." },
                 onSubmit = { type, file ->
                     vm.submitAddressDocument(vm.getAddressSessionId(), file, type, "", "", options.apiKey, context)
                 },
@@ -491,7 +492,7 @@ fun ProtoVerificationScreen(
                 accent = Proto.Indigo,
                 step = null,
                 submitting = eddState is Resource.Loading,
-                errorMsg = (eddState as? Resource.Error)?.let { "Couldn't submit. Please try again." },
+                errorMsg = (eddState as? Resource.Error)?.message?.ifBlank { "Couldn't submit. Please try again." },
                 onSubmit = { type, file ->
                     // Subject = the KYC session when present; otherwise the integration id (EDD-only
                     // products have no KYC session).
