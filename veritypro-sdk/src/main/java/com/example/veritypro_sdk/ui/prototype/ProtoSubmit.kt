@@ -91,5 +91,6 @@ suspend fun protoSubmitVerification(
     if (result is Resource.Error) {
         Log.e("ProtoSubmit", "updateKyc failed: ${result.message}")
     }
-    return result is Resource.Success
+    // updateKyc returns CompletedSuccess (HTTP 201) on accept — treat both success variants as OK.
+    return result is Resource.Success || result is Resource.CompletedSuccess
 }
