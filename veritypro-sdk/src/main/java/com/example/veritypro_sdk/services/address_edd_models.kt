@@ -37,6 +37,29 @@ data class EddCaseResponse(
     val status: String? = null
 )
 
+/**
+ * The EDD create endpoint returns APIResponse<EddCaseDto> where EddCaseDto is {id, status} — NOT a
+ * top-level {caseId, status}. This mirrors the `data` payload so the repository can unwrap it and
+ * map id → caseId. (status may serialise as a string or an enum ordinal; String tolerates both.)
+ */
+data class EddCaseData(
+    @SerializedName("id") val id: String? = null,
+    @SerializedName("status") val status: String? = null,
+    @SerializedName("caseId") val caseIdAlt: String? = null   // defensive: accept caseId if ever present
+)
+
+/**
+ * EDD-Intelligence envelope. Unlike the KYC-Integration ApiResponse (statusCode is an int like 200),
+ * the EDD API serialises statusCode as the HttpStatusCode NAME ("OK", "BadRequest") — so statusCode
+ * must be a String here or Gson throws NumberFormatException("OK") when mapping it to an Int.
+ */
+data class EddApiResponse<T>(
+    @SerializedName("statusCode") val statusCode: String? = null,
+    @SerializedName("statusMessage") val statusMessage: String? = null,
+    @SerializedName("data") val data: T? = null,
+    @SerializedName("error") val error: ApiError? = null
+)
+
 data class EddCaseStatusResponse(
     val caseId: String,
     val status: String,

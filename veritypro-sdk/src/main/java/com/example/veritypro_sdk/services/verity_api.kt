@@ -120,7 +120,7 @@ interface VerityApiService {
         @Part("StateOrProvince") stateOrProvince: RequestBody? = null,
         @Part("PostalCode") postalCode: RequestBody? = null,
         @Header("x-api-key") apiKey: String
-    ): EddCaseResponse
+    ): EddApiResponse<EddCaseData>
 
     @GET("/edd/api/edd/cases/{caseId}/status")
     suspend fun getEddCaseStatus(
