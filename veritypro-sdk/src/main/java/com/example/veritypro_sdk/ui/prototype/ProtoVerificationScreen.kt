@@ -46,7 +46,6 @@ import com.amplifyframework.auth.cognito.AWSCognitoAuthPlugin
 import com.amplifyframework.core.Amplify
 import com.example.veritypro_sdk.services.CountryDocumentItem
 import com.example.veritypro_sdk.services.Resource
-import com.example.veritypro_sdk.ui.verification.SelfieCaptureScreen
 import com.example.veritypro_sdk.ui.verification.VerityProViewModel
 import com.example.veritypro_sdk.utils.VerityOption
 
@@ -65,6 +64,11 @@ private fun protoDocTypeInt(name: String?): Int {
 // Passport = front only; Driver's Licence & ID Card = front + back. List of isBack flags.
 private fun protoSides(name: String?): List<Boolean> =
     if (protoDocTypeInt(name) == 2) listOf(false) else listOf(false, true)
+
+// Capture-frame aspect ratio: passport data page (ID-3, ~125×88mm → 1.42) is chunkier and gets a
+// taller/bigger box; licence & ID card (ID-1, ~85.6×54mm → 1.586) are wider.
+private fun protoFrameAspect(name: String?): Float =
+    if (protoDocTypeInt(name) == 2) 1.42f else 1.586f
 
 /**
  * API-CONNECTED prototype flow (neo-brutalist, VerityPro KYC SDK.dc.html).
@@ -191,6 +195,7 @@ fun ProtoVerificationScreen(
             ProtoDocumentCaptureScreen(
                 docLabel = chosen?.documentType ?: "Document",
                 sideLabel = if (isBack) "Back" else "Front",
+                frameAspect = protoFrameAspect(chosen?.documentType),
                 onCaptured = { path, pads ->
                     if (isBack) backPath = path else frontPath = path
                     capturedPath = path
@@ -211,6 +216,7 @@ fun ProtoVerificationScreen(
                 isBack = isBack,
                 padFrames = capturedPads,
                 autoRetake = retakeAttempts < maxAutoRetakes,
+                frameAspect = protoFrameAspect(chosen?.documentType),
                 onLooksGood = {
                     retakeAttempts = 0
                     if (sideIndex < sides.lastIndex) {
@@ -243,21 +249,18 @@ fun ProtoVerificationScreen(
                 if (aws.isNullOrBlank()) {
                     ProtoProcessingScreen("BIOMETRIC", "Preparing the\nliveness check", "One moment…", Proto.Teal)
                 } else {
-                    // Reuse the SDK's functional liveness component (its UI shows no vendor names).
-                    SelfieCaptureScreen(
-                        sessionIdFromCreateKyc = vm.getSessionId(),
+                    // Call the liveness detector directly in a neo-brutalist wrapper (no legacy prep UI).
+                    ProtoLivenessScreen(
                         awsSessionId = aws,
-                        livenessId = null,
                         region = livenessRegion,
                         credentials = livenessCredentials,
-                        viewModel = vm,
-                        onBack = { stage = ProtoStage.SelfieIntro },
-                        onLivenessComplete = { livenessId, _ ->
-                            vm.verifyLivenessResult(livenessId ?: aws) { ok ->
+                        onComplete = {
+                            vm.verifyLivenessResult(bs.data.id ?: aws) { ok ->
                                 livenessApproved = ok
                                 stage = ProtoStage.AllComplete
                             }
                         },
+                        onError = { stage = ProtoStage.SelfieIntro },
                     )
                 }
             }

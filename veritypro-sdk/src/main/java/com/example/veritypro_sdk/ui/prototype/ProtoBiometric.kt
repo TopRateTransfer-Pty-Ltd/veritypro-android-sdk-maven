@@ -15,8 +15,16 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.remember
+import com.amplifyframework.core.Action
+import com.amplifyframework.core.Consumer
+import com.amplifyframework.ui.liveness.ui.FaceLivenessDetector
+import com.example.veritypro_sdk.services.BeginLivenessCredentials
+import com.example.veritypro_sdk.services.LivenessCredentialsProvider
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -80,6 +88,38 @@ fun ProtoSelfieIntroScreen(
             Spacer(Modifier.height(22.dp))
             ProtoPrimaryButton("I'm ready", background = Proto.Teal, onClick = onReady)
             Spacer(Modifier.height(24.dp))
+        }
+    }
+}
+
+/**
+ * Liveness — calls the AWS FaceLivenessDetector directly (disableStartView) so the prototype's
+ * neo-brutalist selfie intro is the only prep — NOT the legacy SelfieCaptureScreen prep UI.
+ * The challenge itself (face oval + coloured lights) is the vendor's certified liveness surface.
+ */
+@Composable
+fun ProtoLivenessScreen(
+    awsSessionId: String,
+    region: String,
+    credentials: BeginLivenessCredentials?,
+    onComplete: () -> Unit,
+    onError: (String) -> Unit,
+) {
+    val credentialsProvider = remember(credentials) { credentials?.let { LivenessCredentialsProvider(it) } }
+    if (credentialsProvider == null) {
+        LaunchedEffect(Unit) { onError("Couldn't start the liveness check. Please try again.") }
+        return
+    }
+    Box(Modifier.fillMaxSize().background(Color.Black)) {
+        MaterialTheme {
+            FaceLivenessDetector(
+                sessionId = awsSessionId,
+                region = region,
+                disableStartView = true,
+                credentialsProvider = credentialsProvider,
+                onComplete = Action { onComplete() },
+                onError = Consumer { ex -> onError(ex.message ?: "Liveness check failed. Please try again.") },
+            )
         }
     }
 }

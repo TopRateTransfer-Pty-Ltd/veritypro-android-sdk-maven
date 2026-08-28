@@ -64,6 +64,7 @@ import java.io.File
 fun ProtoDocumentCaptureScreen(
     docLabel: String,
     sideLabel: String,
+    frameAspect: Float = 1.586f,
     onCaptured: (String, List<Bitmap>) -> Unit,
     onClose: () -> Unit,
 ) {
@@ -104,11 +105,12 @@ fun ProtoDocumentCaptureScreen(
             MonoLabel("${docLabel.uppercase()} · ${sideLabel.uppercase()}", Color.White, size = 12)
         }
 
-        // Document frame — white brackets, ID-1 aspect
-        Box(Modifier.fillMaxSize().padding(24.dp), contentAlignment = Alignment.Center) {
+        // Document frame — white brackets. Bigger (less padding) + per-document aspect so a
+        // passport (ID-3, chunkier) gets a taller box and every doc fills more of the space.
+        Box(Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 8.dp), contentAlignment = Alignment.Center) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Box(
-                    Modifier.fillMaxWidth().aspectRatio(1.586f).border(3.dp, Color.White)
+                    Modifier.fillMaxWidth().aspectRatio(frameAspect).border(3.dp, Color.White)
                 ) {
                     // ink corner accents
                     val corner = Modifier.size(22.dp).background(Proto.GoldenFizz)
@@ -191,6 +193,7 @@ fun ProtoDocumentPreviewScreen(
     isBack: Boolean,
     padFrames: List<Bitmap>,
     autoRetake: Boolean = true,
+    frameAspect: Float = 1.586f,
     onLooksGood: () -> Unit,
     onRetake: () -> Unit,
 ) {
@@ -275,10 +278,10 @@ fun ProtoDocumentPreviewScreen(
                         bitmap = bmp.asImageBitmap(),
                         contentDescription = "Captured document",
                         contentScale = ContentScale.Crop,
-                        modifier = Modifier.fillMaxWidth().aspectRatio(1.586f),
+                        modifier = Modifier.fillMaxWidth().aspectRatio(frameAspect),
                     )
                 } else {
-                    Box(Modifier.fillMaxWidth().aspectRatio(1.586f).background(Color(0xFFEEF0F4)))
+                    Box(Modifier.fillMaxWidth().aspectRatio(frameAspect).background(Color(0xFFEEF0F4)))
                 }
             }
             Spacer(Modifier.height(16.dp))
