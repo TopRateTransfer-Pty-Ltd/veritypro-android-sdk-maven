@@ -717,7 +717,7 @@ fun VerificationScreen(
                                         val awsSession = (beginState as Resource.Success).data.awsSessionId
                                         livenessId = (beginState as Resource.Success).data.id
                                         if (awsSession.isNullOrBlank()) {
-                                            Text("Missing AWS session ID, please retry.")
+                                            Text("Couldn't start the liveness check, please retry.")
                                         } else {
                                             SelfieCaptureScreen(
                                                 sessionIdFromCreateKyc = sessionId ?: "",

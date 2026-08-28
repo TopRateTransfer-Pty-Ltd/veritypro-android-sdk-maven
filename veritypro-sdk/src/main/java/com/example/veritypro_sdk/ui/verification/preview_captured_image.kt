@@ -151,6 +151,9 @@ fun PreviewCapturedImageScreen(
     verificationAlreadyPassed: Boolean = false,
     onContinue: (File) -> Unit
 ) {
+    // Pre-preview gate in document_capture.kt now runs DocumentBackValidator BEFORE
+    // setting previewPath for both sides. verificationAlreadyPassed=true means the
+    // capture screen's gates all passed (quality + content). Trust it for both sides.
     var isChecking      by remember { mutableStateOf(!verificationAlreadyPassed) }
     var antiSpoofPassed by remember { mutableStateOf(verificationAlreadyPassed) }
     var confidence      by remember { mutableStateOf(if (verificationAlreadyPassed) 1f else 0f) }
@@ -158,14 +161,16 @@ fun PreviewCapturedImageScreen(
     var spoofReason     by remember { mutableStateOf("") }
     val coroutineScope  = rememberCoroutineScope()
 
-    // ── Anti-spoofing verification ────────────────────────────────────────────
+    // ── Anti-spoofing / content verification ─────────────────────────────────
     LaunchedEffect(file, burstFiles, verificationAlreadyPassed) {
+        // Both front and back: if the capture screen already ran all gates
+        // (verify-burst quality + DocumentBackValidator content for back), skip here.
         if (verificationAlreadyPassed) {
             isChecking = false
             antiSpoofPassed = true
             confidence = 1f
-            hint = "Document verified"
-            Log.d("PreviewScreen", "Verification skipped — already passed on capture screen")
+            hint = if (isBackSide) "Document back verified" else "Document verified"
+            Log.d("PreviewScreen", "${if (isBackSide) "Back" else "Front"}: verification skipped — pre-preview gate passed")
             return@LaunchedEffect
         }
 
@@ -177,18 +182,10 @@ fun PreviewCapturedImageScreen(
         if (bmp != null) {
             coroutineScope.launch(Dispatchers.IO) {
                 try {
-                    if (isBackSide) {
-                        val backResult = DocumentBackValidator.validateDocumentBack(bmp)
-                        withContext(Dispatchers.Main) {
-                            antiSpoofPassed = backResult.isValid
-                            confidence = backResult.confidence
-                            hint = backResult.message
-                        }
-                        Log.d("PreviewScreen", "Back validation: barcode=${backResult.hasBarcode} MRZ=${backResult.hasMRZ} text=${backResult.hasText}(${backResult.textCount}) face=${backResult.hasFace} valid=${backResult.isValid} conf=${backResult.confidence}")
-                    } else if (burstFiles.isNotEmpty()) {
+                    if (burstFiles.isNotEmpty()) {
                         val mlRepository = MLRepository()
                         val docTypeExpected = MLDocumentType.fromSdkType(documentType)
-                        Log.d("PreviewScreen", "Anti-spoof: ${burstFiles.size} burst frames")
+                        Log.d("PreviewScreen", "Anti-spoof fallback: ${burstFiles.size} burst frames")
 
                         val result = mlRepository.verifyBurst(
                             sessionId = "android-antispoof-${System.currentTimeMillis()}",

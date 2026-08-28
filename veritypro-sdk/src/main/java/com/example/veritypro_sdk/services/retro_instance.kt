@@ -151,7 +151,10 @@ object MLRetrofitInstance {
             synchronized(this) {
                 mlApiService?.let { return it }
                 val newRetrofit = Retrofit.Builder()
-                    .baseUrl(mlBaseUrl)
+                    // configure() trims the trailing '/'; Retrofit requires the base URL to end in
+                    // '/' when it carries a path (e.g. ".../docai") — re-add it here. Host-only URLs
+                    // are unaffected (OkHttp normalises those to a root path).
+                    .baseUrl(if (mlBaseUrl.endsWith("/")) mlBaseUrl else "$mlBaseUrl/")
                     .addConverterFactory(GsonConverterFactory.create())
                     .client(buildOkHttpClient())
                     .build()

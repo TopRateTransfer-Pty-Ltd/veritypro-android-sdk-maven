@@ -59,6 +59,15 @@ interface MLApiService {
         @Body request: MLCaptureVerifyRequest
     ): MLCaptureVerifyResponse
 
+    /**
+     * Front+back pair cross-check (call after both sides VERIFIED, before submission).
+     * LOCAL/DEV/gateway availability may lag capture-verify; callers must degrade gracefully on 404.
+     */
+    @POST("v2/kyc/doc/pair-check")
+    suspend fun pairCheck(
+        @Body request: MLPairCheckRequest
+    ): MLPairCheckResponse
+
 
     /**
      * Lightweight document presence detection (used for ID back side)

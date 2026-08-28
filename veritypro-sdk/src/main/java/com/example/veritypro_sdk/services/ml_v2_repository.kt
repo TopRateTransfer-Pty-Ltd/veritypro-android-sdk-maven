@@ -125,6 +125,40 @@ class MLV2Repository {
         }
     }
 
+    /**
+     * Cross-check the FRONT and BACK captures of a session before submission. Uses the SAME stable
+     * [captureSessionId] passed to each side's [captureVerify]. Returns the server's PAIR_* verdict.
+     *
+     * Degrades gracefully: if the endpoint is unavailable (e.g. not yet deployed → 404) or errors,
+     * this returns Resource.Error and the caller MUST proceed (do not block the user on a check the
+     * backend can't run yet). This is honest degradation, not a silent pass of a real failure.
+     */
+    suspend fun pairCheck(
+        captureSessionId: String,
+        docTypeExpected: String?,
+        policyVersion: String? = null
+    ): Resource<MLPairCheckResponse> {
+        return try {
+            val response = MLRetrofitInstance.api.pairCheck(
+                MLPairCheckRequest(captureSessionId, docTypeExpected, policyVersion)
+            )
+            Log.d(
+                TAG,
+                "pairCheck: session=$captureSessionId state=${response.state} " +
+                    "reason=${response.reasonCode} retrySide=${response.retrySide}"
+            )
+            Resource.Success(response)
+        } catch (e: HttpException) {
+            Log.w(TAG, "pairCheck HTTP ${e.code()} — unavailable, proceeding without pair-check")
+            Resource.Error("pair-check unavailable: ${e.code()}")
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "pairCheck failed — unavailable, proceeding: ${e.message}")
+            Resource.Error("pair-check unavailable")
+        }
+    }
+
     /** Downscale to [maxDim] on the longest edge and JPEG-encode to base64. */
     private fun bitmapToBase64(bitmap: Bitmap, maxDim: Int, quality: Int): String {
         val scaled = downscale(bitmap, maxDim)

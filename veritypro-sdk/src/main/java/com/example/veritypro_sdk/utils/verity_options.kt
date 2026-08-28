@@ -67,6 +67,11 @@ data class VerityOption(
     val stepUpSubjectId: String? = null,
     /** Short-lived JWT issued alongside the challenge (required for STEP_UP_AUTH mode). */
     val stepUpToken: String? = null,
+    /**
+     * Google Places API key for address autocomplete on the address-entry screen. When null/blank,
+     * the screen falls back to a plain manual street-address field (no Places dependency at runtime).
+     */
+    val placesApiKey: String? = null,
 ) : Parcelable {
     /** Resolved [VerityMode] from the serialized [mode] string. */
     val verityMode: VerityMode

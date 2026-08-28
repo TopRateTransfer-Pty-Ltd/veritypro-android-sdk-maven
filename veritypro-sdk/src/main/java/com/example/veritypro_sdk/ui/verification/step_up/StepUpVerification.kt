@@ -16,7 +16,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import com.example.veritypro_sdk.services.BeginLivenessCredentials
+import com.example.veritypro_sdk.services.BeginLivenessData
 import com.example.veritypro_sdk.services.RetrofitInstance
 import com.example.veritypro_sdk.utils.StepUpResult
 import com.example.veritypro_sdk.utils.VerityOption
@@ -25,7 +25,7 @@ private const val TAG = "StepUpVerification"
 
 private sealed class StepUpBootState {
     object Loading : StepUpBootState()
-    data class Ready(val credentials: BeginLivenessCredentials, val remainingSeconds: Int) : StepUpBootState()
+    data class Ready(val credentials: BeginLivenessData, val remainingSeconds: Int) : StepUpBootState()
     data class BootFailed(val message: String) : StepUpBootState()
 }
 

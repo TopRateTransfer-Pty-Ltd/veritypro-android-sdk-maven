@@ -28,11 +28,18 @@ android {
         vectorDrawables {
             useSupportLibrary true
         }
+        // Read config from env first (CI injects GitHub secrets), else local.properties (dev),
+        // else empty. Tolerates a missing local.properties so CI builds without one.
         def properties = new Properties()
-        properties.load(project.rootProject.file("local.properties").newDataInputStream())
-        buildConfigField "String", "API_KEY", "\"${properties.getProperty("API_KEY")}\""
-        buildConfigField "String", "INTEGRATION_ID", "\"${properties.getProperty("INTEGRATION_ID")}\""
-
+        def localPropsFile = project.rootProject.file("local.properties")
+        if (localPropsFile.exists()) {
+            properties.load(localPropsFile.newDataInputStream())
+        }
+        def cfg = { String name -> System.getenv(name) ?: properties.getProperty(name, "") }
+        buildConfigField "String", "API_KEY", "\"${cfg('API_KEY')}\""
+        buildConfigField "String", "INTEGRATION_ID", "\"${cfg('INTEGRATION_ID')}\""
+        // Google Places key for address autocomplete — never hard-coded / committed.
+        buildConfigField "String", "PLACES_API_KEY", "\"${cfg('GOOGLE_PLACES_API_KEY')}\""
     }
 
     buildTypes {

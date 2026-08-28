@@ -1,0 +1,40 @@
+name: Android CI
+
+# Builds the demo app + SDK. Secrets (incl. the Google Places key for address autocomplete) are
+# injected via env — app/build.gradle reads them into BuildConfig. Nothing is hard-coded/committed.
+on:
+  push:
+    branches: [ "**" ]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: gradle
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Make gradlew executable
+        run: chmod +x ./gradlew
+
+      - name: Build debug APK
+        env:
+          # Injected from GitHub repo secrets. GOOGLE_PLACES_API_KEY activates address autocomplete.
+          GOOGLE_PLACES_API_KEY: ${{ secrets.GOOGLE_PLACES_API_KEY }}
+          API_KEY: ${{ secrets.API_KEY }}
+          INTEGRATION_ID: ${{ secrets.INTEGRATION_ID }}
+        run: ./gradlew :app:assembleDebug --no-daemon --stacktrace

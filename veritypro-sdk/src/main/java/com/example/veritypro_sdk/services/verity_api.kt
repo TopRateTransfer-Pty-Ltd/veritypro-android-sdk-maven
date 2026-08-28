@@ -66,13 +66,13 @@ interface VerityApiService {
 
     // ── Address Verification ──
 
-    @POST("/kycintegration/address-verification/add-verification")
+    @POST("/addressverification/address-verification/add-verification")
     suspend fun createAddressVerification(
         @Body data: AddAddressVerificationRequest,
         @Header("x-api-key") apiKey: String
     ): ApiResponse<AddressVerificationResponse>
 
-    @POST("/kycintegration/address-verification/update-address-verification")
+    @POST("/addressverification/address-verification/update-address-verification")
     @Multipart
     suspend fun updateAddressVerification(
         @Part("SessionId") sessionId: RequestBody,
@@ -85,15 +85,15 @@ interface VerityApiService {
         @Part("SecurityAssessmentJson") securityAssessmentJson: RequestBody? = null,
         @Part("IdempotencyKey") idempotencyKey: RequestBody? = null,
         @Header("x-api-key") apiKey: String
-    ): ApiResponse<AddressVerificationResponse>
+    ): ApiResponse<String>
 
-    @GET("/kycintegration/address-verification/{verificationId}/documents")
+    @GET("/addressverification/address-verification/{verificationId}/documents")
     suspend fun getAddressVerificationDocuments(
         @Path("verificationId") verificationId: String,
         @Header("x-api-key") apiKey: String
     ): ApiResponse<List<AddressDocumentFileResponse>>
 
-    @GET("/kycintegration/address-verification/{verificationId}/documents/{documentId}/url")
+    @GET("/addressverification/address-verification/{verificationId}/documents/{documentId}/url")
     suspend fun getAddressDocumentUrl(
         @Path("verificationId") verificationId: String,
         @Path("documentId") documentId: String,
@@ -120,7 +120,7 @@ interface VerityApiService {
         @Part("StateOrProvince") stateOrProvince: RequestBody? = null,
         @Part("PostalCode") postalCode: RequestBody? = null,
         @Header("x-api-key") apiKey: String
-    ): EddCaseResponse
+    ): EddApiResponse<EddCaseData>
 
     @GET("/edd/api/edd/cases/{caseId}/status")
     suspend fun getEddCaseStatus(
