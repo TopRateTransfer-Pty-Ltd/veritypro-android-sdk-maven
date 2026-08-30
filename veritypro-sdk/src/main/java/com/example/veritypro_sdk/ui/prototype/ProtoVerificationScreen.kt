@@ -158,6 +158,10 @@ private fun protoIntroModules(options: VerityOption): List<ProtoModuleItem> {
 fun ProtoVerificationScreen(
     options: VerityOption,
     onExit: () -> Unit = {},
+    /// Reports the live KYC session id once created. The host persists it so a later biometric-only
+    /// (liveness step-up) run can supply it as previousEngineSessionId (backend requires a prior
+    /// document session to face-match the selfie against). Fires only for document-bearing runs.
+    onSessionEstablished: (String) -> Unit = {},
 ) {
     val vm: VerityProViewModel = viewModel()
     val kyc by vm.kycState.collectAsState()
@@ -226,6 +230,9 @@ fun ProtoVerificationScreen(
             val first = moduleQueue.firstOrNull() ?: "DOCUMENT"
             // The document module needs the region documents list; biometric-first does not.
             if (first == "DOCUMENT" && docsState !is Resource.Success<*>) return@LaunchedEffect
+            // Report the session id for document-bearing runs so a later liveness step-up can reuse it.
+            val sid = vm.getSessionId()
+            if (moduleQueue.contains("DOCUMENT") && sid.isNotBlank()) onSessionEstablished(sid)
             stage = stageForModule(first)
         }
     }
@@ -353,29 +360,19 @@ fun ProtoVerificationScreen(
         }
 
         ProtoStage.PairChecking -> {
-            // Front+back cross-check via /v2/kyc/doc/pair-check. Degrades gracefully: if the endpoint
-            // is unavailable (not deployed) or OK/manual, proceed; only a PAIR_RETRY sends the user
-            // back to recapture the flagged side.
+            // Advisory pre-check only: run pair-check for its signal but ALWAYS proceed to submission.
+            // The authoritative update-kyc validates the document pair server-side; and the production
+            // doc-ml back-classifier can mis-read a licence BACK as FRONT, producing a false PAIR_RETRY —
+            // blocking on that would strand the user (and their captured evidence never submits).
             LaunchedEffect(Unit) {
                 val docTypeStr = com.example.veritypro_sdk.services.MLDocumentType.fromSdkType(
                     protoDocTypeInt(chosen?.documentType),
                 )
-                val res = com.example.veritypro_sdk.services.MLV2Repository().pairCheck(
+                com.example.veritypro_sdk.services.MLV2Repository().pairCheck(
                     captureSessionId = vm.getSessionId().ifBlank { "proto-${protoDocTypeInt(chosen?.documentType)}" },
                     docTypeExpected = docTypeStr,
                 )
-                val pair = (res as? Resource.Success)?.data
-                if (pair != null && pair.state == com.example.veritypro_sdk.services.MLPairState.PAIR_RETRY) {
-                    // Send the user back to recapture the flagged side.
-                    val sides = protoSides(chosen?.documentType)
-                    sideIndex = if ((pair.retrySide ?: "").uppercase() == "FRONT") 0 else sides.lastIndex
-                    if ((pair.retrySide ?: "").uppercase() == "FRONT") frontPath = null else backPath = null
-                    retakeAttempts = 0
-                    stage = ProtoStage.Capture
-                } else {
-                    // PAIR_OK, PAIR_MANUAL_REVIEW, or endpoint unavailable → continue the flow.
-                    advanceModule()
-                }
+                advanceModule()
             }
             ProtoProcessingScreen(
                 kicker = "DOCUMENT",

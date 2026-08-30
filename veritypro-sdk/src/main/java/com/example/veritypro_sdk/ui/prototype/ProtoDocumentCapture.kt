@@ -6,8 +6,15 @@ import android.os.Build
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
 import androidx.camera.view.PreviewView
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -165,36 +172,22 @@ fun ProtoDocumentCaptureScreen(
             MonoLabel("${docLabel.uppercase()} · ${sideLabel.uppercase()}", Color.White, size = 12)
         }
 
-        // Document frame — white brackets. Bigger (less padding) + per-document aspect so a
-        // passport (ID-3, chunkier) gets a taller box and every doc fills more of the space.
-        Box(Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 8.dp), contentAlignment = Alignment.Center) {
+        // Full-screen camera — no restrictive frame box; the customer gets the whole viewport to fit
+        // and check the document (parity with the iOS full-camera approach). A light guidance pill sits
+        // just above the shutter.
+        Box(Modifier.fillMaxSize().padding(bottom = 40.dp), contentAlignment = Alignment.BottomCenter) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Box(
-                    Modifier.fillMaxWidth().aspectRatio(frameAspect).border(3.dp, Color.White)
-                ) {
-                    // ink corner accents
-                    val corner = Modifier.size(22.dp).background(Proto.GoldenFizz)
-                    Box(corner.align(Alignment.TopStart))
-                    Box(corner.align(Alignment.TopEnd))
-                    Box(corner.align(Alignment.BottomStart))
-                    Box(corner.align(Alignment.BottomEnd))
-                }
-                Spacer(Modifier.height(16.dp))
-                Box(Modifier.background(Color(0xCC171717)).padding(horizontal = 14.dp, vertical = 8.dp)) {
+                Box(Modifier.background(Color(0xB3171717)).padding(horizontal = 14.dp, vertical = 8.dp)) {
                     MonoLabel(
                         when {
                             !cameraReady -> "STARTING CAMERA…"
                             capturing -> "CAPTURING…"
-                            else -> "HOLD STEADY · FILL THE FRAME"
+                            else -> "FIT YOUR ${sideLabel.uppercase()} IN VIEW · HOLD STEADY"
                         },
                         Color.White, size = 12,
                     )
                 }
-            }
-        }
-
-        // Shutter — square white neo-brutalist button
-        Box(Modifier.fillMaxSize().padding(bottom = 40.dp), contentAlignment = Alignment.BottomCenter) {
+                Spacer(Modifier.height(16.dp))
             BrutalBox(
                 background = Color.White,
                 borderColor = Color.White,
@@ -229,6 +222,7 @@ fun ProtoDocumentCaptureScreen(
                         }
                     }.padding(vertical = 18.dp),
                 )
+            }
             }
         }
     }
@@ -330,43 +324,40 @@ fun ProtoDocumentPreviewScreen(
             Text("Is everything clear and readable?", color = Proto.Sub, fontFamily = ProtoDisplay, fontSize = 15.sp)
             Spacer(Modifier.height(18.dp))
             BrutalBox {
-                if (bmp != null) {
-                    Image(
-                        bitmap = bmp.asImageBitmap(),
-                        contentDescription = "Captured document",
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier.fillMaxWidth().aspectRatio(frameAspect),
-                    )
-                } else {
-                    Box(Modifier.fillMaxWidth().aspectRatio(frameAspect).background(Color(0xFFEEF0F4)))
+                BoxWithConstraints {
+                    if (bmp != null) {
+                        Image(
+                            bitmap = bmp.asImageBitmap(),
+                            contentDescription = "Captured document",
+                            contentScale = ContentScale.Crop,
+                            modifier = Modifier.fillMaxWidth().aspectRatio(frameAspect),
+                        )
+                    } else {
+                        Box(Modifier.fillMaxWidth().aspectRatio(frameAspect).background(Color(0xFFEEF0F4)))
+                    }
+                    // Verifying loader — sweeping GoldenFizz scan line + scrim, so the customer clearly
+                    // sees the system processing (parity with iOS; users don't read the status text).
+                    if (outcome == null) {
+                        Box(Modifier.matchParentSize().background(Color(0x47000000)))
+                        val scanT = rememberInfiniteTransition(label = "scan")
+                        val frac by scanT.animateFloat(
+                            initialValue = 0f, targetValue = 1f,
+                            animationSpec = infiniteRepeatable(tween(900), RepeatMode.Reverse), label = "scanf",
+                        )
+                        Box(
+                            Modifier.fillMaxWidth().height(3.dp)
+                                .offset(y = maxHeight * frac).background(Proto.GoldenFizz),
+                        )
+                        Box(Modifier.matchParentSize(), contentAlignment = Alignment.Center) {
+                            Box(Modifier.background(Color(0xCC171717)).padding(horizontal = 12.dp, vertical = 6.dp)) {
+                                MonoLabel("SCANNING · VERIFYING", Color.White, size = 11)
+                            }
+                        }
+                    }
                 }
             }
-            Spacer(Modifier.height(16.dp))
-            when (outcome) {
-                null -> MonoLabel(
-                    if (V2CaptureConfig.useV2CaptureVerify) "VERIFYING · V2 CAPTURE-VERIFY…"
-                    else "VERIFYING · MLPREDICT + VERIFYBURST…",
-                    Proto.Amber, size = 11,
-                )
-                "PASS" -> {
-                    MonoLabel("✓ DOCUMENT VERIFIED", Proto.Green, size = 11)
-                    Spacer(Modifier.height(4.dp))
-                    MonoLabel("✓ ${hint.uppercase()}", Proto.Green, size = 11)
-                }
-                "RETRY" -> {
-                    MonoLabel(
-                        if (autoRetake) "↺ RETAKING…" else "✕ STILL NOT ACCEPTED",
-                        if (autoRetake) Proto.Amber else Proto.Danger, size = 11,
-                    )
-                    Spacer(Modifier.height(6.dp))
-                    Text(hint, color = if (autoRetake) Proto.Ink else Proto.Danger, fontFamily = ProtoDisplay, fontSize = 14.sp, fontWeight = FontWeight.Medium)
-                }
-                else -> {
-                    MonoLabel("✕ NOT ACCEPTED", Proto.Danger, size = 11)
-                    Spacer(Modifier.height(6.dp))
-                    Text(hint, color = Proto.Danger, fontFamily = ProtoDisplay, fontSize = 14.sp, fontWeight = FontWeight.Medium)
-                }
-            }
+            // Verdict text removed — the SCANNING · VERIFYING overlay on the image conveys processing;
+            // PASS is signalled by the enabled "Looks good" button (parity with iOS).
         }
         Column(Modifier.padding(24.dp)) {
             if (outcome == "RETRY") {

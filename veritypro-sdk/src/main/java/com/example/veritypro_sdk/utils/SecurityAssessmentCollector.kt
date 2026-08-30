@@ -11,9 +11,11 @@ import android.net.NetworkCapabilities
 import android.os.BatteryManager
 import android.os.Build
 import android.os.Environment
+import android.os.PowerManager
 import android.os.StatFs
 import android.os.SystemClock
 import android.app.ActivityManager
+import android.provider.Settings
 import org.json.JSONArray
 import org.json.JSONObject
 import android.util.Log
@@ -218,6 +220,9 @@ object SecurityAssessmentCollector {
                 })
                 put("motionScore", runtimeData?.motionScore?.toDouble() ?: 0.0)
             })
+
+            // ─── 8b. forensics — environment signals for geo-consistency and network-anonymisation checks ───
+            assessment.put("forensics", collectForensicSignals(context))
 
             // ─── 9. overallRiskLevel (with full risk scorer) ───
             val riskScore = calculateFullRiskScore(
@@ -505,5 +510,64 @@ object SecurityAssessmentCollector {
         var score = 0.0
         if (rooted) score += 0.5; if (emulator) score += 0.3; if (vpn) score += 0.1
         return score.coerceAtMost(1.0)
+    }
+
+    // ─── Forensic environment signals (iOS parity) ────────────────────────────────
+
+    private fun collectForensicSignals(context: Context): JSONObject {
+        val obj = JSONObject()
+        // Network anonymisation
+        obj.put("vpnActive", isVpnActive(context))
+        obj.put("proxyConfigured", isProxyConfigured())
+        // Locale / timezone — backend cross-checks against claimed country + IP geolocation
+        obj.put("timezone", TimeZone.getDefault().id)
+        obj.put("utcOffsetSeconds", TimeZone.getDefault().getOffset(System.currentTimeMillis()) / 1000)
+        obj.put("localeRegion", Locale.getDefault().country)
+        obj.put("preferredLanguage", Locale.getDefault().language)
+        // Device / environment state
+        obj.put("lowPowerMode", isPowerSaveMode(context))
+        obj.put("thermalState", getThermalState(context))
+        obj.put("deviceUptimeSeconds", SystemClock.elapsedRealtime() / 1000L)
+        obj.put("screenBrightness", getScreenBrightness(context))
+        val (batteryPct, _) = getBatteryInfo(context)
+        if (batteryPct >= 0f) obj.put("batteryLevel", batteryPct.toDouble())
+        obj.put("multitaskingSupported", true)
+        return obj
+    }
+
+    private fun isProxyConfigured(): Boolean {
+        val host = System.getProperty("http.proxyHost") ?: System.getProperty("https.proxyHost")
+        return !host.isNullOrBlank()
+    }
+
+    private fun isPowerSaveMode(context: Context): Boolean {
+        return try {
+            val pm = context.getSystemService(Context.POWER_SERVICE) as? PowerManager
+            pm?.isPowerSaveMode ?: false
+        } catch (e: Exception) { false }
+    }
+
+    private fun getThermalState(context: Context): String {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return "nominal"
+        return try {
+            val pm = context.getSystemService(Context.POWER_SERVICE) as? PowerManager ?: return "nominal"
+            when (pm.currentThermalStatus) {
+                PowerManager.THERMAL_STATUS_NONE -> "nominal"
+                PowerManager.THERMAL_STATUS_LIGHT -> "fair"
+                PowerManager.THERMAL_STATUS_MODERATE -> "fair"
+                PowerManager.THERMAL_STATUS_SEVERE -> "serious"
+                PowerManager.THERMAL_STATUS_CRITICAL,
+                PowerManager.THERMAL_STATUS_EMERGENCY,
+                PowerManager.THERMAL_STATUS_SHUTDOWN -> "critical"
+                else -> "nominal"
+            }
+        } catch (e: Exception) { "nominal" }
+    }
+
+    private fun getScreenBrightness(context: Context): Double {
+        return try {
+            val raw = Settings.System.getInt(context.contentResolver, Settings.System.SCREEN_BRIGHTNESS, -1)
+            if (raw < 0) -1.0 else raw / 255.0  // normalise to 0.0–1.0, matching iOS UIScreen.brightness
+        } catch (e: Exception) { -1.0 }
     }
 }
