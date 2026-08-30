@@ -42,19 +42,18 @@ class MLRepository {
         private const val MAX_LIVE_FRAME_DIMENSION = 640
 
         /**
-         * Maximum dimension for burst/file frames submitted for anti-spoof verification.
-         * The backend anti-spoof model resizes all frames to 320 px internally; sending
-         * the raw camera JPEG (up to 12 MP, ~3–10 MB) wastes ~40 s of upload time for
-         * 7 frames on a mobile uplink. 1024 px gives the backend enough headroom if its
-         * resize target ever increases, while cutting payload from ~3-10 MB to ~150-400 KB.
+         * Burst-verify upload cap (2026-08-14 fix): the burst previously uploaded
+         * 8 FULL-RESOLUTION frames (~3 MB each -> ~25-32 MB of base64 JSON in one
+         * POST). On slow uplinks the upload exceeded OkHttp's 60 s callTimeout,
+         * the client aborted mid-body and nginx logged `400 0` — verify-burst
+         * never reached the ML service ("keeps verifying then fails"). The
+         * backend downscales every frame anyway, so 1280 px keeps more detail
+         * than the server will ever use while cutting the payload to ~2-3 MB.
          */
-        private const val MAX_BURST_FRAME_DIMENSION = 1024
-
-        /**
-         * JPEG quality for burst frames. Slightly higher than live (65 %) to preserve
-         * texture detail used by the anti-spoof model, but well below the original raw
-         * camera JPEG quality (~95 %).
-         */
+        // 2026-08-15 latency fix: server analyses at 768px (LLM_ANALYSIS_IMAGE_SIZE)
+        // — 896px keeps headroom above that while halving the upload payload
+        // (~2MB -> ~0.8MB; measured ~10s of a 25s verdict was uplink time).
+        private const val MAX_BURST_FRAME_DIMENSION = 896
         private const val JPEG_QUALITY_BURST = 80
     }
 
@@ -71,7 +70,8 @@ class MLRepository {
         sessionId: String,
         imageFile: File,
         docTypeExpected: String? = null,
-        sideExpected: String? = null
+        sideExpected: String? = null,
+        callPurpose: String? = null
     ): Resource<MLPredictResponse> {
         return try {
             val base64Image = fileToBase64(imageFile)
@@ -80,7 +80,8 @@ class MLRepository {
                 sessionId = sessionId,
                 docTypeExpected = docTypeExpected,
                 sideExpected = sideExpected,
-                imageJpegBase64 = base64Image
+                imageJpegBase64 = base64Image,
+                callPurpose = callPurpose
             )
 
             Log.d(TAG, "Predicting document: session=$sessionId, type=$docTypeExpected, side=$sideExpected")
@@ -122,7 +123,8 @@ class MLRepository {
         sessionId: String,
         bitmap: Bitmap,
         docTypeExpected: String? = null,
-        sideExpected: String? = null
+        sideExpected: String? = null,
+        callPurpose: String? = null
     ): Resource<MLPredictResponse> {
         return try {
             val base64Image = bitmapToBase64ForLiveFrame(bitmap)
@@ -131,7 +133,8 @@ class MLRepository {
                 sessionId = sessionId,
                 docTypeExpected = docTypeExpected,
                 sideExpected = sideExpected,
-                imageJpegBase64 = base64Image
+                imageJpegBase64 = base64Image,
+                callPurpose = callPurpose
             )
 
             Log.d(TAG, "Predicting document from bitmap: session=$sessionId")
@@ -182,9 +185,12 @@ class MLRepository {
             // all frame bytes + their base64 strings at the same time — on a device with
             // 6 × ~3 MB images that's ~18 MB raw + ~24 MB base64 = ~42 MB peak RAM, which
             // can trigger OOM on low-end devices with 512 MB RAM.
+            // 2026-08-14: frames are DOWNSCALED before upload (see
+            // MAX_BURST_FRAME_DIMENSION) — full-res frames made the payload
+            // ~25-32 MB and the upload blew the 60 s callTimeout on slow links.
             val base64Frames = buildList {
                 for (frame in frames) {
-                    add(fileToBase64(frame))
+                    add(fileToBase64Downscaled(frame))
                 }
             }
 
@@ -378,11 +384,41 @@ class MLRepository {
     }
 
     /**
-     * Convert bitmap to base64 JPEG string for burst verify submissions.
-     *
-     * Previously encoded at full bitmap resolution (JPEG_QUALITY 85 %). Now
-     * downscales to MAX_BURST_FRAME_DIMENSION before encoding to match the
-     * same payload reduction applied to file-based burst frames above.
+     * Decode a captured frame file, downscale to [MAX_BURST_FRAME_DIMENSION]
+     * and re-encode at [JPEG_QUALITY_BURST] before base64. Memory-conscious:
+     * uses inSampleSize so the full-resolution bitmap is never fully decoded,
+     * and recycles intermediates. One frame at a time (caller iterates
+     * sequentially — see verifyBurst).
+     */
+    private fun fileToBase64Downscaled(file: File): String {
+        // Pass 1: bounds only — pick a power-of-two sample size close to target
+        val bounds = android.graphics.BitmapFactory.Options().apply {
+            inJustDecodeBounds = true
+        }
+        android.graphics.BitmapFactory.decodeFile(file.absolutePath, bounds)
+        var sampleSize = 1
+        var longEdge = maxOf(bounds.outWidth, bounds.outHeight)
+        while (longEdge / 2 >= MAX_BURST_FRAME_DIMENSION) {
+            sampleSize *= 2
+            longEdge /= 2
+        }
+
+        val opts = android.graphics.BitmapFactory.Options().apply {
+            inSampleSize = sampleSize
+        }
+        val decoded = android.graphics.BitmapFactory.decodeFile(file.absolutePath, opts)
+            ?: return fileToBase64(file) // undecodable → fall back to raw bytes
+
+        val scaled = downscaleBitmap(decoded, MAX_BURST_FRAME_DIMENSION)
+        val outputStream = ByteArrayOutputStream()
+        scaled.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY_BURST, outputStream)
+        if (scaled !== decoded) scaled.recycle()
+        decoded.recycle()
+        return Base64.encodeToString(outputStream.toByteArray(), Base64.NO_WRAP)
+    }
+
+    /**
+     * Convert bitmap to base64 JPEG string (full quality, used for burst verify submissions).
      */
     private fun bitmapToBase64(bitmap: Bitmap): String {
         val scaled = downscaleBitmap(bitmap, MAX_BURST_FRAME_DIMENSION)

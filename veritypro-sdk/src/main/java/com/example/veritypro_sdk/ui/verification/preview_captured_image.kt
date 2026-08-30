@@ -148,7 +148,8 @@ fun PreviewCapturedImageScreen(
     onRetake: () -> Unit,
     documentType: Int,
     isBackSide: Boolean = false,
-    verificationAlreadyPassed: Boolean = false,
+    verificationAlreadyPassed: Boolean = false, // NEW: Skip verification if already done on capture screen
+    kycSessionId: String = "", // C0: real session id for server-side funnel correlation
     onContinue: (File) -> Unit
 ) {
     // Pre-preview gate in document_capture.kt now runs DocumentBackValidator BEFORE
@@ -188,7 +189,11 @@ fun PreviewCapturedImageScreen(
                         Log.d("PreviewScreen", "Anti-spoof fallback: ${burstFiles.size} burst frames")
 
                         val result = mlRepository.verifyBurst(
-                            sessionId = "android-antispoof-${System.currentTimeMillis()}",
+                            // C0: real KYC session id so server-side funnel events
+                            // correlate; synthetic fallback only without a session.
+                            sessionId = kycSessionId.ifBlank {
+                                "android-antispoof-${System.currentTimeMillis()}"
+                            },
                             frames = burstFiles,
                             docTypeExpected = docTypeExpected,
                             sideExpected = if (isBackSide) "BACK" else "FRONT"

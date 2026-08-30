@@ -48,4 +48,18 @@ object GuidanceConfig {
     const val BAR_FILL_MS = 300
     const val SHEET_EXPAND_MS = 350
     const val THUMBNAIL_HERO_MS = 400
+
+    // Pre-shutter quality gates (P0 first-attempt-pass, 2026-08-15)
+    // Preview-sharpness lock gate: 4-neighbour Laplacian variance at 200px.
+    // Permissive on purpose — catches definite mush only, until funnel data
+    // calibrates a tighter line per device tier.
+    const val PREVIEW_SHARPNESS_MIN = 20.0
+
+    // Auto-torch when scene median luma is genuinely dark (0 excluded — a
+    // black wedged preview must trigger the watchdog, not the torch).
+    const val AUTO_TORCH_LUMA_BELOW = 45
+
+    // Motion gate: defer the shutter until gyro magnitude settles, bounded.
+    const val MOTION_GATE_GYRO_MAX = 0.25f
+    const val MOTION_GATE_MAX_WAIT_MS = 900L
 }
