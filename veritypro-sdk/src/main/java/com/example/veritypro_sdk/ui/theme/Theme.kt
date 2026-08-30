@@ -15,6 +15,7 @@ import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
+import com.example.veritypro_sdk.utils.VpBrandConfig
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 
@@ -108,6 +109,9 @@ val MaterialTheme.customColors: CustomColors
 // MaterialTheme.verityColors; legacy screens keep using customColors during convergence.
 val LocalVerityColors = staticCompositionLocalOf { VerityLightColors }
 
+/** Provides the active [VpBrandConfig] to composables that need the logo or primary colour. */
+val LocalVerityBrandConfig = staticCompositionLocalOf<VpBrandConfig?> { null }
+
 val MaterialTheme.verityColors: VerityColors
     @Composable
     @ReadOnlyComposable
@@ -117,6 +121,7 @@ val MaterialTheme.verityColors: VerityColors
 fun VerityProTheme(
     mode: ThemeMode = ThemeMode.SYSTEM,
     dynamicColor: Boolean = true,
+    brandConfig: VpBrandConfig? = null,
     content: @Composable () -> Unit
 ) {
     val context = LocalContext.current
@@ -126,7 +131,7 @@ fun VerityProTheme(
         ThemeMode.DARK -> true
     }
 
-    val colorScheme = when {
+    val baseColorScheme = when {
         dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
             if (useDarkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
         }
@@ -134,9 +139,12 @@ fun VerityProTheme(
         else -> LightColorPalette
     }
 
+    val brandPrimary = brandConfig?.resolvedColor()
+    val colorScheme = if (brandPrimary != null) baseColorScheme.copy(primary = brandPrimary) else baseColorScheme
+
     val customColors = if (useDarkTheme) DarkCustomColors else LightCustomColors
-    // B1: generated verification-SDK token colors, theme-selected.
-    val verityColors = if (useDarkTheme) VerityDarkColors else VerityLightColors
+    // B1: generated verification-SDK token colors, theme-selected, with optional brand override.
+    val verityColors = (if (useDarkTheme) VerityDarkColors else VerityLightColors).overrideBrand(brandPrimary)
 
     val view = LocalView.current
     if (!view.isInEditMode) {
@@ -154,7 +162,8 @@ fun VerityProTheme(
         content = {
             CompositionLocalProvider(
                 LocalCustomColors provides customColors,
-                LocalVerityColors provides verityColors
+                LocalVerityColors provides verityColors,
+                LocalVerityBrandConfig provides brandConfig
             ) {
                 content()
             }
