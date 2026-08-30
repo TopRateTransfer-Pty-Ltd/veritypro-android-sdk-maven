@@ -39,10 +39,16 @@ class ApiRepository {
 
         try {
             val json = JSONObject(errorBody)
-            // VerityPro backend format: { "StatusMessage": "..." }
-            val statusMsg = json.optString("StatusMessage", "")
-            if (statusMsg.isNotEmpty()) return statusMsg
-            // Standard { "Error": { "message": "..." } } format
+            // APIResponse format: { "statusCode": N, "statusMessage": "...", "data": ["field: reason", ...] }
+            val dataArr = json.optJSONArray("data")
+            if (dataArr != null && dataArr.length() > 0) {
+                val messages = (0 until dataArr.length()).map { dataArr.getString(it) }
+                return messages.joinToString("; ")
+            }
+            // statusMessage at top level
+            val statusMessage = json.optString("statusMessage", "")
+            if (statusMessage.isNotEmpty() && statusMessage != "null") return statusMessage
+
             val errorObj = json.optJSONObject("Error")
             if (errorObj != null) {
                 val msg = errorObj.optString("message", "")
