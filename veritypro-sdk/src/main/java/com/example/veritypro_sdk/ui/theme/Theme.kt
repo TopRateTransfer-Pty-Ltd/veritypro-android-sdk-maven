@@ -18,6 +18,7 @@ import androidx.compose.ui.graphics.toArgb
 import com.example.veritypro_sdk.utils.VpBrandConfig
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
+import androidx.core.view.WindowCompat
 
 enum class ThemeMode { SYSTEM, LIGHT, DARK }
 
@@ -120,7 +121,9 @@ val MaterialTheme.verityColors: VerityColors
 @Composable
 fun VerityProTheme(
     mode: ThemeMode = ThemeMode.SYSTEM,
-    dynamicColor: Boolean = true,
+    // B1 theme-bug #2 (dynamic colour): a KYC SDK must not inherit the host's wallpaper theming on
+    // Android 12+ — trust cues have to be stable across devices. Default off; verityColors are fixed.
+    dynamicColor: Boolean = false,
     brandConfig: VpBrandConfig? = null,
     content: @Composable () -> Unit
 ) {
@@ -150,8 +153,18 @@ fun VerityProTheme(
     if (!view.isInEditMode) {
         SideEffect {
             val window = (view.context as? Activity)?.window
-            window?.statusBarColor = colorScheme.primary.toArgb()
-            window?.navigationBarColor = colorScheme.surface.toArgb()
+            if (window != null) {
+                // B1 theme-bug #1 (two blues): system chrome uses the D1 canvas token, never the
+                // brand. colorScheme.primary (#2B7AEF, the legacy Material palette) must never paint
+                // the status bar beneath #0400E5 content. Dark status-bar icons on the light canvas
+                // (light icons in dark theme). Camera screens override to a transparent bar locally.
+                window.statusBarColor = verityColors.bgCanvas.toArgb()
+                window.navigationBarColor = verityColors.bgCanvas.toArgb()
+                WindowCompat.getInsetsController(window, view).apply {
+                    isAppearanceLightStatusBars = !useDarkTheme
+                    isAppearanceLightNavigationBars = !useDarkTheme
+                }
+            }
         }
     }
 
