@@ -3,8 +3,8 @@ package com.example.veritypro_sdk.ui.verification
 /**
  * Runtime switch for the V2 server-driven capture path.
  * Default true — V2 (POST /docai/v2/kyc/doc/capture-verify) is the primary path.
- * V1 fallback retained for emergency rollback only.
+ * V1 rollback requires a new SDK release, not a runtime flag.
  */
 object V2CaptureConfig {
-    var useV2CaptureVerify: Boolean = true
+    val useV2CaptureVerify: Boolean = true
 }
