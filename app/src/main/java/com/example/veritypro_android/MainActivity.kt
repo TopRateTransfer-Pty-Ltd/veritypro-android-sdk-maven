@@ -33,7 +33,6 @@ import com.example.veritypro_sdk.services.MLRetrofitInstance
 import androidx.compose.runtime.mutableStateOf
 import com.example.veritypro_sdk.ui.prototype.ProtoVerificationScreen
 import com.example.veritypro_sdk.ui.theme.ThemeMode
-import com.example.veritypro_sdk.ui.verification.V2CaptureConfig
 import com.example.veritypro_sdk.utils.LivenessResult
 import com.example.veritypro_sdk.utils.VerityOption
 
@@ -45,7 +44,6 @@ class MainActivity : ComponentActivity() {
         // live endpoint: base + relative "v2/kyc/doc/capture-verify" = /docai/v2/kyc/doc/capture-verify.
         // (Swap back to "http://192.168.4.126:8001/" to use a local doc-ml server.)
         MLRetrofitInstance.configure("https://api.skylinefare.com/docai/")
-        V2CaptureConfig.useV2CaptureVerify = true
 
         setContent {
             VerityproandroidTheme {
