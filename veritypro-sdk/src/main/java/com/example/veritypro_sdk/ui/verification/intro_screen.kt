@@ -30,6 +30,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.SpanStyle
@@ -39,11 +40,17 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import coil.compose.AsyncImage
 import com.example.veritypro_sdk.R
+import com.example.veritypro_sdk.ui.theme.LocalVerityBrandConfig
 import com.example.veritypro_sdk.ui.theme.customColors
+import com.example.veritypro_sdk.utils.VpBrandLogger
 
 @Composable
 fun IntroScreen(onCancel: () -> Unit, onGetStarted: () -> Unit) {
+    val brandConfig = LocalVerityBrandConfig.current
+    val logoUrl = brandConfig?.resolvedLogoUrl()
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -71,16 +78,28 @@ fun IntroScreen(onCancel: () -> Unit, onGetStarted: () -> Unit) {
             )
         }
 
-        Text(
-            text = "VERITYPRO",
-            fontWeight = FontWeight.W700,
-            color = MaterialTheme.colorScheme.onSurface,
-            textAlign = TextAlign.Center,
-            fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(24.dp).toSp() },
-            modifier = Modifier
-                .fillMaxWidth()
-                .offset(y = ScaleUtil.scaleHeight((-16).dp))
-        )
+        if (logoUrl != null) {
+            AsyncImage(
+                model = logoUrl,
+                contentDescription = "Brand logo",
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(ScaleUtil.scaleHeight(56.dp)),
+                contentScale = ContentScale.Fit,
+                onError = { VpBrandLogger.warn("brandLogoUrl load failed (url=redacted)") }
+            )
+        } else {
+            Text(
+                text = "VERITYPRO",
+                fontWeight = FontWeight.W700,
+                color = MaterialTheme.colorScheme.onSurface,
+                textAlign = TextAlign.Center,
+                fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(24.dp).toSp() },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .offset(y = ScaleUtil.scaleHeight((-16).dp))
+            )
+        }
 
 
         Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(10.dp)))

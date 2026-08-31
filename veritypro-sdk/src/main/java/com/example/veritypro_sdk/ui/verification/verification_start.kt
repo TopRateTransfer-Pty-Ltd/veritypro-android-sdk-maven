@@ -295,7 +295,7 @@ fun VerificationScreen(
     // Block verification entirely on compromised (rooted) devices.
     val isDeviceRooted = remember { SecurityAssessmentCollector.checkRooted(context) }
 
-    VerityProTheme(mode = themeMode, dynamicColor = dynamicColor) {
+    VerityProTheme(mode = themeMode, dynamicColor = dynamicColor, brandConfig = options.brandConfig) {
         Surface(
             Modifier.fillMaxSize(),
             color = MaterialTheme.colorScheme.background

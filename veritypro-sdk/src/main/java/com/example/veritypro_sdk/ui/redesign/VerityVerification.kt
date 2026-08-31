@@ -9,6 +9,7 @@ import com.example.veritypro_sdk.ui.redesign.screens.VerityDocOption
 import com.example.veritypro_sdk.ui.redesign.state.VerityFlowState
 import com.example.veritypro_sdk.ui.theme.ThemeMode
 import com.example.veritypro_sdk.ui.theme.VerityProTheme
+import com.example.veritypro_sdk.utils.VpBrandConfig
 
 /**
  * Public entry point for the redesigned verification flow (B1). Wraps the theme (auto light/dark
@@ -22,12 +23,13 @@ fun VerityVerification(
     documentOptions: List<VerityDocOption>,
     onResult: (VerityFlowState) -> Unit,
     themeMode: ThemeMode = ThemeMode.SYSTEM,
-    analytics: VerityAnalytics = LogcatVerityAnalytics()
+    analytics: VerityAnalytics = LogcatVerityAnalytics(),
+    brandConfig: VpBrandConfig? = null,
 ) {
     LaunchedEffect(Unit) {
         analytics.track(VerityAnalyticsEvent.sessionStarted("combined"))
     }
-    VerityProTheme(mode = themeMode, dynamicColor = false) {
+    VerityProTheme(mode = themeMode, dynamicColor = false, brandConfig = brandConfig) {
         VerityFlowHost(
             documentOptions = documentOptions,
             onFinished = onResult,
