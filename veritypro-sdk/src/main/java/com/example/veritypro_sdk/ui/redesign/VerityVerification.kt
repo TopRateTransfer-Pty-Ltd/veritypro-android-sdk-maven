@@ -9,18 +9,22 @@ import com.example.veritypro_sdk.ui.redesign.screens.VerityDocOption
 import com.example.veritypro_sdk.ui.redesign.state.VerityFlowState
 import com.example.veritypro_sdk.ui.theme.ThemeMode
 import com.example.veritypro_sdk.ui.theme.VerityProTheme
+import com.example.veritypro_sdk.utils.VerityOption
 import com.example.veritypro_sdk.utils.VpBrandConfig
 
 /**
- * Public entry point for the redesigned verification flow (B1). Wraps the theme (auto light/dark
- * via [themeMode]), emits `session_started`, provides analytics, and hosts the state-driven flow.
- * An integrator hosts this from a screen/Activity and receives the terminal [VerityFlowState].
+ * Public entry point for the redesigned verification flow (B1). Wraps the theme, emits
+ * `session_started`, and hosts the state-driven flow.
  *
- * This coexists with the legacy SDK entry (converge-not-rebuild); the legacy flow is untouched.
+ * Pass [options] to activate the full live pipeline (KYC session init, real camera, AWS liveness,
+ * document upload). When [options] is null the flow runs in demo/stub mode — no API calls made.
+ *
+ * Integrators host this from a screen/Activity and receive the terminal [VerityFlowState].
  */
 @Composable
 fun VerityVerification(
     documentOptions: List<VerityDocOption>,
+    options: VerityOption? = null,
     onResult: (VerityFlowState) -> Unit,
     themeMode: ThemeMode = ThemeMode.SYSTEM,
     analytics: VerityAnalytics = LogcatVerityAnalytics(),
@@ -32,6 +36,7 @@ fun VerityVerification(
     VerityProTheme(mode = themeMode, dynamicColor = false, brandConfig = brandConfig) {
         VerityFlowHost(
             documentOptions = documentOptions,
+            options = options,
             onFinished = onResult,
             analytics = analytics
         )
