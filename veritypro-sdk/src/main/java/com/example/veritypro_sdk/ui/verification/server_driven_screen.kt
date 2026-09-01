@@ -15,13 +15,20 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.veritypro_sdk.services.ApiRepository
 import com.example.veritypro_sdk.services.NextAction
 import com.example.veritypro_sdk.services.Resource
 import com.example.veritypro_sdk.services.SessionStateResponse
+import com.example.veritypro_sdk.services.VerificationRequestMultipart
+import com.example.veritypro_sdk.services.toMultipartBodyPart
+import com.example.veritypro_sdk.ui.redesign.VerityDocumentCaptureBridge
+import com.example.veritypro_sdk.ui.redesign.VerityLivenessBridge
 import com.example.veritypro_sdk.ui.verification.address.AddressVerificationScreen
 import com.example.veritypro_sdk.ui.verification.edd.EddVerificationScreen
+import com.example.veritypro_sdk.utils.DeviceUtils
 import com.example.veritypro_sdk.utils.LivenessResult
+import com.example.veritypro_sdk.utils.LocationHelper
 import com.example.veritypro_sdk.utils.VerityOption
 import kotlinx.coroutines.launch
 
@@ -42,13 +49,24 @@ fun ServerDrivenScreen(
 ) {
     val repository = remember { ApiRepository() }
     val coroutineScope = rememberCoroutineScope()
+    val context = androidx.compose.ui.platform.LocalContext.current
+
+    // ViewModel for real camera + liveness pipeline (shared with v2 bridges).
+    val viewModel: VerityProViewModel = viewModel()
+    val awsSessionId by viewModel.awsSessionId.collectAsState()
+    val livenessRegion by viewModel.livenessRegion.collectAsState()
+    val livenessCredentials by viewModel.livenessCredentials.collectAsState()
 
     var sessionId by remember { mutableStateOf(options.serverSessionId) }
     var nextAction by remember { mutableStateOf<NextAction?>(null) }
     var completedSteps by remember { mutableStateOf<List<String>>(emptyList()) }
     var sessionStatus by remember { mutableStateOf("Created") }
+    // Engine session ID used for ML document analysis, document upload, and liveness.
+    var kycEngineSessionId by remember { mutableStateOf<String?>(null) }
     var isLoading by remember { mutableStateOf(true) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
+    // Tracks which step's liveness session has been started to avoid duplicate calls.
+    var livenessBegunForStep by remember { mutableStateOf<String?>(null) }
 
     fun fetchSessionState(sid: String) {
         coroutineScope.launch {
@@ -59,6 +77,7 @@ fun ServerDrivenScreen(
                     nextAction = result.data.nextAction
                     completedSteps = result.data.completedSteps
                     sessionStatus = result.data.status
+                    result.data.kycEngineSessionId?.let { kycEngineSessionId = it }
                     isLoading = false
                 }
                 is Resource.Error -> {
@@ -80,6 +99,7 @@ fun ServerDrivenScreen(
                     nextAction = result.data.nextAction
                     completedSteps = result.data.completedSteps
                     sessionStatus = result.data.status
+                    result.data.kycEngineSessionId?.let { kycEngineSessionId = it }
                     isLoading = false
                 }
                 is Resource.Error -> {
@@ -102,6 +122,7 @@ fun ServerDrivenScreen(
                     nextAction = result.data.nextAction
                     completedSteps = result.data.completedSteps
                     sessionStatus = result.data.status
+                    result.data.kycEngineSessionId?.let { kycEngineSessionId = it }
                     isLoading = false
                 }
                 is Resource.Error -> {
@@ -158,6 +179,7 @@ fun ServerDrivenScreen(
                                         nextAction = result.data.nextAction
                                         completedSteps = result.data.completedSteps
                                         sessionStatus = result.data.status
+                                        result.data.kycEngineSessionId?.let { kycEngineSessionId = it }
                                         isLoading = false
                                     }
                                     is Resource.Error -> {
@@ -182,46 +204,63 @@ fun ServerDrivenScreen(
                 // Reuse existing capture screens; only orchestration is server-driven.
                 when (action.type) {
                     "SDK_CAPTURE", "DOCUMENT_CAPTURE" -> {
-                        // Reuse existing VerificationScreen for document capture.
-                        // Configure options with the engine session ID from the server.
-                        val docOptions = remember(action) {
-                            options.copy(
-                                requiredModules = listOf("DOCUMENT"),
-                                serverSessionId = null // Force v1 capture flow for document
-                            )
-                        }
-                        VerificationScreen(
-                            options = docOptions,
-                            onFinish = { result ->
-                                if (result.success) {
-                                    completeStep(action.step)
-                                } else {
-                                    errorMessage = result.error ?: "Document capture failed"
+                        // v2 bridge: real CameraX + ML analysis → upload → completeStep.
+                        val eid = kycEngineSessionId ?: action.engineSessionId ?: ""
+                        VerityDocumentCaptureBridge(
+                            documentType = null, // default to ID Card; server may refine via action data
+                            sessionId = eid,
+                            onBack = onCancel,
+                            onCaptureComplete = { front, back ->
+                                coroutineScope.launch {
+                                    val ip = runCatching {
+                                        LocationHelper(context).getLocalIpAddress()
+                                    }.getOrNull() ?: "0.0.0.0"
+                                    val request = VerificationRequestMultipart(
+                                        SessionId = eid,
+                                        LivenessId = "",
+                                        DocumentType = 1,
+                                        DocumentFront = front.toMultipartBodyPart("DocumentFront"),
+                                        DocumentBack = back?.toMultipartBodyPart("DocumentBack"),
+                                        PlatformUsed = "android",
+                                        DeviceAndBrowser = DeviceUtils.getDevicePlatform(),
+                                        IpAddress = ip,
+                                        IpLocation = "0,0"
+                                    )
+                                    when (viewModel.submitKycAwait(request)) {
+                                        is Resource.CompletedSuccess<*>, is Resource.Success<*> ->
+                                            completeStep(action.step)
+                                        else ->
+                                            errorMessage = "Document upload failed. Please try again."
+                                    }
                                 }
-                            },
-                            onCancel = onCancel
+                            }
                         )
                     }
 
                     "LIVENESS", "LIVENESS_CHECK" -> {
-                        // Reuse existing VerificationScreen for liveness check.
-                        val livenessOptions = remember(action) {
-                            options.copy(
-                                requiredModules = listOf("BIOMETRIC"),
-                                previousEngineSessionId = action.engineSessionId,
-                                serverSessionId = null
-                            )
+                        // v2 bridge: AWS FaceLivenessDetector → verifyLivenessResult → completeStep.
+                        val eid = kycEngineSessionId ?: action.engineSessionId ?: ""
+                        // Start the AWS liveness session once per step.
+                        LaunchedEffect(action.step) {
+                            if (livenessBegunForStep != action.step && eid.isNotBlank()) {
+                                livenessBegunForStep = action.step
+                                viewModel.startBeginLiveness(eid)
+                            }
                         }
-                        VerificationScreen(
-                            options = livenessOptions,
-                            onFinish = { result ->
-                                if (result.success) {
-                                    completeStep(action.step)
-                                } else {
-                                    errorMessage = result.error ?: "Liveness check failed"
+                        VerityLivenessBridge(
+                            awsSessionId = awsSessionId,
+                            region = livenessRegion,
+                            credentials = livenessCredentials,
+                            onComplete = {
+                                viewModel.verifyLivenessResult(eid) { ok ->
+                                    if (ok) completeStep(action.step)
+                                    else errorMessage = "Liveness verification failed. Please try again."
                                 }
                             },
-                            onCancel = onCancel
+                            onError = { msg ->
+                                errorMessage = msg
+                            },
+                            onClose = onCancel
                         )
                     }
 

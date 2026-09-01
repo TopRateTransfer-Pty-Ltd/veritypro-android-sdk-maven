@@ -262,6 +262,13 @@ class VerityProViewModel(
         }
     }
 
+    suspend fun submitKycAwait(data: VerificationRequestMultipart): Resource<Any> {
+        _kycState.value = Resource.Loading("Submitting KYC Verification")
+        val result = repository.updateKyc(data, apiKey)
+        _kycState.value = result
+        return result
+    }
+
     fun resetLivenessState() {
         _awsSessionId.value = null
         _livenessRegion.value = "us-east-1"

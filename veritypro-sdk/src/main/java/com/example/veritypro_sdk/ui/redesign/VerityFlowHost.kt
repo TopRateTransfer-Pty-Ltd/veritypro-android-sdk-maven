@@ -4,9 +4,11 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -14,6 +16,16 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.material3.MaterialTheme
+import android.graphics.BitmapFactory
+import androidx.compose.foundation.Image
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.platform.LocalContext
+import androidx.lifecycle.viewmodel.compose.viewModel
+import kotlinx.coroutines.flow.first
+import com.example.veritypro_sdk.services.Resource
+import com.example.veritypro_sdk.services.SessionData
+import com.example.veritypro_sdk.services.VerificationRequestMultipart
+import com.example.veritypro_sdk.services.toMultipartBodyPart
 import com.example.veritypro_sdk.ui.redesign.analytics.LogcatVerityAnalytics
 import com.example.veritypro_sdk.ui.redesign.analytics.VerityAnalytics
 import com.example.veritypro_sdk.ui.redesign.analytics.VerityAnalyticsEvent
@@ -37,23 +49,57 @@ import com.example.veritypro_sdk.ui.redesign.state.VerityFlowState
 import com.example.veritypro_sdk.ui.redesign.state.VerityStateMachine
 import com.example.veritypro_sdk.ui.theme.VerityDim
 import com.example.veritypro_sdk.ui.theme.verityColors
+import com.example.veritypro_sdk.ui.verification.VerityProViewModel
+import com.example.veritypro_sdk.utils.CameraUtils
+import com.example.veritypro_sdk.utils.DeviceUtils
+import com.example.veritypro_sdk.utils.LocationHelper
+import com.example.veritypro_sdk.utils.VerityOption
+import java.io.File
 
 /**
  * B1 — navigation host. Renders the screen for the current [VerityFlowState] and wires each
- * screen's callbacks to state-machine events. Transient/processing states render a processing
- * surface; in production the view-model advances them on backend/camera events (integration step).
+ * screen's callbacks to state-machine events.
+ *
+ * When [options] is provided, the host creates a [VerityProViewModel], initiates a KYC session
+ * during [VerityFlowState.Initializing], and wires [VerityDocumentCaptureBridge] /
+ * [VerityLivenessBridge] to the real camera + API pipelines. Without [options], the host falls
+ * back to the demo/stub behavior (useful for design previews).
  */
 @Composable
 fun VerityFlowHost(
     documentOptions: List<VerityDocOption>,
+    options: VerityOption? = null,
     onFinished: (VerityFlowState) -> Unit,
-    initial: VerityFlowState = VerityFlowState.AwaitingConsent,
+    initial: VerityFlowState = if (options != null) VerityFlowState.Initializing else VerityFlowState.AwaitingConsent,
     analytics: VerityAnalytics = LogcatVerityAnalytics()
 ) {
-    var state by remember { mutableStateOf(initial) }
-    val dispatch: (VerityEvent) -> Unit = { state = VerityStateMachine.next(state, it) }
+    val context = LocalContext.current
 
-    // D3 §4: drop-off-per-state + terminal outcome (no PII).
+    // ViewModel is always created so collectAsState calls below are unconditional (Compose rules).
+    val viewModel: VerityProViewModel = viewModel()
+    val awsSessionId by viewModel.awsSessionId.collectAsState()
+    val livenessRegion by viewModel.livenessRegion.collectAsState()
+    val livenessCredentials by viewModel.livenessCredentials.collectAsState()
+
+    var state by remember { mutableStateOf(initial) }
+    val dispatch: (VerityEvent) -> Unit = { event -> state = VerityStateMachine.next(state, event) }
+
+    // Session & capture state — survives recomposition across state transitions.
+    var kycSessionId by remember { mutableStateOf("") }
+    var capturedFrontFile by remember { mutableStateOf<File?>(null) }
+    var capturedBackFile by remember { mutableStateOf<File?>(null) }
+    var selectedDocOption by remember { mutableStateOf<VerityDocOption?>(null) }
+    var biometricsApproved by remember { mutableStateOf(false) }
+
+    // Camera permission — resolved once, result drives AwaitingPermission state.
+    var hasPermission by remember { mutableStateOf(CameraUtils.hasCameraPermissions(context)) }
+    val cameraPermissionLauncher = CameraUtils.createCameraLauncher { granted ->
+        hasPermission = granted
+        if (granted) dispatch(VerityEvent.PermissionGranted)
+        else dispatch(VerityEvent.PermissionDenied)
+    }
+
+    // Analytics
     LaunchedEffect(state) {
         analytics.track(VerityAnalyticsEvent.stateEntered(state.name))
         when (state) {
@@ -67,8 +113,29 @@ fun VerityFlowHost(
     }
 
     when (state) {
-        VerityFlowState.Initializing ->
+
+        // ---- Session init ----
+        VerityFlowState.Initializing -> {
+            if (options != null) {
+                LaunchedEffect(Unit) {
+                    viewModel.createKyc(options)
+                    val result = viewModel.kycState.first { it !is Resource.Loading }
+                    when {
+                        result is Resource.Success<*> -> {
+                            kycSessionId = (result.data as? SessionData)?.sessionId ?: ""
+                            dispatch(VerityEvent.Ready)
+                        }
+                        result is Resource.CompletedSuccess<*> -> {
+                            kycSessionId = (result.data as? SessionData)?.sessionId
+                                ?: options.preCreatedSessionId ?: ""
+                            dispatch(VerityEvent.Ready)
+                        }
+                        else -> dispatch(VerityEvent.IntegrityBlocked)
+                    }
+                }
+            }
             Processing("Getting ready…")
+        }
 
         VerityFlowState.AwaitingConsent ->
             VerityWelcomeScreen(
@@ -80,49 +147,166 @@ fun VerityFlowHost(
         VerityFlowState.SelectingDocument ->
             VerityDocumentTypeScreen(
                 options = documentOptions,
-                onSelect = { dispatch(VerityEvent.SelectDocument) },
+                onSelect = { opt ->
+                    selectedDocOption = opt
+                    dispatch(VerityEvent.SelectDocument)
+                },
                 onBack = { dispatch(VerityEvent.Cancel) }
             )
 
-        VerityFlowState.AwaitingPermission ->
+        // ---- Camera permission ----
+        VerityFlowState.AwaitingPermission -> {
+            LaunchedEffect(Unit) {
+                if (hasPermission) {
+                    dispatch(VerityEvent.PermissionGranted)
+                } else {
+                    cameraPermissionLauncher.launch(android.Manifest.permission.CAMERA)
+                }
+            }
             VerityCameraPermissionScreen(
-                onAllow = { dispatch(VerityEvent.PermissionGranted) },
+                onAllow = { cameraPermissionLauncher.launch(android.Manifest.permission.CAMERA) },
                 onBack = { dispatch(VerityEvent.Cancel) }
             )
+        }
 
-        VerityFlowState.AwaitingDocumentCapture ->
-            VerityDocumentCaptureScreen(
-                sideLabel = "Front of ID",
-                captureState = VerityCaptureState.Searching,
-                guidance = "Position your ID within the frame",
-                blurOk = true, glareOk = true, lightingOk = true,
-                onClose = { dispatch(VerityEvent.Cancel) },
-                onManualCapture = { dispatch(VerityEvent.Captured) }
-            )
+        // ---- Document capture — real bridge when options present, stub otherwise ----
+        VerityFlowState.AwaitingDocumentCapture -> {
+            if (options != null && kycSessionId.isNotBlank()) {
+                VerityDocumentCaptureBridge(
+                    documentType = selectedDocOption?.id?.toIntOrNull() ?: 1,
+                    sessionId = kycSessionId,
+                    onBack = { dispatch(VerityEvent.Cancel) },
+                    onCaptureComplete = { front, back ->
+                        capturedFrontFile = front
+                        capturedBackFile = back
+                        dispatch(VerityEvent.Captured)
+                    }
+                )
+            } else {
+                VerityDocumentCaptureScreen(
+                    sideLabel = "Front of ID",
+                    captureState = VerityCaptureState.Searching,
+                    guidance = "Position your ID within the frame",
+                    blurOk = true, glareOk = true, lightingOk = true,
+                    onClose = { dispatch(VerityEvent.Cancel) },
+                    onManualCapture = { dispatch(VerityEvent.Captured) }
+                )
+            }
+        }
 
+        // ---- Preview captured image ----
         VerityFlowState.DocumentPreview ->
             VerityDocumentPreviewScreen(
                 onConfirm = { dispatch(VerityEvent.ConfirmPreview) },
                 onRetake = { dispatch(VerityEvent.Retake) }
-            )
+            ) {
+                val front = capturedFrontFile
+                if (front != null) {
+                    val bmp = remember(front) { BitmapFactory.decodeFile(front.absolutePath)?.asImageBitmap() }
+                    if (bmp != null) {
+                        Image(
+                            bitmap = bmp,
+                            contentDescription = "Captured document front",
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                }
+            }
 
-        VerityFlowState.Uploading -> VerityUploadScreen(progress = 0.7f)
-        VerityFlowState.ProcessingDocument -> Processing("Reading your document…")
+        // ---- Upload captured files ----
+        VerityFlowState.Uploading -> {
+            if (options != null && kycSessionId.isNotBlank()) {
+                LaunchedEffect(Unit) {
+                    val front = capturedFrontFile
+                    if (front == null) {
+                        dispatch(VerityEvent.DocRetry)
+                        return@LaunchedEffect
+                    }
+                    val ip = runCatching {
+                        LocationHelper(context).getLocalIpAddress()
+                    }.getOrNull() ?: "0.0.0.0"
 
-        VerityFlowState.AwaitingSelfie ->
+                    val request = VerificationRequestMultipart(
+                        SessionId = kycSessionId,
+                        LivenessId = "",
+                        DocumentType = selectedDocOption?.id?.toIntOrNull() ?: 1,
+                        DocumentFront = front.toMultipartBodyPart("DocumentFront"),
+                        DocumentBack = capturedBackFile?.toMultipartBodyPart("DocumentBack"),
+                        PlatformUsed = "android",
+                        DeviceAndBrowser = DeviceUtils.getDevicePlatform(),
+                        IpAddress = ip,
+                        IpLocation = "0,0"
+                    )
+                    when (viewModel.submitKycAwait(request)) {
+                        is Resource.CompletedSuccess<*>, is Resource.Success<*> -> dispatch(VerityEvent.Uploaded)
+                        else -> dispatch(VerityEvent.DocRetry)
+                    }
+                }
+            }
+            VerityUploadScreen(progress = 0.7f)
+        }
+
+        // ---- After upload, automatically advance to liveness intro ----
+        VerityFlowState.ProcessingDocument -> {
+            LaunchedEffect(Unit) { dispatch(VerityEvent.DocOk) }
+            Processing("Reading your document…")
+        }
+
+        // ---- Selfie intro — begin AWS session in background while user reads instructions ----
+        VerityFlowState.AwaitingSelfie -> {
+            if (options != null && kycSessionId.isNotBlank()) {
+                LaunchedEffect(kycSessionId) {
+                    viewModel.startBeginLiveness(kycSessionId)
+                }
+            }
             VeritySelfieIntroScreen(
                 onReady = { dispatch(VerityEvent.BeginLiveness) },
                 onBack = { dispatch(VerityEvent.Cancel) }
             )
+        }
 
-        VerityFlowState.AwaitingLiveness ->
-            VerityLivenessScreen(
-                ringState = VerityLivenessRingState.Active,
-                guidance = "Center your face in the ring",
-                onClose = { dispatch(VerityEvent.Cancel) }
-            )
-        VerityFlowState.ProcessingBiometrics,
-        VerityFlowState.RunningRiskChecks -> Processing("Finishing your verification…")
+        // ---- Liveness — real bridge when options + session present, stub otherwise ----
+        VerityFlowState.AwaitingLiveness -> {
+            if (options != null) {
+                VerityLivenessBridge(
+                    awsSessionId = awsSessionId,
+                    region = livenessRegion,
+                    credentials = livenessCredentials,
+                    onComplete = { dispatch(VerityEvent.LivenessDone) },
+                    onError = { _ -> dispatch(VerityEvent.LivenessTimeout) },
+                    onClose = { dispatch(VerityEvent.Cancel) }
+                )
+            } else {
+                VerityLivenessScreen(
+                    ringState = VerityLivenessRingState.Active,
+                    guidance = "Center your face in the ring",
+                    onClose = { dispatch(VerityEvent.Cancel) }
+                )
+            }
+        }
+
+        // ---- Biometrics verification — poll backend for liveness result ----
+        VerityFlowState.ProcessingBiometrics -> {
+            if (options != null && kycSessionId.isNotBlank()) {
+                LaunchedEffect(Unit) {
+                    viewModel.verifyLivenessResult(kycSessionId) { ok ->
+                        biometricsApproved = ok
+                        dispatch(VerityEvent.BiometricsOk)
+                    }
+                }
+            }
+            Processing("Finishing your verification…")
+        }
+
+        // ---- Risk decision — derived from biometrics result ----
+        VerityFlowState.RunningRiskChecks -> {
+            LaunchedEffect(biometricsApproved) {
+                if (biometricsApproved) dispatch(VerityEvent.DecisionApproved)
+                else dispatch(VerityEvent.DecisionRejected)
+            }
+            Processing("Finishing your verification…")
+        }
+
         VerityFlowState.NetworkInterrupted -> Processing("Reconnecting…")
 
         VerityFlowState.Approved ->
