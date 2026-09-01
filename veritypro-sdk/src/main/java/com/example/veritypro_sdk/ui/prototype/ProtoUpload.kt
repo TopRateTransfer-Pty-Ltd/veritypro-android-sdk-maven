@@ -1,0 +1,184 @@
+package com.example.veritypro_sdk.ui.prototype
+
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import java.io.File
+
+/**
+ * Reusable neo-brutalist upload screen for the Address and EDD modules: pick an evidence type,
+ * then upload or photograph a file (PDF/JPG/PNG). The file is copied to cache and handed to
+ * [onSubmit] for the real backend call. Submitting/error states are driven by the caller.
+ */
+@Composable
+fun ProtoUploadScreen(
+    kicker: String,
+    title: String,
+    subtitle: String,
+    docTypes: List<Pair<String, Int>>,
+    accent: Color,
+    step: String?,
+    submitting: Boolean,
+    errorMsg: String?,
+    // Server-enforced ceiling (Address service RequestSizeLimit + MaxFileSizeBytes = 15 MB). The
+    // backend does not expose this via API, so it is mirrored here to fail early with a clear
+    // message instead of a generic server rejection on an oversized upload.
+    maxSizeMb: Int = 15,
+    onSubmit: (docTypeInt: Int, file: File) -> Unit,
+    onBack: () -> Unit,
+) {
+    val context = LocalContext.current
+    var selectedType by remember { mutableStateOf(docTypes.firstOrNull()?.second) }
+    var pickedFile by remember { mutableStateOf<File?>(null) }
+    var pickedName by remember { mutableStateOf<String?>(null) }
+    var sizeError by remember { mutableStateOf<String?>(null) }
+
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+        if (uri != null) {
+            sizeError = null
+            // Preserve the REAL type: the backend rejects a generic "image/*" MIME (it wants a
+            // specific image/* or application/pdf). Derive the extension from the picked MIME so the
+            // cache file carries a concrete type, and reject anything that isn't an image/PDF.
+            val mime = context.contentResolver.getType(uri) ?: ""
+            val ext = when (mime) {
+                "image/png" -> "png"
+                "image/jpeg", "image/jpg" -> "jpg"
+                "image/webp" -> "webp"
+                "image/gif" -> "gif"
+                "image/bmp" -> "bmp"
+                "image/tiff" -> "tiff"
+                "image/heic", "image/heif" -> "heic"
+                "application/pdf" -> "pdf"
+                else -> null
+            }
+            if (ext == null) {
+                pickedFile = null; pickedName = null
+                sizeError = "That file type isn't accepted. Use a JPG, PNG or PDF."
+                return@rememberLauncherForActivityResult
+            }
+            val f = File(context.cacheDir, "proto_upload_${kicker.filter { it.isLetterOrDigit() }}.$ext")
+            val ok = runCatching {
+                context.contentResolver.openInputStream(uri)?.use { input ->
+                    f.outputStream().use { input.copyTo(it) }
+                }
+                f.exists() && f.length() > 0
+            }.getOrDefault(false)
+            when {
+                !ok -> { pickedFile = null; pickedName = null }
+                f.length() > maxSizeMb * 1024L * 1024L -> {
+                    // Too large — reject before upload; the server would otherwise 413.
+                    pickedFile = null; pickedName = null
+                    sizeError = "That file is ${f.length() / (1024 * 1024)} MB — the maximum is $maxSizeMb MB."
+                    f.delete()
+                }
+                else -> {
+                    pickedFile = f
+                    pickedName = uri.lastPathSegment?.substringAfterLast('/') ?: "document"
+                }
+            }
+        }
+    }
+
+    Column(Modifier.fillMaxSize().background(Proto.Canvas).verticalScroll(rememberScrollState())) {
+        ProtoTopBar(step = step, onBack = onBack)
+        Column(Modifier.fillMaxWidth().padding(horizontal = 24.dp)) {
+            MonoLabel(kicker, accent, size = 12)
+            Spacer(Modifier.height(12.dp))
+            Text(
+                title, color = Proto.Ink, fontFamily = ProtoDisplay,
+                fontSize = 34.sp, fontWeight = FontWeight.Black, letterSpacing = (-1).sp, lineHeight = 36.sp,
+            )
+            Spacer(Modifier.height(8.dp))
+            Text(subtitle, color = Proto.Sub, fontFamily = ProtoDisplay, fontSize = 15.sp)
+            Spacer(Modifier.height(20.dp))
+
+            MonoLabel("DOCUMENT TYPE", Proto.Sub, size = 11)
+            Spacer(Modifier.height(10.dp))
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                docTypes.forEach { (label, type) ->
+                    val selected = selectedType == type
+                    BrutalBox(
+                        background = if (selected) Color(0xFFEFEFFE) else Color.White,
+                        borderColor = if (selected) Proto.Brand else Proto.Ink,
+                        shadow = false,
+                    ) {
+                        Row(
+                            Modifier.protoClick { selectedType = type }.padding(horizontal = 16.dp, vertical = 14.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Box(
+                                Modifier.size(18.dp).border(Proto.borderW, if (selected) Proto.Brand else Proto.Ink),
+                                contentAlignment = Alignment.Center,
+                            ) { if (selected) Box(Modifier.size(10.dp).background(Proto.Brand)) }
+                            Spacer(Modifier.width(12.dp))
+                            Text(label, color = Proto.Ink, fontFamily = ProtoDisplay, fontSize = 16.sp, fontWeight = FontWeight.Medium)
+                        }
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(18.dp))
+            // Upload area
+            BrutalBox {
+                Column(
+                    Modifier.protoClick { picker.launch("*/*") }.padding(20.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Text("＋", color = Proto.Ink, fontFamily = ProtoDisplay, fontSize = 30.sp, fontWeight = FontWeight.Black)
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        pickedName ?: "Upload or photograph",
+                        color = Proto.Ink, fontFamily = ProtoDisplay, fontSize = 15.sp, fontWeight = FontWeight.Bold,
+                        textAlign = TextAlign.Center,
+                    )
+                    Spacer(Modifier.height(2.dp))
+                    MonoLabel("PDF, JPG OR PNG · MAX $maxSizeMb MB", Proto.Sub, size = 10)
+                }
+            }
+
+            Spacer(Modifier.height(14.dp))
+            when {
+                submitting -> MonoLabel("SUBMITTING…", Proto.Amber, size = 11)
+                sizeError != null -> Text(sizeError!!, color = Proto.Danger, fontFamily = ProtoDisplay, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+                errorMsg != null -> Text(errorMsg, color = Proto.Danger, fontFamily = ProtoDisplay, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+            }
+
+            Spacer(Modifier.height(16.dp))
+            ProtoPrimaryButton(
+                label = "Submit",
+                enabled = selectedType != null && pickedFile != null && !submitting,
+                background = accent,
+                onClick = { onSubmit(selectedType!!, pickedFile!!) },
+            )
+            Spacer(Modifier.height(24.dp))
+        }
+    }
+}

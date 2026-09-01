@@ -6,8 +6,10 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -19,14 +21,19 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.geometry.RoundRect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.PathFillType
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.veritypro_sdk.utils.GuidanceConfig
@@ -219,7 +226,7 @@ fun DocumentDetectionOverlay(
             DetectionState.SEARCHING -> "Scanning… position your document" to Color.Black.copy(alpha = 0.6f)
             DetectionState.DETECTING -> "Align the document — hold steady" to GuidanceConfig.STATE_AMBER.copy(alpha = 0.9f)
             DetectionState.LOCKED -> "Hold still — capturing now" to GuidanceConfig.STATE_GREEN.copy(alpha = 0.9f)
-            DetectionState.CAPTURING -> "Capturing…" to Color.Black.copy(alpha = 0.6f)
+            DetectionState.CAPTURING -> "Hold still — capturing…" to GuidanceConfig.STATE_GREEN.copy(alpha = 0.9f)
             DetectionState.SUCCESS -> "Captured successfully!" to GuidanceConfig.STATE_GREEN.copy(alpha = 0.9f)
             DetectionState.FAILED -> "Let's try that again" to GuidanceConfig.STATE_ERROR.copy(alpha = 0.9f)
         }
@@ -237,6 +244,165 @@ fun DocumentDetectionOverlay(
                 fontSize = 14.sp,
                 fontWeight = FontWeight.SemiBold
             )
+        }
+    }
+}
+
+/**
+ * Full-screen scrim with transparent ID-1 cutout, L-shaped corner brackets,
+ * guidance text above the cutout, and a state badge below it.
+ *
+ * Uses Path + PathFillType.EvenOdd to punch a rounded-rect hole through the
+ * dark scrim — no BlendMode.Clear required, works on all Compose versions.
+ */
+@Composable
+fun CameraScrimWithCutout(
+    state: DetectionState,
+    isPassport: Boolean,
+    showWarmup: Boolean,
+    autoCaptureProgress: Float,
+    modifier: Modifier = Modifier
+) {
+    val cornerColor by animateColorAsState(
+        targetValue = when {
+            showWarmup -> Color.White.copy(alpha = 0.35f)
+            state == DetectionState.LOCKED -> Color(0xFF0400E5)
+            state == DetectionState.DETECTING -> Color(0xFFF59E0B)
+            else -> Color.White.copy(alpha = 0.70f)
+        },
+        animationSpec = tween(durationMillis = 300),
+        label = "scrimCornerColor"
+    )
+
+    val infiniteTransition = rememberInfiniteTransition(label = "scrimPulse")
+    val pulseAlpha by infiniteTransition.animateFloat(
+        initialValue = 0.35f,
+        targetValue = 0.85f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 900),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "scrimPulseAlpha"
+    )
+
+    val isPulsing = showWarmup || state == DetectionState.SEARCHING
+    val activeCornerColor = if (isPulsing) cornerColor.copy(alpha = pulseAlpha) else cornerColor
+
+    val guidanceText = when {
+        showWarmup -> "Getting the camera ready..."
+        state == DetectionState.LOCKED -> "Hold still — capturing now"
+        state == DetectionState.DETECTING -> "Hold steady..."
+        state == DetectionState.FAILED -> "Let's try that again"
+        state == DetectionState.SUCCESS -> "Captured!"
+        else -> if (isPassport) "Open your passport to the photo page" else "Place your ID within the frame"
+    }
+
+    val density = LocalDensity.current
+
+    BoxWithConstraints(modifier = modifier) {
+        val screenWPx = constraints.maxWidth.toFloat()
+        val screenHPx = constraints.maxHeight.toFloat()
+
+        // Frame fills ~92% of screen width; starts at 22% from top so there is
+        // minimal dead space above and maximum room below for the capture button.
+        val cutoutWPx = screenWPx - with(density) { 16.dp.toPx() }
+        val aspectRatio = if (isPassport) 1.414f else 1.586f
+        val cutoutHPx = cutoutWPx / aspectRatio
+        val cutoutLeft = (screenWPx - cutoutWPx) / 2f
+        val cutoutTop = screenHPx * 0.22f
+
+        Canvas(Modifier.fillMaxSize()) {
+            val cornerRadiusPx = with(density) { 10.dp.toPx() }
+            val armPx = with(density) { 30.dp.toPx() }
+            val strokePx = with(density) { 3.5.dp.toPx() }
+
+            // Scrim with transparent cutout via EvenOdd path fill
+            val path = Path().apply {
+                fillType = PathFillType.EvenOdd
+                addRect(Rect(0f, 0f, size.width, size.height))
+                addRoundRect(
+                    RoundRect(
+                        left = cutoutLeft,
+                        top = cutoutTop,
+                        right = cutoutLeft + cutoutWPx,
+                        bottom = cutoutTop + cutoutHPx,
+                        cornerRadius = CornerRadius(cornerRadiusPx)
+                    )
+                )
+            }
+            drawPath(path, Color(0xB70A0A0BL))
+
+            val L = cutoutLeft
+            val T = cutoutTop
+            val R = cutoutLeft + cutoutWPx
+            val B = cutoutTop + cutoutHPx
+
+            // L-shaped corner brackets
+            drawLine(activeCornerColor, Offset(L, T), Offset(L + armPx, T), strokePx)
+            drawLine(activeCornerColor, Offset(L, T), Offset(L, T + armPx), strokePx)
+            drawLine(activeCornerColor, Offset(R, T), Offset(R - armPx, T), strokePx)
+            drawLine(activeCornerColor, Offset(R, T), Offset(R, T + armPx), strokePx)
+            drawLine(activeCornerColor, Offset(L, B), Offset(L + armPx, B), strokePx)
+            drawLine(activeCornerColor, Offset(L, B), Offset(L, B - armPx), strokePx)
+            drawLine(activeCornerColor, Offset(R, B), Offset(R - armPx, B), strokePx)
+            drawLine(activeCornerColor, Offset(R, B), Offset(R, B - armPx), strokePx)
+
+            // Progress arc around the cutout (LOCKED countdown)
+            if (state == DetectionState.LOCKED && autoCaptureProgress > 0f) {
+                val arcInset = strokePx * 0.5f
+                drawArc(
+                    color = Color(0xFF0400E5),
+                    startAngle = -90f,
+                    sweepAngle = 360f * autoCaptureProgress,
+                    useCenter = false,
+                    topLeft = Offset(L - arcInset, T - arcInset),
+                    size = Size(cutoutWPx + 2 * arcInset, cutoutHPx + 2 * arcInset),
+                    style = Stroke(width = strokePx * 1.5f)
+                )
+            }
+        }
+
+        // Guidance text above cutout
+        val textTopDp = (with(density) { cutoutTop.toDp() } - 60.dp).coerceAtLeast(48.dp)
+        Text(
+            text = guidanceText,
+            color = if (isPulsing) Color.White.copy(alpha = pulseAlpha) else Color.White,
+            fontSize = 16.sp,
+            fontWeight = FontWeight.SemiBold,
+            textAlign = TextAlign.Center,
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .padding(top = textTopDp, start = 32.dp, end = 32.dp)
+        )
+
+        // State badge below cutout for DETECTING / LOCKED
+        if (state == DetectionState.DETECTING || state == DetectionState.LOCKED) {
+            val badgeTopDp = with(density) { (cutoutTop + cutoutHPx).toDp() } + 16.dp
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = badgeTopDp)
+                    .background(
+                        color = when (state) {
+                            DetectionState.DETECTING -> Color(0xFFF59E0B).copy(alpha = 0.9f)
+                            DetectionState.LOCKED -> Color(0xFF0400E5).copy(alpha = 0.9f)
+                            else -> Color.Black.copy(alpha = 0.6f)
+                        },
+                        shape = RoundedCornerShape(20.dp)
+                    )
+                    .padding(horizontal = 16.dp, vertical = 8.dp)
+            ) {
+                Text(
+                    text = when (state) {
+                        DetectionState.DETECTING -> "Document detected — hold steady"
+                        DetectionState.LOCKED -> "Locked — auto-capturing"
+                        else -> ""
+                    },
+                    color = Color.White,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
         }
     }
 }

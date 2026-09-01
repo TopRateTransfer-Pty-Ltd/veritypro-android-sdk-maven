@@ -71,7 +71,8 @@ object MLRetrofitInstance {
         "https://api.skylinefare.com/",
         "http://10.0.2.2:",      // Android emulator → host localhost
         "http://localhost:",
-        "http://127.0.0.1:"
+        "http://127.0.0.1:",
+        "http://192.168."        // LAN — local dev on physical device
     )
 
     private var mlBaseUrl: String = ML_BASE_URL
@@ -150,7 +151,10 @@ object MLRetrofitInstance {
             synchronized(this) {
                 mlApiService?.let { return it }
                 val newRetrofit = Retrofit.Builder()
-                    .baseUrl(mlBaseUrl)
+                    // configure() trims the trailing '/'; Retrofit requires the base URL to end in
+                    // '/' when it carries a path (e.g. ".../docai") — re-add it here. Host-only URLs
+                    // are unaffected (OkHttp normalises those to a root path).
+                    .baseUrl(if (mlBaseUrl.endsWith("/")) mlBaseUrl else "$mlBaseUrl/")
                     .addConverterFactory(GsonConverterFactory.create())
                     .client(buildOkHttpClient())
                     .build()

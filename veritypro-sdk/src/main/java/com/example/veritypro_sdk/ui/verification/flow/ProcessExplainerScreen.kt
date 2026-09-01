@@ -413,6 +413,7 @@ private fun titleForMode(mode: VerityMode): String = when (mode) {
     VerityMode.EDD -> "Document Submission"
     VerityMode.COMBINED -> "Complete Verification"
     VerityMode.SERVER_DRIVEN -> "Verification"
+    VerityMode.STEP_UP_AUTH -> "Security Check"
 }
 
 private fun iconForMode(mode: VerityMode): ImageVector = when (mode) {
@@ -451,5 +452,9 @@ private fun stepsForMode(mode: VerityMode): List<StepInfo> = when (mode) {
     )
     VerityMode.SERVER_DRIVEN -> listOf(
         StepInfo("Follow the guided steps", Icons.Default.Check, Color(0xFF22C55E))
+    )
+    VerityMode.STEP_UP_AUTH -> listOf(
+        StepInfo("Complete a quick liveness check", Icons.Default.Person, Color(0xFF8B5CF6)),
+        StepInfo("Your identity will be confirmed", Icons.Default.Check, Color(0xFF22C55E))
     )
 }

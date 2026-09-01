@@ -150,9 +150,13 @@ class VerificationFlowRouter private constructor(
                 VerificationStage.THANK_YOU
             )
             // SERVER_DRIVEN: minimal stage list — the server controls the flow.
-            // The SDK only shows INTRO, then delegates to the server for each step.
             VerityMode.SERVER_DRIVEN -> listOf(
                 VerificationStage.INTRO,
+                VerificationStage.THANK_YOU
+            )
+            // STEP_UP_AUTH: no intro or document capture — jump straight to liveness.
+            VerityMode.STEP_UP_AUTH -> listOf(
+                VerificationStage.SELFIE_CAPTURE,
                 VerificationStage.THANK_YOU
             )
         }
@@ -176,6 +180,7 @@ class VerificationFlowRouter private constructor(
                 VerificationModule.ADDRESS,
                 VerificationModule.EDD
             )
+            VerityMode.STEP_UP_AUTH -> setOf(VerificationModule.BIOMETRIC)
         }
     }
 }

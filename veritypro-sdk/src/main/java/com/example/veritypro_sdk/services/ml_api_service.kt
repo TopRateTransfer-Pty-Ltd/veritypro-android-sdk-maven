@@ -45,6 +45,31 @@ interface MLApiService {
 
 
     /**
+     * V2 — authoritative capture verification (device-first CaptureVerification).
+     *
+     * Sends evidence (1 primary still + >=3 distinct PAD frames) and returns an
+     * explicit state: VERIFIED | RETRY | REJECTED | MANUAL_REVIEW with a
+     * decisionId. The server is the sole authority; the client renders the state
+     * and must not re-interpret it.
+     *
+     * LOCAL/DEV endpoint — not on the production gateway yet.
+     */
+    @POST("v2/kyc/doc/capture-verify")
+    suspend fun captureVerify(
+        @Body request: MLCaptureVerifyRequest
+    ): MLCaptureVerifyResponse
+
+    /**
+     * Front+back pair cross-check (call after both sides VERIFIED, before submission).
+     * LOCAL/DEV/gateway availability may lag capture-verify; callers must degrade gracefully on 404.
+     */
+    @POST("v2/kyc/doc/pair-check")
+    suspend fun pairCheck(
+        @Body request: MLPairCheckRequest
+    ): MLPairCheckResponse
+
+
+    /**
      * Lightweight document presence detection (used for ID back side)
      *
      * Detects whether a document is present in the frame without

@@ -34,15 +34,27 @@ class ApiRepository {
             }
         }
 
-        // Try standard { "Error": { "message": "..." } } format
+        // Log the raw body so staging errors are always visible in logcat
+        Log.e("Verity", "HTTP $statusCode raw error body: $errorBody")
+
         try {
             val json = JSONObject(errorBody)
+            // APIResponse format: { "statusCode": N, "statusMessage": "...", "data": ["field: reason", ...] }
+            val dataArr = json.optJSONArray("data")
+            if (dataArr != null && dataArr.length() > 0) {
+                val messages = (0 until dataArr.length()).map { dataArr.getString(it) }
+                return messages.joinToString("; ")
+            }
+            // statusMessage at top level
+            val statusMessage = json.optString("statusMessage", "")
+            if (statusMessage.isNotEmpty() && statusMessage != "null") return statusMessage
+
             val errorObj = json.optJSONObject("Error")
             if (errorObj != null) {
                 val msg = errorObj.optString("message", "")
                 if (msg.isNotEmpty()) return msg
             }
-            // Try ASP.NET validation format: { "title": "...", "errors": { "Field": ["msg"] } }
+            // ASP.NET validation format: { "title": "...", "errors": { "Field": ["msg"] } }
             val errorsObj = json.optJSONObject("errors")
             if (errorsObj != null) {
                 val messages = mutableListOf<String>()
@@ -162,6 +174,13 @@ class ApiRepository {
             if (response.statusCode == 201) {
                 Log.d("Verity", "Submitted KYC data")
                 Resource.CompletedSuccess(response.statusMessage)
+            } else if (response.statusCode == 409 && response.error?.message == "upload_duplicate") {
+                // The first updateKyc call succeeded server-side (session → Submitted) but
+                // the client never received the 201 (timeout / network drop). A retry correctly
+                // gets 409 because the session is already Submitted. Treat as success so the
+                // flow can advance to the result screen without stranding the user.
+                Log.w("Verity", "updateKyc 409 upload_duplicate — session already submitted, advancing as success")
+                Resource.CompletedSuccess("KYC Verification already submitted")
             } else {
                 Log.e("Verity", "Error Submitting KYC data: $response")
                 Resource.Error(response.error?.message ?: "Unable to validate")
@@ -176,6 +195,12 @@ class ApiRepository {
             }
         } catch (e: HttpException) {
             val errorBody = e.response()?.errorBody()?.string()
+            // Safety net: if the gateway ever forwards the raw HTTP 409, treat
+            // upload_duplicate the same as above (session already submitted).
+            if (e.code() == 409 && errorBody?.contains("upload_duplicate") == true) {
+                Log.w("Verity", "updateKyc HTTP 409 upload_duplicate — advancing as success")
+                return Resource.CompletedSuccess("KYC Verification already submitted")
+            }
             val errorMessage = parseHttpError(e.code(), errorBody)
             Log.e("Verity", "updateKyc HTTP ${e.code()}: $errorMessage")
             Resource.Error(errorMessage)
@@ -391,7 +416,13 @@ class ApiRepository {
                     lastName = options.lastName,
                     streetAddress = options.streetAddress ?: "",
                     vendorData = options.vendorData,
-                    isO2Code = options.isO2Code
+                    isO2Code = options.isO2Code,
+                    city = options.city,
+                    stateOrProvince = options.stateOrProvince,
+                    postalCode = options.postalCode,
+                    // Always send Country so the backend always has Street + ≥1 other component
+                    // (the ISO2 code satisfies the "at least one other component" rule).
+                    country = options.isO2Code,
                 )
                 val response = RetrofitInstance.api.createAddressVerification(request, options.apiKey)
 
@@ -447,15 +478,20 @@ class ApiRepository {
         ipLocation: String,
         apiKey: String,
         context: android.content.Context? = null
-    ): Resource<AddressVerificationResponse> {
+    ): Resource<String> {
         return try {
             // Detect mime type based on file extension — support PDFs alongside images
+            // Specific MIME per type — the backend rejects a generic "image/*".
             val mimeType = when (file.extension.lowercase()) {
                 "pdf" -> "application/pdf"
                 "png" -> "image/png"
                 "jpg", "jpeg" -> "image/jpeg"
                 "heic", "heif" -> "image/heic"
-                else -> "image/*"
+                "webp" -> "image/webp"
+                "gif" -> "image/gif"
+                "bmp" -> "image/bmp"
+                "tif", "tiff" -> "image/tiff"
+                else -> "application/octet-stream"
             }
 
             val filePart = MultipartBody.Part.createFormData(
@@ -485,26 +521,32 @@ class ApiRepository {
                 apiKey = apiKey
             )
 
-            if (response.statusCode in 100..299 && response.data != null) {
-                Log.d("Verity", "Address document submitted")
-                Resource.Success(response.data)
+            // Success = 2xx envelope. Data is just a status string (201/202 Accepted), so do NOT
+            // require it to be non-null (the previous check failed here even on backend success).
+            if (response.statusCode in 100..299) {
+                Log.d("Verity", "Address document submitted (status=${response.statusCode})")
+                Resource.Success(response.data ?: response.statusMessage ?: "Submitted")
             } else {
-                Log.e("Verity", "Error submitting address document")
-                Resource.Error(response.error?.message ?: "Unable to submit address document")
+                Log.e("Verity", "Error submitting address document: status=${response.statusCode} msg=${response.statusMessage} err=${response.error?.message}")
+                Resource.Error(response.error?.message ?: response.statusMessage ?: "Unable to submit address document")
             }
         } catch (e: IOException) {
             Log.e("Verity", "Network error: ${e.message}")
             Resource.Error("No internet connection. Please check your network.")
         } catch (e: HttpException) {
             val errorBody = e.response()?.errorBody()?.string()
-            var errorMessage = "HTTP ${e.code()} Error: Unknown error"
+            // Log the raw body so the real backend reason is visible (previously discarded).
+            Log.e("Verity", "submitAddressDocument HTTP ${e.code()} body: $errorBody")
+            var errorMessage = "HTTP ${e.code()} Error"
             if (errorBody != null) {
                 try {
                     val json = JSONObject(errorBody)
-                    val errorObj = json.optJSONObject("Error")
-                    if (errorObj != null) {
-                        errorMessage = errorObj.optString("message", errorMessage)
-                    }
+                    // APIResponse envelope uses lowercase "error":{"message"} + "statusMessage".
+                    val msg = json.optJSONObject("error")?.optString("message")
+                        ?: json.optJSONObject("Error")?.optString("message")
+                        ?: json.optString("statusMessage").ifBlank { null }
+                        ?: json.optString("title").ifBlank { null }   // ASP.NET ProblemDetails
+                    if (!msg.isNullOrBlank()) errorMessage = msg
                 } catch (_: Exception) {}
             }
             Resource.Error(errorMessage)
@@ -534,12 +576,17 @@ class ApiRepository {
     ): Resource<EddCaseResponse> {
         return try {
             // Detect MIME type based on file extension — support PDFs alongside images
+            // Specific MIME per type — the backend rejects a generic "image/*".
             val mimeType = when (file.extension.lowercase()) {
                 "pdf" -> "application/pdf"
                 "png" -> "image/png"
                 "jpg", "jpeg" -> "image/jpeg"
                 "heic", "heif" -> "image/heic"
-                else -> "image/*"
+                "webp" -> "image/webp"
+                "gif" -> "image/gif"
+                "bmp" -> "image/bmp"
+                "tif", "tiff" -> "image/tiff"
+                else -> "application/octet-stream"
             }
             val filePart = MultipartBody.Part.createFormData(
                 "file",
@@ -580,8 +627,18 @@ class ApiRepository {
                 apiKey = apiKey
             )
 
-            Log.d("Verity", "EDD case created: ${response.caseId}")
-            Resource.Success(response)
+            // EDD-Intelligence envelope: statusCode is a HttpStatusCode NAME ("OK"), data = {id, status}.
+            // Unwrap and map id → caseId. No caseId back = not a real create → fail, don't fake.
+            val caseId = response.data?.id?.takeIf { it.isNotBlank() } ?: response.data?.caseIdAlt
+            val ok = response.statusCode.equals("OK", true) || response.statusCode.equals("Created", true) ||
+                response.statusCode.equals("Accepted", true)
+            if (!caseId.isNullOrBlank() && (ok || response.statusCode == null)) {
+                Log.d("Verity", "EDD case created: $caseId (status=${response.data?.status})")
+                Resource.Success(EddCaseResponse(caseId = caseId, status = response.data?.status))
+            } else {
+                Log.e("Verity", "EDD create failed: statusCode=${response.statusCode} msg=${response.statusMessage} err=${response.error?.message}")
+                Resource.Error(response.error?.message ?: response.statusMessage ?: "Couldn't create the EDD case. Please try again.")
+            }
         } catch (e: CancellationException) {
             throw e
         } catch (e: IOException) {

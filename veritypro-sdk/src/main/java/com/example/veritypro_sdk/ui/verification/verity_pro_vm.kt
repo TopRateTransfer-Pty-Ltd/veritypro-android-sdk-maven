@@ -71,6 +71,34 @@ class VerityProViewModel(
     val livenessVerificationState: StateFlow<LivenessVerificationState> = _livenessVerificationState
 
     // ========================================================================
+    // CAPTURED DOCUMENT STORAGE — survives screen rotation
+    // ========================================================================
+    // Composable state (remember {}) is wiped on configuration change. File
+    // paths are cheap to persist and the files themselves stay on disk, so we
+    // store them here and fall back to these when the composable state is null.
+
+    private var _capturedFrontPath: String? = null
+    private var _capturedBackPath: String? = null
+    private var _capturedVideoPath: String? = null
+
+    fun setCapturedDocumentPaths(front: String?, back: String?, video: String?) {
+        _capturedFrontPath = front
+        _capturedBackPath = back
+        _capturedVideoPath = video
+    }
+
+    fun getCapturedFrontFile(): File? = _capturedFrontPath?.let { File(it).takeIf { f -> f.exists() } }
+    fun getCapturedBackFile(): File? = _capturedBackPath?.let { File(it).takeIf { f -> f.exists() } }
+    fun getCapturedVideoFile(): File? = _capturedVideoPath?.let { File(it).takeIf { f -> f.exists() } }
+    fun hasCapturedDocuments(): Boolean = _capturedFrontPath != null
+
+    fun clearCapturedDocumentPaths() {
+        _capturedFrontPath = null
+        _capturedBackPath = null
+        _capturedVideoPath = null
+    }
+
+    // ========================================================================
     // ML BACKEND STATE
     // ========================================================================
 
@@ -122,8 +150,27 @@ class VerityProViewModel(
     // ADDRESS VERIFICATION STATE
     // ========================================================================
 
-    private val _addressState = MutableStateFlow<Resource<AddressVerificationResponse>?>(null)
-    val addressState: StateFlow<Resource<AddressVerificationResponse>?> = _addressState
+    // Document-submit result is a status string (backend update-address-verification → APIResponse<string>).
+    private val _addressState = MutableStateFlow<Resource<String>?>(null)
+    val addressState: StateFlow<Resource<String>?> = _addressState
+
+    // Address verification has its OWN session (create → then upload the proof document to it).
+    private val _addressCreateState = MutableStateFlow<Resource<AddressVerificationResponse>?>(null)
+    val addressCreateState: StateFlow<Resource<AddressVerificationResponse>?> = _addressCreateState
+    private var addressSessionId: String = ""
+    fun getAddressSessionId(): String = addressSessionId
+
+    /** Register an address-verification session for [street]; captures the returned sessionId. */
+    fun createAddressVerification(options: VerityOption, street: String) {
+        viewModelScope.launch {
+            _addressCreateState.value = Resource.Loading("Setting up address verification...")
+            val result = repository.createAddressVerification(options.copy(streetAddress = street))
+            if (result is Resource.Success) {
+                addressSessionId = result.data.sessionId
+            }
+            _addressCreateState.value = result
+        }
+    }
 
     fun submitAddressDocument(
         sessionId: String,
@@ -136,7 +183,18 @@ class VerityProViewModel(
     ) {
         viewModelScope.launch {
             _addressState.value = Resource.Loading("Submitting address document...")
-            val result = repository.submitAddressDocument(sessionId, file, documentType, ipAddress, ipLocation, apiKey, context)
+            // The backend REQUIRES non-empty IpAddress + IpLocation (model validation → 400 otherwise).
+            // Collect them from the device when not supplied, with safe non-empty fallbacks.
+            val helper = context?.let { com.example.veritypro_sdk.utils.LocationHelper(it) }
+            val ip = ipAddress.ifBlank {
+                runCatching { helper?.getLocalIpAddress() }.getOrNull().orEmpty()
+            }.ifBlank { "0.0.0.0" }
+            val loc = ipLocation.ifBlank {
+                runCatching {
+                    helper?.getCurrentLocation()?.let { "${it.latitude},${it.longitude}" }
+                }.getOrNull().orEmpty()
+            }.ifBlank { "0,0" }
+            val result = repository.submitAddressDocument(sessionId, file, documentType, ip, loc, apiKey, context)
             _addressState.value = result
         }
     }
@@ -253,7 +311,7 @@ class VerityProViewModel(
     }
 
     fun updateKyc(data: VerificationRequestMultipart) {
-        Log.d("Verity", "ViewModel.updateKyc called - session=${data.SessionId}, front=${data.DocumentFront != null}, back=${data.DocumentBack != null}")
+        Log.d("Verity", "ViewModel.updateKyc called - session=${data.SessionId}, front=${data.DocumentFront != null}, back=${data.DocumentBack != null}, portrait=${data.PortraitPicture != null}")
         viewModelScope.launch {
             _kycState.value = Resource.Loading("Submitting KYC Verification")
 
@@ -262,7 +320,14 @@ class VerityProViewModel(
         }
     }
 
-    suspend fun submitKycAwait(data: VerificationRequestMultipart): Resource<Any> {
+    /**
+     * Suspend variant of [updateKyc] that returns the terminal result directly. Callers can advance
+     * the UI on the awaited outcome instead of racing [kycState]: a keyed Compose effect can skip an
+     * intermediate Loading emission when the state flips quickly, which strands the caller on the
+     * submitting screen forever. Still updates [kycState] for any other observers.
+     */
+    suspend fun submitKycAwait(data: VerificationRequestMultipart): Resource<String> {
+        Log.d("Verity", "submitKycAwait - session=${data.SessionId}, front=${data.DocumentFront != null}, back=${data.DocumentBack != null}")
         _kycState.value = Resource.Loading("Submitting KYC Verification")
         val result = repository.updateKyc(data, apiKey)
         _kycState.value = result

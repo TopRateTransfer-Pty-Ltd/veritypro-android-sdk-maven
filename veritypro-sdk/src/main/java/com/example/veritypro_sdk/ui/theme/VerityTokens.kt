@@ -264,3 +264,27 @@ object VerityDim {
     val space6 = 24.dp
     val space8 = 32.dp
 }
+
+/**
+ * Returns a copy of [VerityColors] with brand-relevant tokens overridden by [primary].
+ * Regulatory-state tokens (error, warning, success, captureQuality, livenessRingFail/Success)
+ * are preserved unchanged to maintain KYC/AML decision-state semantics.
+ */
+internal fun VerityColors.overrideBrand(primary: Color?): VerityColors {
+    if (primary == null) return this
+    return copy(
+        brandDefault = primary,
+        brandHover = primary,
+        brandOnSubtle = primary,
+        brandPressed = primary,
+        brandSubtle = primary.copy(alpha = 0.10f),
+        captureStateCapturing = primary,
+        focusRing = primary,
+        livenessRingActive = primary,
+        progressFill = primary,
+        progressStepCurrent = primary,
+        progressStepDone = primary,
+        statusProcessingFg = primary,
+        textLink = primary,
+    )
+}

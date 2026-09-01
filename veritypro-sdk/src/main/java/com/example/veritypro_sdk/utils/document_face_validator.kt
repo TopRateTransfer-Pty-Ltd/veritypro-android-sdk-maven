@@ -18,11 +18,18 @@ object DocumentFaceValidator {
 
     private const val TAG = "FaceValidator"
 
-    /** Minimum face area as percentage of total image area */
-    private const val MIN_FACE_AREA_PERCENT = 1f
+    // Full-frame document captures (portrait JPEG from a 1920×1080 landscape sensor,
+    // ViewPort-cropped to phone aspect) place a driver's licence portrait photo at
+    // ~0.8–1.3% of total image area. The original 1% floor was calibrated for selfie
+    // captures where the face fills 30–50% of the frame; for document-portrait detection
+    // on a full-frame JPEG it's too tight and causes false PORTRAIT_NOT_READABLE rejections
+    // when ML Kit returns a bounding box that is even slightly conservative.
+    // 0.25% still excludes noise (< 5×5 pixel blobs at 1MP) while accommodating a
+    // genuine licence portrait on any device from the range 15–45cm.
+    private const val MIN_FACE_AREA_PERCENT = 0.25f
 
     /** Maximum face area as percentage of total image area */
-    private const val MAX_FACE_AREA_PERCENT = 50f
+    private const val MAX_FACE_AREA_PERCENT = 60f
 
     /** Front-side detector: sensitive (5% min) to catch small passport photos. */
     private val detectorOptions = FaceDetectorOptions.Builder()
@@ -54,22 +61,27 @@ object DocumentFaceValidator {
             val faces = detector.process(image).await()
 
             if (faces.isEmpty()) {
-                Log.d(TAG, "Front validation: No faces detected")
-                return false
+                // Fail-open: holographic overlays on Australian licences (NT, VIC, etc.)
+                // regularly defeat on-device ML Kit face detection even on clear captures.
+                // The server Rekognition pipeline is the authority — don't block here.
+                Log.d(TAG, "Front validation: No faces detected — passing through for server validation")
+                return true
             }
 
             val imageArea = bitmap.width.toFloat() * bitmap.height.toFloat()
+            Log.d(TAG, "Front validation: image=${bitmap.width}x${bitmap.height} area=${imageArea.toInt()}px² faces=${faces.size} threshold=[${MIN_FACE_AREA_PERCENT}%..${MAX_FACE_AREA_PERCENT}%]")
 
             // Check if any face has valid size
             val validFace = faces.any { face ->
                 val bounds = face.boundingBox
                 val faceArea = bounds.width().toFloat() * bounds.height().toFloat()
                 val facePercent = (faceArea / imageArea) * 100f
-                Log.d(TAG, "Front face: ${bounds.width()}x${bounds.height()}, area=${"%.1f".format(facePercent)}%")
-                facePercent in MIN_FACE_AREA_PERCENT..MAX_FACE_AREA_PERCENT
+                val pass = facePercent in MIN_FACE_AREA_PERCENT..MAX_FACE_AREA_PERCENT
+                Log.d(TAG, "  face bbox=${bounds.width()}x${bounds.height()} area=${"%.2f".format(facePercent)}% → ${if (pass) "PASS" else "FAIL"}")
+                pass
             }
 
-            Log.d(TAG, "Front validation: ${faces.size} face(s), valid=$validFace")
+            Log.d(TAG, "Front validation result: valid=$validFace")
             validFace
         } catch (e: Exception) {
             Log.e(TAG, "Front face validation failed", e)

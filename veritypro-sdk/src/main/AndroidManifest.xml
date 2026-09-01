@@ -12,6 +12,7 @@
             android:name=".VerityProSdkActivity"
             android:exported="true"
             android:theme="@style/Theme.AppCompat.Light.NoActionBar"
+            android:configChanges="orientation|screenSize|keyboardHidden|smallestScreenSize|screenLayout"
             />
 
         <provider

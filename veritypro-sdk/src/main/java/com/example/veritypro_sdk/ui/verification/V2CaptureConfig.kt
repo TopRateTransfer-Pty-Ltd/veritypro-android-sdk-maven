@@ -1,11 +1,9 @@
 package com.example.veritypro_sdk.ui.verification
 
 /**
- * Configuration object for V2 capture verification behaviour.
- *
- * [useV2CaptureVerify] is declared as a [val] (immutable). A host app MUST NOT be able
- * to disable anti-spoof capture at runtime by mutating this flag. Emergency rollback of
- * the V2 capture path must go through a new SDK release, not an app-controlled flag.
+ * Runtime switch for the V2 server-driven capture path.
+ * Default true — V2 (POST /docai/v2/kyc/doc/capture-verify) is the primary path.
+ * V1 rollback requires a new SDK release, not a runtime flag.
  */
 object V2CaptureConfig {
     val useV2CaptureVerify: Boolean = true

@@ -67,6 +67,7 @@ object DocumentBackValidator {
         val hasMRZ = textResult.hasMRZ
         val hasText = textResult.textCount > 0
         val textCount = textResult.textCount
+        val hasDocumentText = hasText && textCount >= 3 && textResult.hasSubstantialBlock
 
         // Calculate confidence score
         var confidence = 0f
@@ -81,7 +82,7 @@ object DocumentBackValidator {
             Log.d(TAG, "MRZ detected")
         }
 
-        if (hasText && textCount in 2..20) {
+        if (hasDocumentText) {
             confidence += 0.3f
         }
 
@@ -94,22 +95,26 @@ object DocumentBackValidator {
 
         confidence = confidence.coerceAtMost(1.0f)
 
-        // Determine validity
-        val hasPositiveIndicator = hasBarcode || hasMRZ || (hasText && textCount >= 2)
-        val isValid = if (hasFace) {
-            false
-        } else if (!hasPositiveIndicator) {
-            // No indicators but no face — be lenient, accept as valid back
-            Log.d(TAG, "No barcode/MRZ/text found, but no face — accepting as valid back")
-            true
-        } else {
-            true
+        // Determine validity.
+        // A real document back must carry at least one machine-readable signal
+        // (barcode, MRZ) OR structured document text: ≥3 blocks where at least
+        // one block contains 15+ characters (address, legal text, full name).
+        //
+        // Keyboard key labels ("Backspace"=9, "Delete"=6, "Enter"=5) are all
+        // short — none reach 15 chars — so keyboards are correctly rejected.
+        // Random surfaces and carpets have no text → also rejected.
+        // Real DL/ID backs have addresses and legal text that are 15+ chars.
+        val hasPositiveIndicator = hasBarcode || hasMRZ || hasDocumentText
+        val isValid = when {
+            hasFace -> false
+            hasPositiveIndicator -> true
+            else -> false
         }
 
         val message = when {
-            hasFace -> "Show BACK without photo"
-            !hasPositiveIndicator -> "Document back validated"
-            else -> "Document back validated successfully"
+            hasFace -> "Show the BACK of your document — no photo expected"
+            isValid -> "Document back verified"
+            else -> "No document detected. Please position the back of your ID within the frame."
         }
 
         Log.d(TAG, "Back validation: barcode=$hasBarcode, MRZ=$hasMRZ, text=$hasText($textCount), face=$hasFace, valid=$isValid, conf=$confidence")
@@ -145,7 +150,8 @@ object DocumentBackValidator {
     data class TextDetectionResult(
         val textCount: Int,
         val hasMRZ: Boolean,
-        val recognizedText: String
+        val recognizedText: String,
+        val hasSubstantialBlock: Boolean   // ≥1 block with 15+ chars (address/legal/name)
     )
 
     /**
@@ -168,16 +174,26 @@ object DocumentBackValidator {
                 }
             }
 
-            Log.d(TAG, "Text detection: blocks=$textBlockCount, MRZ=$hasMRZ")
+            // Real document backs have at least one substantial text block:
+            // an address, legal text, license conditions, or full name —
+            // typically 15+ characters in a single block. Keyboard key labels
+            // ("Backspace", "Delete", "Enter", function keys) are all < 15 chars.
+            // This distinguishes documents from keyboard/label/sign surfaces.
+            val hasSubstantialBlock = result.textBlocks.any { block ->
+                block.text.trim().length >= 15
+            }
+
+            Log.d(TAG, "Text detection: blocks=$textBlockCount, MRZ=$hasMRZ, substantialBlock=$hasSubstantialBlock")
 
             TextDetectionResult(
                 textCount = textBlockCount,
                 hasMRZ = hasMRZ,
-                recognizedText = fullText
+                recognizedText = fullText,
+                hasSubstantialBlock = hasSubstantialBlock
             )
         } catch (e: Exception) {
             Log.e(TAG, "Text detection failed: ${e.message}")
-            TextDetectionResult(textCount = 0, hasMRZ = false, recognizedText = "")
+            TextDetectionResult(textCount = 0, hasMRZ = false, recognizedText = "", hasSubstantialBlock = false)
         }
     }
 }

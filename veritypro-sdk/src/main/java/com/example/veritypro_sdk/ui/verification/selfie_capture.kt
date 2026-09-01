@@ -1,6 +1,6 @@
 package com.example.veritypro_sdk.ui.verification
 
-
+import android.util.Log
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -57,6 +57,15 @@ import kotlinx.coroutines.delay
 
 import com.amplifyframework.core.Action
 import com.amplifyframework.core.Consumer
+
+import java.io.File
+import androidx.camera.core.CameraSelector
+import androidx.camera.core.ImageCapture
+import androidx.camera.core.ImageCaptureException
+import androidx.camera.lifecycle.ProcessCameraProvider
+import androidx.core.content.ContextCompat
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlin.coroutines.resume
 
 
 // Animated face scan visualization with pulsing rings
@@ -244,9 +253,10 @@ fun SelfieCaptureScreen(
     credentials: BeginLivenessCredentials? = null,
     viewModel: VerityProViewModel,
     onBack: () -> Unit,
-    onLivenessComplete: (livenessId: String?) -> Unit,
+    onLivenessComplete: (livenessId: String?, portraitFile: File?) -> Unit,
 ) {
     val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
 
     var hasPermission by remember { mutableStateOf(CameraUtils.hasCameraPermissions(context)) }
     var askedPermission by rememberSaveable { mutableStateOf(false) }
@@ -270,6 +280,55 @@ fun SelfieCaptureScreen(
         }
     }
 
+    // Incrementing counter approach: never reset inside the effect, so the coroutine
+    // is never self-cancelled by a key change while it is still running.
+    var portraitCaptureTrigger by remember { mutableStateOf(0) }
+    LaunchedEffect(portraitCaptureTrigger) {
+        if (portraitCaptureTrigger == 0) return@LaunchedEffect
+        // Allow AWS to fully release camera before we bind CameraX
+        delay(250)
+        val portraitFile = suspendCancellableCoroutine<File?> { cont ->
+            val future = ProcessCameraProvider.getInstance(context)
+            future.addListener({
+                var provider: ProcessCameraProvider? = null
+                try {
+                    provider = future.get()
+                    provider.unbindAll()
+                    val imageCapture = ImageCapture.Builder()
+                        .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
+                        .build()
+                    provider.bindToLifecycle(
+                        lifecycleOwner,
+                        CameraSelector.DEFAULT_FRONT_CAMERA,
+                        imageCapture
+                    )
+                    val outputFile = File(context.cacheDir, "portrait_${System.nanoTime()}.jpg")
+                    imageCapture.takePicture(
+                        ImageCapture.OutputFileOptions.Builder(outputFile).build(),
+                        ContextCompat.getMainExecutor(context),
+                        object : ImageCapture.OnImageSavedCallback {
+                            override fun onImageSaved(result: ImageCapture.OutputFileResults) {
+                                Log.d("Verity", "Portrait captured: ${outputFile.length()} bytes")
+                                provider?.unbindAll()
+                                cont.resume(outputFile)
+                            }
+                            override fun onError(ex: ImageCaptureException) {
+                                Log.w("Verity", "Portrait capture failed after liveness — uploading without selfie", ex)
+                                provider?.unbindAll()
+                                cont.resume(null)
+                            }
+                        }
+                    )
+                    cont.invokeOnCancellation { provider?.unbindAll() }
+                } catch (e: Exception) {
+                    Log.w("Verity", "Portrait camera bind failed after liveness — uploading without selfie", e)
+                    provider?.unbindAll()
+                    cont.resume(null)
+                }
+            }, ContextCompat.getMainExecutor(context))
+        }
+        onLivenessComplete(livenessId, portraitFile)
+    }
 
     Box(
         modifier = Modifier
@@ -356,7 +415,7 @@ fun SelfieCaptureScreen(
 
                                 onComplete = Action {
                                     isProcessingServerResult = true
-                                    onLivenessComplete(livenessId)
+                                    portraitCaptureTrigger++
                                 },
                                 onError = Consumer { ex ->
                                     error = ex

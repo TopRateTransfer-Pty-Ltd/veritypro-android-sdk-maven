@@ -104,6 +104,7 @@ fun VerificationScreen(
     var documentVideoFile: File? by remember { mutableStateOf(null) }
     var sessionId: String? by remember { mutableStateOf(null) }
     var livenessId: String? by remember { mutableStateOf(null) }
+    var selfiePortraitFile: File? by remember { mutableStateOf(null) }
     var addressDocFile: File? by remember { mutableStateOf(null) }
     var addressDocType: Int? by rememberSaveable { mutableStateOf(null) }
     var eddDocFile: File? by remember { mutableStateOf(null) }
@@ -294,7 +295,7 @@ fun VerificationScreen(
     // Block verification entirely on compromised (rooted) devices.
     val isDeviceRooted = remember { SecurityAssessmentCollector.checkRooted(context) }
 
-    VerityProTheme(mode = themeMode, dynamicColor = dynamicColor) {
+    VerityProTheme(mode = themeMode, dynamicColor = dynamicColor, brandConfig = options.brandConfig) {
         Surface(
             Modifier.fillMaxSize(),
             color = MaterialTheme.colorScheme.background
@@ -538,6 +539,14 @@ fun VerificationScreen(
                                         if (photoFile.size > 1) {
                                             documentBackPage = photoFile[1]
                                         }
+                                        // Persist paths in ViewModel so they survive screen rotation.
+                                        // Composable remember{} state resets on configuration change;
+                                        // the files themselves remain on disk.
+                                        viewModel.setCapturedDocumentPaths(
+                                            front = photoFile[0].absolutePath,
+                                            back = photoFile.getOrNull(1)?.absolutePath,
+                                            video = documentVideoFile?.absolutePath
+                                        )
                                         lastResult = LivenessResult(
                                             success = true,
                                             sessionToken = "fake",
@@ -603,30 +612,35 @@ fun VerificationScreen(
                                                 // documentVideoFile is already populated: onDocumentCaptured
                                                 // is only invoked after VideoRecordEvent.Finalize fired
                                                 // (pendingDocumentFiles pattern in document_capture.kt).
-                                                coroutineScope.launch {
-                                                    viewModel.updateKyc(
-                                                        VerificationRequestMultipart(
-                                                            SessionId = sessionId ?: "",
-                                                            DocumentType = selectedDocumentType!!,
-                                                            PlatformUsed = "android",
-                                                            DeviceAndBrowser = DeviceUtils.getDevicePlatform(),
-                                                            IpAddress = ipAddress ?: "",
-                                                            IpLocation = locationText ?: "",
-                                                            DocumentFront = documentFrontPage?.toMultipartBodyPart("DocumentFront"),
-                                                            DocumentBack = documentBackPage?.toMultipartBodyPart("DocumentBack"),
-                                                            // Document-only: no liveness session exists.
-                                                            LivenessId = "",
-                                                            SecurityAssessmentJson = securityJson,
-                                                            DocumentVideo = documentVideoFile?.takeIf { it.length() > 0L }?.let { file ->
-                                                                MultipartBody.Part.createFormData(
-                                                                    "DocumentVideo",
-                                                                    file.name,
-                                                                    file.asRequestBody("video/mp4".toMediaTypeOrNull())
-                                                                )
-                                                            }
-                                                        ),
-                                                    )
-                                                }
+                                                //
+                                                // Rotation fix: viewModel.updateKyc() uses viewModelScope.launch
+                                                // internally — no coroutineScope wrapper needed. The ViewModel
+                                                // survives configuration changes; rememberCoroutineScope() does not.
+                                                val frontFile = documentFrontPage ?: viewModel.getCapturedFrontFile()
+                                                val backFile = documentBackPage ?: viewModel.getCapturedBackFile()
+                                                val videoFile = documentVideoFile ?: viewModel.getCapturedVideoFile()
+                                                viewModel.updateKyc(
+                                                    VerificationRequestMultipart(
+                                                        SessionId = sessionId ?: "",
+                                                        DocumentType = selectedDocumentType!!,
+                                                        PlatformUsed = "android",
+                                                        DeviceAndBrowser = DeviceUtils.getDevicePlatform(),
+                                                        IpAddress = ipAddress ?: "",
+                                                        IpLocation = locationText ?: "",
+                                                        DocumentFront = frontFile?.toMultipartBodyPart("DocumentFront"),
+                                                        DocumentBack = backFile?.toMultipartBodyPart("DocumentBack"),
+                                                        // Document-only: no liveness session exists.
+                                                        LivenessId = "",
+                                                        SecurityAssessmentJson = securityJson,
+                                                        DocumentVideo = videoFile?.takeIf { it.length() > 0L }?.let { file ->
+                                                            MultipartBody.Part.createFormData(
+                                                                "DocumentVideo",
+                                                                file.name,
+                                                                file.asRequestBody("video/mp4".toMediaTypeOrNull())
+                                                            )
+                                                        }
+                                                    ),
+                                                )
                                             } else {
                                                 // Observable failure — do NOT swallow. A weak-camera
                                                 // device (e.g. low-end Unisoc) may genuinely produce a
@@ -703,7 +717,7 @@ fun VerificationScreen(
                                         val awsSession = (beginState as Resource.Success).data.awsSessionId
                                         livenessId = (beginState as Resource.Success).data.id
                                         if (awsSession.isNullOrBlank()) {
-                                            Text("Missing AWS session ID, please retry.")
+                                            Text("Couldn't start the liveness check, please retry.")
                                         } else {
                                             SelfieCaptureScreen(
                                                 sessionIdFromCreateKyc = sessionId ?: "",
@@ -715,11 +729,18 @@ fun VerificationScreen(
                                                     stage = viewModel.flowRouter.previousStage(stage) ?: VerificationStage.INTRO
                                                 },
                                                 viewModel = viewModel,
-                                                onLivenessComplete = { capturedSelfie ->
+                                                onLivenessComplete = { _, portraitFile ->
+                                                    selfiePortraitFile = portraitFile
                                                     // Use polling verification with livenessId (backend session ID)
                                                     viewModel.verifyLivenessResult(livenessId ?: awsSession) { succeeded ->
                                                         if (succeeded) {
-                                                            val hasDocuments = documentFrontPage != null
+                                                            // Rotation-safe document resolution: composable remember{}
+                                                            // state is wiped on configuration change; ViewModel paths
+                                                            // survive because the ViewModel outlives the activity.
+                                                            val frontFile = documentFrontPage ?: viewModel.getCapturedFrontFile()
+                                                            val backFile = documentBackPage ?: viewModel.getCapturedBackFile()
+                                                            val videoFile = documentVideoFile ?: viewModel.getCapturedVideoFile()
+                                                            val hasDocuments = frontFile != null
                                                             val hasValidDocType = selectedDocumentType != null && selectedDocumentType!! > 0
 
                                                             // Stop motion collection and compute capture duration
@@ -751,33 +772,32 @@ fun VerificationScreen(
                                                                     captureDurationSeconds = captureDurationSeconds,
                                                                     captureAttempts = captureAttemptCount,
                                                                 ))
-                                                                // documentVideoFile is already populated: onDocumentCaptured
-                                                                // is only invoked from document_capture.kt after
-                                                                // VideoRecordEvent.Finalize has fired (pendingDocumentFiles
-                                                                // pattern), so no wait loop is needed here.
-                                                                coroutineScope.launch {
-                                                                    viewModel.updateKyc(
-                                                                        VerificationRequestMultipart(
-                                                                            SessionId = sessionId ?: "",
-                                                                            DocumentType = selectedDocumentType!!,
-                                                                            PlatformUsed = "android",
-                                                                            DeviceAndBrowser = DeviceUtils.getDevicePlatform(),
-                                                                            IpAddress = ipAddress ?: "",
-                                                                            IpLocation = locationText ?: "",
-                                                                            DocumentFront = documentFrontPage?.toMultipartBodyPart("DocumentFront"),
-                                                                            DocumentBack = documentBackPage?.toMultipartBodyPart("DocumentBack"),
-                                                                            LivenessId = livenessId ?: "",
-                                                                            SecurityAssessmentJson = securityJson,
-                                                                            DocumentVideo = documentVideoFile?.takeIf { it.length() > 0L }?.let { file ->
-                                                                                MultipartBody.Part.createFormData(
-                                                                                    "DocumentVideo",
-                                                                                    file.name,
-                                                                                    file.asRequestBody("video/mp4".toMediaTypeOrNull())
-                                                                                )
-                                                                            }
-                                                                        ),
-                                                                    )
-                                                                }
+                                                                // Rotation fix: viewModel.updateKyc() uses viewModelScope.launch
+                                                                // internally — no coroutineScope wrapper. rememberCoroutineScope()
+                                                                // is cancelled when the composable leaves composition (rotation),
+                                                                // but the ViewModel and its scope survive the configuration change.
+                                                                viewModel.updateKyc(
+                                                                    VerificationRequestMultipart(
+                                                                        SessionId = sessionId ?: "",
+                                                                        DocumentType = selectedDocumentType!!,
+                                                                        PlatformUsed = "android",
+                                                                        DeviceAndBrowser = DeviceUtils.getDevicePlatform(),
+                                                                        IpAddress = ipAddress ?: "",
+                                                                        IpLocation = locationText ?: "",
+                                                                        DocumentFront = frontFile?.toMultipartBodyPart("DocumentFront"),
+                                                                        DocumentBack = backFile?.toMultipartBodyPart("DocumentBack"),
+                                                                        LivenessId = livenessId ?: "",
+                                                                        PortraitPicture = portraitFile?.toMultipartBodyPart("PortraitPicture"),
+                                                                        SecurityAssessmentJson = securityJson,
+                                                                        DocumentVideo = videoFile?.takeIf { it.length() > 0L }?.let { file ->
+                                                                            MultipartBody.Part.createFormData(
+                                                                                "DocumentVideo",
+                                                                                file.name,
+                                                                                file.asRequestBody("video/mp4".toMediaTypeOrNull())
+                                                                            )
+                                                                        }
+                                                                    ),
+                                                                )
                                                             } else {
                                                                 // LIVENESS_ONLY mode: no documents captured, skip updateKyc.
                                                                 // Liveness result is already stored server-side via the
@@ -789,7 +809,6 @@ fun VerificationScreen(
 
                                                             lastResult = LivenessResult(
                                                                 success = true,
-                                                                sessionToken = "fake",
                                                                 confidence = 0.95f,
                                                                 sessionId = viewModel.getSessionId()
                                                             )
@@ -915,8 +934,12 @@ fun VerificationScreen(
                                 }
                             },
                             onRefresh = {
+                                // Rotation-safe: fall back to ViewModel-backed paths if composable state is null.
+                                val refreshFrontFile = documentFrontPage ?: viewModel.getCapturedFrontFile()
+                                val refreshBackFile = documentBackPage ?: viewModel.getCapturedBackFile()
+                                val refreshVideoFile = documentVideoFile ?: viewModel.getCapturedVideoFile()
                                 val hasValidDocType = selectedDocumentType != null && selectedDocumentType!! > 0
-                                if (stage == VerificationStage.RESULT && sessionId != null && documentFrontPage != null && hasValidDocType) {
+                                if (stage == VerificationStage.RESULT && sessionId != null && refreshFrontFile != null && hasValidDocType) {
                                     val securityJson = SecurityAssessmentCollector.collectJson(context, CaptureRuntimeData(
                                         latitude = locationLatitude,
                                         longitude = locationLongitude,
@@ -944,10 +967,11 @@ fun VerificationScreen(
                                             DeviceAndBrowser = DeviceUtils.getDevicePlatform(),
                                             IpAddress = ipAddress ?: "",
                                             IpLocation = locationText ?: "",
-                                            DocumentFront = documentFrontPage?.toMultipartBodyPart("DocumentFront"),
-                                            DocumentBack = documentBackPage?.toMultipartBodyPart("DocumentBack"),
+                                            PortraitPicture = selfiePortraitFile?.toMultipartBodyPart("PortraitPicture"),
+                                            DocumentFront = refreshFrontFile?.toMultipartBodyPart("DocumentFront"),
+                                            DocumentBack = refreshBackFile?.toMultipartBodyPart("DocumentBack"),
                                             SecurityAssessmentJson = securityJson,
-                                            DocumentVideo = documentVideoFile?.takeIf { it.length() > 0L }?.let { file ->
+                                            DocumentVideo = refreshVideoFile?.takeIf { it.length() > 0L }?.let { file ->
                                                 MultipartBody.Part.createFormData(
                                                     "DocumentVideo",
                                                     file.name,

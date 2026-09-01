@@ -221,6 +221,29 @@ object BurstCaptureUtils {
     }
 
     /**
+     * DEBUG ONLY: when enabled, the last burst set is copied to
+     * filesDir/debug_last_burst/ before cleanup so the exact frames the server
+     * judged can be pulled via adb for inspection. Never enabled in release
+     * (identity-document frames are PII — must not survive to production).
+     */
+    var debugPersistLastBurst: Boolean = false
+
+    fun debugSnapshotBurst(context: Context, files: List<File>) {
+        if (!debugPersistLastBurst) return
+        try {
+            val dir = File(context.filesDir, "debug_last_burst")
+            dir.listFiles()?.forEach { it.delete() }
+            dir.mkdirs()
+            files.filter { it.exists() }.forEachIndexed { i, f ->
+                f.copyTo(File(dir, "frame_" + i + ".jpg"), overwrite = true)
+            }
+            Log.i(TAG, "DEBUG: snapshotted " + files.size + " burst frames to " + dir.path)
+        } catch (e: Exception) {
+            Log.w(TAG, "DEBUG burst snapshot failed: " + e.message)
+        }
+    }
+
+    /**
      * Clean up burst capture files
      */
     fun cleanupBurstFiles(files: List<File>) {
