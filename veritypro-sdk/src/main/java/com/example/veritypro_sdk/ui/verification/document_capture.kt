@@ -36,6 +36,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.runtime.saveable.rememberSaveable
 import android.view.HapticFeedbackConstants
@@ -1069,12 +1070,17 @@ fun DocumentCaptureScreen(
                                 // frames landing 4-20s post-lock) — by then users had lowered the
                                 // phone, so the server forensic gate was judging photos of the room
                                 // (BLURRY / SCREEN_REPLAY verdicts were accurate for that input).
-                                // Do NOT freeze the preview yet: the live view + "Hold still" badge
-                                // keep the user aiming through the ~3s capture window.
+                                // Grab the current preview frame NOW so the processing overlay
+                                // shows immediately — before CameraX reconfigures the session
+                                // (Preview+VideoCapture → Preview+ImageCapture on TCL T442M quirk).
+                                // Without this, isProcessing=true but frozenBitmap==null lets the
+                                // ~480ms black camera-reset screen bleed through to the user.
                                 isProcessing = true
                                 isCapturing = false
                                 captureAttemptCount++
                                 processingStatus = "Hold still…"
+                                frozenBitmap?.recycle()
+                                frozenBitmap = previewView.bitmap
 
                                 val bufferedBitmaps = BurstCaptureUtils.drainBuffer()
 
@@ -1373,21 +1379,23 @@ fun DocumentCaptureScreen(
                     }
                 }
 
-                // Frozen frame + processing overlay with hero thumbnail + sub-steps
+                // Frozen frame + processing overlay — full-frame document stays visible
                 if (isProcessing && frozenBitmap != null) {
                     Image(
                         bitmap = frozenBitmap!!.asImageBitmap(),
                         contentDescription = "Processing...",
+                        contentScale = ContentScale.Crop,
                         modifier = Modifier
                             .fillMaxSize()
                             .clip(RoundedCornerShape(ScaleUtil.scaleWidth(8.dp)))
                     )
 
+                    // Semi-transparent scrim so full-frame document image stays visible
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
                             .background(
-                                GuidanceConfig.OVERLAY_DARK,
+                                Color.Black.copy(alpha = 0.55f),
                                 RoundedCornerShape(ScaleUtil.scaleWidth(8.dp))
                             ),
                         contentAlignment = Alignment.Center
@@ -1397,29 +1405,19 @@ fun DocumentCaptureScreen(
                             verticalArrangement = Arrangement.Center,
                             modifier = Modifier.padding(horizontal = 24.dp)
                         ) {
-                            // Hero thumbnail
-                            Image(
-                                bitmap = frozenBitmap!!.asImageBitmap(),
-                                contentDescription = "Captured document",
-                                modifier = Modifier
-                                    .size(260.dp, 180.dp)
-                                    .clip(RoundedCornerShape(12.dp))
-                            )
-                            Spacer(modifier = Modifier.height(16.dp))
-
                             // Status indicator
                             if (verificationPassed) {
-                                Text("✓", color = GuidanceConfig.STATE_GREEN, fontSize = 32.sp, fontWeight = FontWeight.Bold)
+                                Text("✓", color = GuidanceConfig.STATE_GREEN, fontSize = 40.sp, fontWeight = FontWeight.Bold)
                             } else if (verificationError.isNotEmpty()) {
-                                Text("✗", color = GuidanceConfig.STATE_ERROR, fontSize = 32.sp, fontWeight = FontWeight.Bold)
+                                Text("✗", color = GuidanceConfig.STATE_ERROR, fontSize = 40.sp, fontWeight = FontWeight.Bold)
                             } else {
                                 CircularProgressIndicator(
-                                    modifier = Modifier.size(36.dp),
+                                    modifier = Modifier.size(40.dp),
                                     color = Color.White,
                                     strokeWidth = 3.dp
                                 )
                             }
-                            Spacer(modifier = Modifier.height(8.dp))
+                            Spacer(modifier = Modifier.height(12.dp))
 
                             Text(
                                 text = processingStatus.ifEmpty { "Processing..." },
@@ -1427,10 +1425,6 @@ fun DocumentCaptureScreen(
                                 fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(15.dp).toSp() },
                                 fontWeight = FontWeight.W600
                             )
-
-                            // L-1: Removed fake static ProcessingSubStep indicators.
-                            // Static 80%/60% values were hardcoded and did not reflect
-                            // actual backend progress — misleading to users.
                         }
                     }
                 }
@@ -1442,13 +1436,12 @@ fun DocumentCaptureScreen(
                 )
             }
 
-            // Distance meter bar — bottom sheet with progress bar + checklist
+            // Distance meter bar — hidden during processing so the AMBER/GREEN
+            // animation doesn't continue sliding after the user has captured.
             val barProgress = when (detectionState) {
                 DetectionState.SEARCHING -> 0f
                 DetectionState.DETECTING -> (distanceGuidance?.frameCoverage ?: 0f).coerceIn(0f, 0.75f) / 0.75f * 0.75f
                 DetectionState.LOCKED -> 1f
-                // L-2: hold bar at 1f during capture/processing so it doesn't
-                // snap back to 0 while the upload spinner is running.
                 DetectionState.CAPTURING -> 1f
                 else -> 0f
             }
@@ -1469,15 +1462,17 @@ fun DocumentCaptureScreen(
                     !h.contains("glare") && !h.contains("reflect") && !h.contains("shine")
                 }
 
-            DistanceMeterBar(
-                detectionState = detectionState,
-                barProgress = barProgress,
-                docDetected = mlPassed,
-                goodLighting = goodLighting,
-                distanceOptimal = distanceGuidance?.isOptimal == true,
-                noGlare = noGlare,
-                countdownProgress = autoCaptureProgress
-            )
+            if (!isProcessing) {
+                DistanceMeterBar(
+                    detectionState = detectionState,
+                    barProgress = barProgress,
+                    docDetected = mlPassed,
+                    goodLighting = goodLighting,
+                    distanceOptimal = distanceGuidance?.isOptimal == true,
+                    noGlare = noGlare,
+                    countdownProgress = autoCaptureProgress
+                )
+            }
 
             // Legacy distance guidance indicator (kept for states not covered by bottom sheet)
             distanceGuidance?.let { guidance ->
@@ -1570,13 +1565,16 @@ fun DocumentCaptureScreen(
                         verificationPassed = false
                         captureAttemptCount++
 
-                        // TEMPORAL FIX (session ddb47290, device test 2026-08-15): capture the
-                        // full-res burst IMMEDIATELY on tap, while the user is still holding the
-                        // pose — the live preview + "Hold still" status stay up through the ~3s
-                        // window. Freezing happens only after the last frame is on disk.
+                        // Grab the current preview frame NOW so the processing overlay
+                        // shows immediately — before CameraX reconfigures the session
+                        // (Preview+VideoCapture → Preview+ImageCapture on TCL T442M quirk).
+                        // Without this, isProcessing=true but frozenBitmap==null lets the
+                        // ~480ms black camera-reset screen bleed through to the user.
                         isProcessing = true
                         isCapturing = false
                         processingStatus = "Hold still…"
+                        frozenBitmap?.recycle()
+                        frozenBitmap = previewView.bitmap
 
                         // Drain the ring buffer (628x421 preview frames — never uploaded)
                         val bufferedBitmaps = BurstCaptureUtils.drainBuffer()

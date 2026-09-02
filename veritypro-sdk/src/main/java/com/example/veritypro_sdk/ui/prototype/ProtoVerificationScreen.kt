@@ -162,6 +162,9 @@ fun ProtoVerificationScreen(
     /// (liveness step-up) run can supply it as previousEngineSessionId (backend requires a prior
     /// document session to face-match the selfie against). Fires only for document-bearing runs.
     onSessionEstablished: (String) -> Unit = {},
+    /// Called with true=approved/submitted, false=cancelled/failed when the flow reaches a terminal
+    /// state and the user taps the done button. Fires before [onExit].
+    onResult: (Boolean) -> Unit = {},
 ) {
     val vm: VerityProViewModel = viewModel()
     val kyc by vm.kycState.collectAsState()
@@ -549,7 +552,10 @@ fun ProtoVerificationScreen(
                 approved = flowOk,
                 title = doneTitle,
                 subtitle = doneSubtitle,
-                onDone = onExit,
+                onDone = {
+                    onResult(flowOk)
+                    onExit()
+                },
             )
         }
     }

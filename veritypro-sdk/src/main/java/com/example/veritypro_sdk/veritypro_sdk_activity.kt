@@ -7,17 +7,15 @@ import android.util.Log
 import android.view.WindowManager
 import androidx.appcompat.app.AppCompatActivity
 import androidx.activity.compose.setContent
-import com.example.veritypro_sdk.ui.verification.VerificationScreen
+import com.example.veritypro_sdk.ui.prototype.ProtoVerificationScreen
 import com.example.veritypro_sdk.utils.LivenessResult
 import com.example.veritypro_sdk.utils.VerityOption
 import com.amplifyframework.core.Amplify
 import com.amplifyframework.auth.cognito.AWSCognitoAuthPlugin
 import com.example.veritypro_sdk.services.VeritySigningConfig
-import com.example.veritypro_sdk.ui.theme.ThemeMode
 
 class VerityProSdkActivity : AppCompatActivity() {
     private var options: VerityOption? = null
-    private var themeMode: ThemeMode = ThemeMode.LIGHT
 
     companion object {
         @Volatile
@@ -48,14 +46,6 @@ class VerityProSdkActivity : AppCompatActivity() {
             @Suppress("DEPRECATION")
             intent.getParcelableExtra("verity_options") as? VerityOption
         }
-        val themeModeStr = intent.getStringExtra("theme_mode")
-        themeMode = try {
-            if (themeModeStr != null) ThemeMode.valueOf(themeModeStr) else ThemeMode.LIGHT
-        } catch (e: Exception) {
-            Log.w("VerityProSdkActivity", "Invalid theme_mode passed: $themeModeStr, defaulting to LIGHT")
-            ThemeMode.LIGHT
-        }
-
         VeritySigningConfig.initialize(options?.signingKey)
 
         if (options == null) {
@@ -82,26 +72,17 @@ class VerityProSdkActivity : AppCompatActivity() {
 
         try {
             setContent {
-                VerificationScreen(
-                    onFinish = { result ->
-                        val resultIntent = Intent().apply {
-                            putExtra("verification_result", result)
-                            if (!result.eddCaseId.isNullOrBlank()) {
-                                putExtra("edd_case_id", result.eddCaseId)
-                            }
-                        }
-                        setResult(RESULT_OK, resultIntent)
-                        finish()
-                    },
+                ProtoVerificationScreen(
                     options = options!!,
-                    onCancel = {
-                        setResult(
-                            RESULT_CANCELED,
-                            Intent().putExtra("verification_result", LivenessResult(success = false))
-                        )
-                        finish()
+                    onResult = { approved ->
+                        val result = if (approved) {
+                            LivenessResult(success = true)
+                        } else {
+                            LivenessResult(success = false, error = "Verification unsuccessful")
+                        }
+                        setResult(RESULT_OK, Intent().putExtra("verification_result", result))
                     },
-                    themeMode = themeMode,
+                    onExit = { finish() },
                 )
             }
         } catch (t: Throwable) {
