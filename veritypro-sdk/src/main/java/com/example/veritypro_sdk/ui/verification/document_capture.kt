@@ -1118,13 +1118,16 @@ fun DocumentCaptureScreen(
                                         )
                                         Log.d("DocumentCapture", "Auto-capture: burst complete (${burst.size} full-res frames)")
 
-                                        // Capture window over — release the user: freeze the preview
-                                        // and switch to the verifying overlay.
+                                        // Capture window over — update status text only.
+                                        // Do NOT recycle/replace frozenBitmap here: the camera
+                                        // session is CLOSED on TCL T442M at this point (quirk
+                                        // teardown) so previewView.bitmap returns null, which would
+                                        // kill the overlay we just locked in at tap time.
+                                        // The JPEG thumbnail update below (decodeFile) replaces it
+                                        // with the actual captured document image when ready.
                                         withContext(Dispatchers.Main) {
                                             view.performHapticFeedback(android.view.HapticFeedbackConstants.CONFIRM)
                                             processingStatus = if (isBackSide) "Processing..." else "Verifying..."
-                                            frozenBitmap?.recycle()
-                                            frozenBitmap = previewView.bitmap
                                         }
 
                                         // Torch off only after all frames are captured so lighting
@@ -1606,13 +1609,16 @@ fun DocumentCaptureScreen(
                                 )
                                 Log.d("DocumentCapture", "Manual capture: burst complete (${burst.size} full-res frames)")
 
-                                // Capture window over — release the user: freeze the preview
-                                // and switch to the verifying overlay.
+                                // Capture window over — update status text only.
+                                // Do NOT recycle/replace frozenBitmap here: the camera
+                                // session is CLOSED on TCL T442M at this point (quirk
+                                // teardown) so previewView.bitmap returns null, which would
+                                // kill the overlay locked in at tap time.
+                                // The JPEG thumbnail update below (decodeFile) replaces it
+                                // with the actual captured document image when ready.
                                 withContext(Dispatchers.Main) {
                                     view.performHapticFeedback(HapticFeedbackConstants.CONFIRM)
                                     processingStatus = if (isBackSide) "Processing..." else "Verifying..."
-                                    frozenBitmap?.recycle()
-                                    frozenBitmap = previewView.bitmap
                                 }
 
                                 // Torch off only after all frames are captured so lighting

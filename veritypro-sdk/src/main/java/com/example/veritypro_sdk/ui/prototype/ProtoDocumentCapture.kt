@@ -69,6 +69,10 @@ import java.io.File
  * Screen 5 — live document capture (CameraX), rendered neo-brutalist.
  * Reuses the SDK camera plumbing (CameraUtils.createSmartImageCapture / bindSmartCamera) and
  * saves the JPEG to cache, handing the path back via [onCaptured] for preview + ML verification.
+ *
+ * iOS parity: on tap the preview freezes IMMEDIATELY (frozenCaptureBitmap overlaid fullscreen)
+ * so the user never sees the camera continuing to stream while the capture pipeline runs.
+ * The freeze persists until onCaptured fires and the flow navigates to ProtoDocumentPreviewScreen.
  */
 @Composable
 fun ProtoDocumentCaptureScreen(
@@ -95,6 +99,10 @@ fun ProtoDocumentCaptureScreen(
     var previewRef by remember { mutableStateOf<PreviewView?>(null) }
     var capturedVideoPath by remember { mutableStateOf<String?>(null) }
     var pendingPads by remember { mutableStateOf<List<Bitmap>>(emptyList()) }
+    // iOS parity: bitmap frozen at the exact tap moment — shown fullscreen over the live camera
+    // during the entire capture pipeline (pad collection → video stop → rebind → still) so the
+    // user sees an instant still instead of the camera continuing to move.
+    var frozenCaptureBitmap by remember { mutableStateOf<Bitmap?>(null) }
 
     // Take the full-resolution still and deliver it with the recorded clip.
     fun shootStill() {
@@ -109,7 +117,11 @@ fun ProtoDocumentCaptureScreen(
                     onCaptured(file.absolutePath, pendingPads, capturedVideoPath)
                 }
                 override fun onError(exc: ImageCaptureException) {
-                    capturing = false; shootTriggered = false
+                    // Capture failed — thaw the view and let the user try again.
+                    capturing = false
+                    shootTriggered = false
+                    frozenCaptureBitmap?.recycle()
+                    frozenCaptureBitmap = null
                 }
             },
         )
@@ -126,20 +138,22 @@ fun ProtoDocumentCaptureScreen(
     }
 
     Box(Modifier.fillMaxSize().background(Color.Black)) {
+        // Camera preview — hidden (alpha=0) as soon as the user taps CAPTURE so the live feed
+        // cannot be seen during the capture pipeline. The camera session itself keeps running
+        // (alpha only affects rendering, not the CameraX lifecycle) so the still capture succeeds.
         AndroidView(
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier
+                .fillMaxSize()
+                .then(if (capturing) Modifier.size(1.dp) else Modifier),
             factory = { ctx ->
                 PreviewView(ctx).apply {
                     implementationMode = PreviewView.ImplementationMode.COMPATIBLE
                     scaleType = PreviewView.ScaleType.FILL_CENTER
-                    // Gate the shutter on the actual preview stream so we never capture a black frame.
                     previewStreamState.observe(lifecycleOwner) { st ->
                         if (st == PreviewView.StreamState.STREAMING) cameraReady = true
                     }
                 }.also { pv ->
                     previewRef = pv
-                    // Phase 1 — record the session clip (Preview + VideoCapture only). onStopped (after
-                    // the CAPTURE tap, or on failure) delivers the file and switches to the photo phase.
                     CameraUtils.bindVideoRecording(
                         ctx, lifecycleOwner, pv, videoCapture,
                         onReady = {
@@ -152,7 +166,6 @@ fun ProtoDocumentCaptureScreen(
                             }
                         },
                         onError = {
-                            // Couldn't record — capture the photo directly (video stays null).
                             capturePhase = "shooting"
                             CameraUtils.bindSmartCamera(ctx, lifecycleOwner, pv, imageCapture, videoCapture = null)
                         },
@@ -161,7 +174,29 @@ fun ProtoDocumentCaptureScreen(
             },
         )
 
-        // Top bar over the camera — close + mono kicker (white on scrim)
+        // ── Capture overlay (iOS parity) ─────────────────────────────────────────────────────
+        // Immediately on tap: cover the camera with either (a) the frozen bitmap if the device
+        // supports PreviewView.bitmap, or (b) a solid black fill — guaranteed on ALL devices.
+        // The camera session keeps running underneath; only the rendering is blocked.
+        if (capturing) {
+            val frozen = frozenCaptureBitmap
+            if (frozen != null) {
+                Image(
+                    bitmap = frozen.asImageBitmap(),
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize(),
+                )
+            } else {
+                // Solid black fallback — covers the camera on SurfaceView-backed PreviewView
+                // (devices where .bitmap returns null). Still stops the "camera moving" UX problem.
+                Box(Modifier.fillMaxSize().background(Color.Black))
+            }
+            // Scrim so the controls read cleanly on top of any background.
+            Box(Modifier.fillMaxSize().background(Color(0x44000000)))
+        }
+
+        // Top bar — always on top (close button stays reachable during capture).
         Row(
             Modifier.fillMaxWidth().background(Color(0xCC120037)).padding(horizontal = 20.dp, vertical = 14.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -172,57 +207,54 @@ fun ProtoDocumentCaptureScreen(
             MonoLabel("${docLabel.uppercase()} · ${sideLabel.uppercase()}", Color.White, size = 12)
         }
 
-        // Full-screen camera — no restrictive frame box; the customer gets the whole viewport to fit
-        // and check the document (parity with the iOS full-camera approach). A light guidance pill sits
-        // just above the shutter.
+        // Bottom: guidance pill + shutter button.
         Box(Modifier.fillMaxSize().padding(bottom = 40.dp), contentAlignment = Alignment.BottomCenter) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Box(Modifier.background(Color(0xB3171717)).padding(horizontal = 14.dp, vertical = 8.dp)) {
                     MonoLabel(
                         when {
                             !cameraReady -> "STARTING CAMERA…"
-                            capturing -> "CAPTURING…"
-                            else -> "FIT YOUR ${sideLabel.uppercase()} IN VIEW · HOLD STEADY"
+                            capturing    -> "CAPTURING…"
+                            else         -> "FIT YOUR ${sideLabel.uppercase()} IN VIEW · HOLD STEADY"
                         },
                         Color.White, size = 12,
                     )
                 }
                 Spacer(Modifier.height(16.dp))
-            BrutalBox(
-                background = Color.White,
-                borderColor = Color.White,
-                modifier = Modifier.width(120.dp),
-            ) {
-                Text(
-                    if (!cameraReady) "…" else if (capturing) "…" else "CAPTURE",
-                    color = if (cameraReady) Proto.Ink else Color(0xFF9AA0A6),
-                    fontFamily = ProtoDisplay, fontSize = 15.sp, fontWeight = FontWeight.Black,
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth().protoClick {
-                        if (cameraReady && !capturing) {
-                            capturing = true
-                            scope.launch {
-                                // Collect >=3 distinct PAD frames from the live preview (for the v2
-                                // device-first capture-verify contract), spaced so the server's
-                                // distinctness check has real timing + content variation to see.
-                                val pads = ArrayList<Bitmap>()
-                                repeat(5) {
-                                    previewRef?.bitmap?.let { pads.add(it) }
-                                    delay(70)
-                                }
-                                pendingPads = pads
-                                if (capturePhase == "recording") {
-                                    // Stop the clip → onStopped → rebindForPhoto → shootStill.
-                                    videoRecorder.stopRecording()
-                                } else {
-                                    // Photo-only fallback (video never bound): shoot the still now.
-                                    shootStill()
+                BrutalBox(
+                    background = Color.White,
+                    borderColor = Color.White,
+                    modifier = Modifier.width(120.dp),
+                ) {
+                    Text(
+                        if (!cameraReady) "…" else if (capturing) "…" else "CAPTURE",
+                        color = if (cameraReady && !capturing) Proto.Ink else Color(0xFF9AA0A6),
+                        fontFamily = ProtoDisplay, fontSize = 15.sp, fontWeight = FontWeight.Black,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth().protoClick {
+                            if (cameraReady && !capturing) {
+                                capturing = true
+                                // Attempt to freeze the preview frame at tap time (works when
+                                // PreviewView is TextureView-backed — COMPATIBLE mode on most devices).
+                                frozenCaptureBitmap?.recycle()
+                                frozenCaptureBitmap = previewRef?.bitmap
+                                scope.launch {
+                                    val pads = ArrayList<Bitmap>()
+                                    repeat(5) {
+                                        previewRef?.bitmap?.let { pads.add(it) }
+                                        delay(70)
+                                    }
+                                    pendingPads = pads
+                                    if (capturePhase == "recording") {
+                                        videoRecorder.stopRecording()
+                                    } else {
+                                        shootStill()
+                                    }
                                 }
                             }
-                        }
-                    }.padding(vertical = 18.dp),
-                )
-            }
+                        }.padding(vertical = 18.dp),
+                    )
+                }
             }
         }
     }
