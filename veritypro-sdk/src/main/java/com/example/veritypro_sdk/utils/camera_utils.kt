@@ -3,6 +3,8 @@ package com.example.veritypro_sdk.utils
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.Matrix
 import android.graphics.Rect
 import android.os.Handler
 import android.os.Looper
@@ -38,6 +40,8 @@ import androidx.camera.core.FocusMeteringAction
 import androidx.camera.core.SurfaceOrientedMeteringPointFactory
 import androidx.camera.video.Recorder
 import androidx.camera.video.VideoCapture
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 import java.io.File
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -162,7 +166,8 @@ object CameraUtils {
         onCameraReady: ((CameraCapabilityReport) -> Unit)? = null,
         onCameraError: ((String) -> Unit)? = null,
         videoCapture: VideoCapture<Recorder>? = null,
-        onVideoCaptureBound: ((Boolean) -> Unit)? = null
+        onVideoCaptureBound: ((Boolean) -> Unit)? = null,
+        frameCollector: ((Bitmap) -> Unit)? = null
     ) {
         val cameraProviderFuture = ProcessCameraProvider.getInstance(context)
 
@@ -194,6 +199,16 @@ object CameraUtils {
                         context, previewView, cameraSelector, onFacesDetected
                     )
                     useCases.add(imageAnalyzer)
+                }
+
+                // PAD frame ring-buffer collector (iOS parity). When set, bind an ImageAnalysis
+                // that continuously delivers downscaled preview frames off-thread so the anti-spoof
+                // PAD frames already exist at shutter time — no per-tap previewView.bitmap polling.
+                // Only bound when there is NO VideoCapture, keeping the combination to the CameraX
+                // GUARANTEED Preview + ImageCapture + ImageAnalysis (3 use cases) on all hardware,
+                // which does NOT trigger the TCL T442M VideoCapture+ImageCapture quirk.
+                if (frameCollector != null && videoCapture == null && !useDetection) {
+                    useCases.add(createFrameCollectorAnalyzer(context, frameCollector))
                 }
 
                 // Add VideoCapture on ALL devices.
@@ -797,6 +812,53 @@ object CameraUtils {
         }
 
         return imageAnalyzer
+    }
+
+    // Single background thread for PAD frame conversion — keeps the main thread free.
+    private val frameCollectorExecutor: ExecutorService by lazy { Executors.newSingleThreadExecutor() }
+
+    /**
+     * ImageAnalysis that converts each latest preview frame to an upright, downscaled Bitmap and
+     * hands it to [frameCollector] on a background thread. STRATEGY_KEEP_ONLY_LATEST drops frames
+     * under load so this never backs up. This is the Android equivalent of the iOS
+     * AVCaptureVideoDataOutput ring buffer (ProtoCameraController): PAD frames are collected
+     * continuously during live preview, so the shutter tap can grab the last N instantly.
+     */
+    private fun createFrameCollectorAnalyzer(
+        context: Context,
+        frameCollector: (Bitmap) -> Unit
+    ): ImageAnalysis {
+        val analyzer = ImageAnalysis.Builder()
+            .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
+            .build()
+        analyzer.setAnalyzer(frameCollectorExecutor) { proxy ->
+            try {
+                val raw = proxy.toBitmap()
+                val rotation = proxy.imageInfo.rotationDegrees
+                val upright = if (rotation != 0) {
+                    val m = Matrix().apply { postRotate(rotation.toFloat()) }
+                    Bitmap.createBitmap(raw, 0, 0, raw.width, raw.height, m, true).also {
+                        if (it !== raw) raw.recycle()
+                    }
+                } else raw
+                // Downscale to a 1024 long-edge (parity with iOS) — PAD distinctness needs pixels,
+                // not full resolution, and small frames keep the ring buffer memory low.
+                val longEdge = maxOf(upright.width, upright.height)
+                val scaled = if (longEdge > 1024) {
+                    val s = 1024f / longEdge
+                    Bitmap.createScaledBitmap(
+                        upright, (upright.width * s).toInt(), (upright.height * s).toInt(), true
+                    ).also { if (it !== upright) upright.recycle() }
+                } else upright
+                frameCollector(scaled)
+            } catch (e: Exception) {
+                // Non-fatal: a dropped PAD frame is fine; the ring keeps prior frames. Log, don't crash.
+                Log.w(TAG, "PAD frame collect failed (non-blocking): ${e.message}")
+            } finally {
+                proxy.close()
+            }
+        }
+        return analyzer
     }
 
     @OptIn(ExperimentalGetImage::class)
