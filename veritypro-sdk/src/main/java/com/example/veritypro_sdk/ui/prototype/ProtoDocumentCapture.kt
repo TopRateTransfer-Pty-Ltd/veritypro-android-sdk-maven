@@ -187,6 +187,9 @@ fun ProtoDocumentCaptureScreen(
                                 padCount = padRing.size
                             }
                         },
+                        // No viewport crop: keep the still at the sensor's native 4:3 like iOS `.photo`
+                        // so the captured document fills the preview box without white side bands.
+                        useViewPort = false,
                     )
                 }
             },

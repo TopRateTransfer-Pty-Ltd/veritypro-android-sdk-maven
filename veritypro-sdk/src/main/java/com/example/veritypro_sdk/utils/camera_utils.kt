@@ -167,7 +167,8 @@ object CameraUtils {
         onCameraError: ((String) -> Unit)? = null,
         videoCapture: VideoCapture<Recorder>? = null,
         onVideoCaptureBound: ((Boolean) -> Unit)? = null,
-        frameCollector: ((Bitmap) -> Unit)? = null
+        frameCollector: ((Bitmap) -> Unit)? = null,
+        useViewPort: Boolean = true
     ) {
         val cameraProviderFuture = ProcessCameraProvider.getInstance(context)
 
@@ -230,15 +231,23 @@ object CameraUtils {
                         return@post
                     }
 
-                    val viewPort = ViewPort.Builder(
-                        Rational(previewView.width, previewView.height),
-                        previewView.display.rotation
-                    )
-                        .setScaleType(ViewPort.FILL_CENTER)
-                        .build()
+                    // A FILL_CENTER ViewPort crops EVERY use case (including the still) to the
+                    // preview's aspect. On a tall full-screen preview that yields a tall, phone-shaped
+                    // JPEG (e.g. 1588×3264) instead of the sensor's native 4:3. The Proto flow opts out
+                    // (useViewPort=false) so the still stays 4:3 like the iOS `.photo` preset and fills
+                    // the "Check your photo" box without white letterbox bands. PreviewView's own
+                    // FILL_CENTER scaleType still crops the on-screen preview for display.
+                    val viewPort = if (useViewPort) {
+                        ViewPort.Builder(
+                            Rational(previewView.width, previewView.height),
+                            previewView.display.rotation
+                        )
+                            .setScaleType(ViewPort.FILL_CENTER)
+                            .build()
+                    } else null
 
                     val useCaseGroup = UseCaseGroup.Builder()
-                        .setViewPort(viewPort)
+                        .apply { viewPort?.let { setViewPort(it) } }
                         .apply { useCases.forEach { addUseCase(it) } }
                         .build()
 
@@ -272,7 +281,7 @@ object CameraUtils {
                             )
                             onVideoCaptureBound?.invoke(false)
                             val photoFirstGroup = UseCaseGroup.Builder()
-                                .setViewPort(viewPort)
+                                .apply { viewPort?.let { setViewPort(it) } }
                                 .apply {
                                     useCases.filter { it !== videoCapture }.forEach { addUseCase(it) }
                                 }
