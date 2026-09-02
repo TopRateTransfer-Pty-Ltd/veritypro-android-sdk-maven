@@ -4,10 +4,7 @@ name: Publish AAR to Flutter SDK
 # directly into verity_flutter_sdk/android/libs/ so the Flutter wrapper
 # always ships the latest Android SDK without a manual `update_android_aar.sh`.
 #
-# Prerequisites (one-time, done by a repo admin):
-#   1. Create a GitHub PAT with `repo` scope (Contents: write) for
-#      TopRateTransfer-Pty-Ltd/verity_flutter_sdk.
-#   2. Add it as org secret VERITY_CROSS_REPO_PAT (or repo secret on both repos).
+# Prerequisites: org secret VERITY_GH_TOKEN (PAT with repo scope) must exist.
 #
 on:
   push:
@@ -64,7 +61,7 @@ jobs:
           repository: TopRateTransfer-Pty-Ltd/verity_flutter_sdk
           ref: Mr.topClaude-work
           path: verity_flutter_sdk
-          token: ${{ secrets.VERITY_CROSS_REPO_PAT }}
+          token: ${{ secrets.VERITY_GH_TOKEN }}
 
       - name: Copy AAR into Flutter SDK
         run: |
