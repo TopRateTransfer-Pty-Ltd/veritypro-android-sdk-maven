@@ -274,10 +274,12 @@ fun ProtoDocumentPreviewScreen(
                 deviceSignals = MLDeviceSignals(captureMode = "MANUAL", deviceModel = Build.MODEL),
             )
             when (res) {
-                is Resource.Success -> when (res.data.state) {
-                    MLCaptureState.VERIFIED -> { outcome = "PASS"; hint = "Document verified" }
-                    MLCaptureState.MANUAL_REVIEW -> { outcome = "PASS"; hint = "Submitted for review" }
-                    MLCaptureState.RETRY -> { outcome = "RETRY"; hint = res.data.retry?.hint ?: "Please retake." }
+                is Resource.Success -> when {
+                    res.data.state == MLCaptureState.VERIFIED -> { outcome = "PASS"; hint = "Document verified" }
+                    res.data.state == MLCaptureState.MANUAL_REVIEW -> { outcome = "PASS"; hint = "Submitted for review" }
+                    res.data.state == MLCaptureState.RETRY -> { outcome = "RETRY"; hint = res.data.retry?.hint ?: "Please retake." }
+                    // SERVICE_ERROR = ML backend fault, not a model decision — treat as retryable.
+                    res.data.reasonCode == "SERVICE_ERROR" -> { outcome = "RETRY"; hint = "Service temporarily unavailable. Please retake." }
                     else -> { outcome = "REJECT"; hint = "Not accepted (${res.data.reasonCode})." }
                 }
                 is Resource.Error -> { outcome = "RETRY"; hint = res.message }
