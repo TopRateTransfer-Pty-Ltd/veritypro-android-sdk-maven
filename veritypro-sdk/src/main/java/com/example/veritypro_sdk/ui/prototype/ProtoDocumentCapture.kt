@@ -85,26 +85,16 @@ fun ProtoDocumentCaptureScreen(
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val scope = rememberCoroutineScope()
-    // Sequenced capture: record a session clip (Preview + VideoCapture) FIRST, then rebind to
-    // Preview + ImageCapture for the full-resolution still. This yields BOTH a compressed video AND
-    // an uncollapsed still even on limited-hardware devices that can't bind them together.
-    // ImageCapture is created WITHOUT concurrent video, so the still is never quality-collapsed.
+    // Photo-only binding — no video recording phase in the Proto capture screen.
+    // This eliminates the video-stop → rebind → settle cycle (~1 second on TCL T442M quirk)
+    // so the camera goes directly from live preview to still capture on tap, matching iOS speed.
     val imageCapture = remember { CameraUtils.createSmartImageCapture(context, withVideoCapture = false) }
-    val videoRecorder = remember { VerityVideoRecorder(context) }
-    val videoCapture = remember { videoRecorder.buildVideoCapture(DocumentVideoTier.SD) }
-    var capturePhase by remember { mutableStateOf("recording") }   // "recording" -> "shooting"
     var capturing by remember { mutableStateOf(false) }
     var cameraReady by remember { mutableStateOf(false) }
     var shootTriggered by remember { mutableStateOf(false) }
     var previewRef by remember { mutableStateOf<PreviewView?>(null) }
-    var capturedVideoPath by remember { mutableStateOf<String?>(null) }
     var pendingPads by remember { mutableStateOf<List<Bitmap>>(emptyList()) }
-    // iOS parity: bitmap frozen at the exact tap moment — shown fullscreen over the live camera
-    // during the entire capture pipeline (pad collection → video stop → rebind → still) so the
-    // user sees an instant still instead of the camera continuing to move.
-    var frozenCaptureBitmap by remember { mutableStateOf<Bitmap?>(null) }
 
-    // Take the full-resolution still and deliver it with the recorded clip.
     fun shootStill() {
         if (shootTriggered) return
         shootTriggered = true
@@ -114,89 +104,39 @@ fun ProtoDocumentCaptureScreen(
             opts, ContextCompat.getMainExecutor(context),
             object : ImageCapture.OnImageSavedCallback {
                 override fun onImageSaved(result: ImageCapture.OutputFileResults) {
-                    onCaptured(file.absolutePath, pendingPads, capturedVideoPath)
+                    // video=null in proto flow; video recording happens in the main SDK flow only.
+                    onCaptured(file.absolutePath, pendingPads, null)
                 }
                 override fun onError(exc: ImageCaptureException) {
-                    // Capture failed — thaw the view and let the user try again.
                     capturing = false
                     shootTriggered = false
-                    frozenCaptureBitmap?.recycle()
-                    frozenCaptureBitmap = null
                 }
             },
         )
     }
 
-    // Rebind to Preview + ImageCapture (no video) so the still is full-resolution, then shoot after a
-    // short settle. We trigger the shot directly (not via the StreamState observer, which does not
-    // reliably re-fire STREAMING after a rebind) — takePicture itself waits for a valid frame.
-    fun rebindForPhoto() {
-        val pv = previewRef ?: return
-        capturePhase = "shooting"
-        CameraUtils.bindSmartCamera(context, lifecycleOwner, pv, imageCapture, videoCapture = null)
-        scope.launch { delay(700); shootStill() }
-    }
-
     Box(Modifier.fillMaxSize().background(Color.Black)) {
-        // Camera preview — hidden (alpha=0) as soon as the user taps CAPTURE so the live feed
-        // cannot be seen during the capture pipeline. The camera session itself keeps running
-        // (alpha only affects rendering, not the CameraX lifecycle) so the still capture succeeds.
+        // Camera preview — stays visible during "CAPTURING…" just like iOS.
+        // The live feed continues while pads are collected and the still is taken;
+        // the user sees the document scene the whole time (iOS parity from the video).
         AndroidView(
-            modifier = Modifier
-                .fillMaxSize()
-                .then(if (capturing) Modifier.size(1.dp) else Modifier),
+            modifier = Modifier.fillMaxSize(),
             factory = { ctx ->
                 PreviewView(ctx).apply {
-                    implementationMode = PreviewView.ImplementationMode.COMPATIBLE
+                    implementationMode = PreviewView.ImplementationMode.PERFORMANCE
                     scaleType = PreviewView.ScaleType.FILL_CENTER
                     previewStreamState.observe(lifecycleOwner) { st ->
                         if (st == PreviewView.StreamState.STREAMING) cameraReady = true
                     }
                 }.also { pv ->
                     previewRef = pv
-                    CameraUtils.bindVideoRecording(
-                        ctx, lifecycleOwner, pv, videoCapture,
-                        onReady = {
-                            videoRecorder.startRecording(
-                                videoCapture, VerityVideoModule.DOCUMENT,
-                                sideLabel.lowercase(), DocumentVideoTier.SD,
-                            ) { file ->
-                                capturedVideoPath = file?.absolutePath
-                                rebindForPhoto()
-                            }
-                        },
-                        onError = {
-                            capturePhase = "shooting"
-                            CameraUtils.bindSmartCamera(ctx, lifecycleOwner, pv, imageCapture, videoCapture = null)
-                        },
-                    )
+                    // Bind Preview + ImageCapture directly — no video phase.
+                    CameraUtils.bindSmartCamera(ctx, lifecycleOwner, pv, imageCapture, videoCapture = null)
                 }
             },
         )
 
-        // ── Capture overlay (iOS parity) ─────────────────────────────────────────────────────
-        // Immediately on tap: cover the camera with either (a) the frozen bitmap if the device
-        // supports PreviewView.bitmap, or (b) a solid black fill — guaranteed on ALL devices.
-        // The camera session keeps running underneath; only the rendering is blocked.
-        if (capturing) {
-            val frozen = frozenCaptureBitmap
-            if (frozen != null) {
-                Image(
-                    bitmap = frozen.asImageBitmap(),
-                    contentDescription = null,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxSize(),
-                )
-            } else {
-                // Solid black fallback — covers the camera on SurfaceView-backed PreviewView
-                // (devices where .bitmap returns null). Still stops the "camera moving" UX problem.
-                Box(Modifier.fillMaxSize().background(Color.Black))
-            }
-            // Scrim so the controls read cleanly on top of any background.
-            Box(Modifier.fillMaxSize().background(Color(0x44000000)))
-        }
-
-        // Top bar — always on top (close button stays reachable during capture).
+        // Top bar — ✕ close + document · side mono label.
         Row(
             Modifier.fillMaxWidth().background(Color(0xCC120037)).padding(horizontal = 20.dp, vertical = 14.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -207,7 +147,7 @@ fun ProtoDocumentCaptureScreen(
             MonoLabel("${docLabel.uppercase()} · ${sideLabel.uppercase()}", Color.White, size = 12)
         }
 
-        // Bottom: guidance pill + shutter button.
+        // Bottom: guidance pill + shutter button — matches iOS layout exactly.
         Box(Modifier.fillMaxSize().padding(bottom = 40.dp), contentAlignment = Alignment.BottomCenter) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Box(Modifier.background(Color(0xB3171717)).padding(horizontal = 14.dp, vertical = 8.dp)) {
@@ -227,29 +167,26 @@ fun ProtoDocumentCaptureScreen(
                     modifier = Modifier.width(120.dp),
                 ) {
                     Text(
-                        if (!cameraReady) "…" else if (capturing) "…" else "CAPTURE",
+                        if (!cameraReady || capturing) "…" else "CAPTURE",
                         color = if (cameraReady && !capturing) Proto.Ink else Color(0xFF9AA0A6),
                         fontFamily = ProtoDisplay, fontSize = 15.sp, fontWeight = FontWeight.Black,
                         textAlign = TextAlign.Center,
                         modifier = Modifier.fillMaxWidth().protoClick {
                             if (cameraReady && !capturing) {
                                 capturing = true
-                                // Attempt to freeze the preview frame at tap time (works when
-                                // PreviewView is TextureView-backed — COMPATIBLE mode on most devices).
-                                frozenCaptureBitmap?.recycle()
-                                frozenCaptureBitmap = previewRef?.bitmap
                                 scope.launch {
+                                    // Collect PAD frames from live preview while the guidance text
+                                    // already shows "CAPTURING…" — user sees the document scene
+                                    // the whole time, matching the iOS video reference.
                                     val pads = ArrayList<Bitmap>()
                                     repeat(5) {
                                         previewRef?.bitmap?.let { pads.add(it) }
                                         delay(70)
                                     }
                                     pendingPads = pads
-                                    if (capturePhase == "recording") {
-                                        videoRecorder.stopRecording()
-                                    } else {
-                                        shootStill()
-                                    }
+                                    // Camera is already in Preview+ImageCapture mode — shoot now,
+                                    // no rebind needed. takePicture waits for the next valid frame.
+                                    shootStill()
                                 }
                             }
                         }.padding(vertical = 18.dp),
@@ -358,33 +295,36 @@ fun ProtoDocumentPreviewScreen(
             Text("Is everything clear and readable?", color = Proto.Sub, fontFamily = ProtoDisplay, fontSize = 15.sp)
             Spacer(Modifier.height(18.dp))
             BrutalBox {
-                BoxWithConstraints {
-                    if (bmp != null) {
-                        Image(
-                            bitmap = bmp.asImageBitmap(),
-                            contentDescription = "Captured document",
-                            contentScale = ContentScale.Crop,
-                            modifier = Modifier.fillMaxWidth().aspectRatio(frameAspect),
-                        )
-                    } else {
-                        Box(Modifier.fillMaxWidth().aspectRatio(frameAspect).background(Color(0xFFEEF0F4)))
-                    }
-                    // Verifying loader — sweeping GoldenFizz scan line + scrim, so the customer clearly
-                    // sees the system processing (parity with iOS; users don't read the status text).
-                    if (outcome == null) {
-                        Box(Modifier.matchParentSize().background(Color(0x47000000)))
-                        val scanT = rememberInfiniteTransition(label = "scan")
-                        val frac by scanT.animateFloat(
-                            initialValue = 0f, targetValue = 1f,
-                            animationSpec = infiniteRepeatable(tween(900), RepeatMode.Reverse), label = "scanf",
-                        )
-                        Box(
-                            Modifier.fillMaxWidth().height(3.dp)
-                                .offset(y = maxHeight * frac).background(Proto.GoldenFizz),
-                        )
-                        Box(Modifier.matchParentSize(), contentAlignment = Alignment.Center) {
-                            Box(Modifier.background(Color(0xCC171717)).padding(horizontal = 12.dp, vertical = 6.dp)) {
-                                MonoLabel("SCANNING · VERIFYING", Color.White, size = 11)
+                // fillMaxWidth constrains BoxWithConstraints so maxWidth is finite (not Dp.Infinity).
+                // Image height is derived from width/aspect so the scan line offset stays in bounds.
+                BoxWithConstraints(Modifier.fillMaxWidth()) {
+                    val imgHeight = maxWidth / frameAspect
+                    Box(Modifier.fillMaxWidth().height(imgHeight)) {
+                        if (bmp != null) {
+                            Image(
+                                bitmap = bmp.asImageBitmap(),
+                                contentDescription = "Captured document",
+                                contentScale = ContentScale.Crop,
+                                modifier = Modifier.fillMaxSize(),
+                            )
+                        } else {
+                            Box(Modifier.fillMaxSize().background(Color(0xFFEEF0F4)))
+                        }
+                        if (outcome == null) {
+                            Box(Modifier.matchParentSize().background(Color(0x47000000)))
+                            val scanT = rememberInfiniteTransition(label = "scan")
+                            val frac by scanT.animateFloat(
+                                initialValue = 0f, targetValue = 1f,
+                                animationSpec = infiniteRepeatable(tween(900), RepeatMode.Reverse), label = "scanf",
+                            )
+                            Box(
+                                Modifier.fillMaxWidth().height(3.dp)
+                                    .offset(y = (imgHeight - 3.dp) * frac).background(Proto.GoldenFizz),
+                            )
+                            Box(Modifier.matchParentSize(), contentAlignment = Alignment.Center) {
+                                Box(Modifier.background(Color(0xCC171717)).padding(horizontal = 12.dp, vertical = 6.dp)) {
+                                    MonoLabel("SCANNING · VERIFYING", Color.White, size = 11)
+                                }
                             }
                         }
                     }
