@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-- iOS 15.0+, Xcode 15+
+- iOS 15.0+, Xcode 16+
 - Swift 5.9+
 - Your **API Key** and **Integration ID** from the VerityPro dashboard (Settings → Integration)
 
@@ -24,124 +24,165 @@
 
 <key>NSMicrophoneUsageDescription</key>
 <string>Required for liveness verification.</string>
+
+<key>NSLocationWhenInUseUsageDescription</key>
+<string>Location is collected for fraud-risk assessment during verification.</string>
 ```
 
 ---
 
-## 2. KYC Verification
+## 2. KYC Verification (v2 — SwiftUI entry point)
 
-KYC verification handles document capture (passport, ID card, driver's licence), selfie, and liveness in a full-screen modal.
+The v2 API is a SwiftUI `View` driven by a state machine. Host it from any SwiftUI context using a `fullScreenCover` or navigation push.
 
-### Start a verification
+### Basic usage
 
 ```swift
+import SwiftUI
 import VerityPro
-import UIKit
 
-class CheckoutViewController: UIViewController {
+struct ContentView: View {
+    @State private var showVerification = false
 
-    func startKyc() {
-        let options = VerityOption(
-            apiKey:        "your-api-key",
-            integrationId: "your-integration-uuid",
-            firstName:     "Jane",
-            lastName:      "Smith",
-            vendorData:    "internal-reference-123",  // optional, echoed back in result
-            isO2Code:      "AU",                       // ISO-3166-1 alpha-2 country code
-            dateOfBirth:   "1990-01-15",               // yyyy-MM-dd
-            mode:          .biometric                  // see Verification modes below
-        )
-
-        let sdk = VerityProSDK(options: options, themeMode: .light)
-
-        sdk.startVerification(from: self) { result in
-            if result.success {
-                let sessionId = result.sessionId
-                // KYC passed — proceed
-            } else {
-                let error = result.error ?? "Verification failed"
-                // Show error to user
+    var body: some View {
+        Button("Start Verification") { showVerification = true }
+            .fullScreenCover(isPresented: $showVerification) {
+                VerityVerificationView(
+                    options: VerityOption(
+                        apiKey:        "your-api-key",
+                        integrationId: "your-integration-uuid",
+                        firstName:     "Jane",
+                        lastName:      "Smith",
+                        vendorData:    "internal-ref-123",   // optional, echoed back
+                        isO2Code:      "AU",                  // ISO 3166-1 alpha-2
+                        dateOfBirth:   "1990-01-15"           // yyyy-MM-dd
+                    ),
+                    themeMode: .system
+                ) { state, sessionId in
+                    showVerification = false
+                    switch state {
+                    case .approved:
+                        print("KYC passed — session: \(sessionId ?? "")")
+                    case .pendingManualReview:
+                        print("Under manual review — session: \(sessionId ?? "")")
+                    case .rejected:
+                        print("KYC rejected")
+                    case .cancelled, .failed:
+                        print("User cancelled or flow failed")
+                    default:
+                        break
+                    }
+                }
             }
-        }
     }
 }
 ```
 
-### Verification modes
+### Terminal states (`VerityFlowState`)
+
+`onResult` fires exactly once when the flow reaches a terminal state.
+
+| State | Meaning |
+|---|---|
+| `.approved` | Document + liveness passed — proceed |
+| `.pendingManualReview` | Queued for manual review — poll backend |
+| `.rejected` | Hard decline |
+| `.cancelled` | User dismissed the flow |
+| `.failed` | Unrecoverable error (session creation failed, integrity block, etc.) |
+
+The `sessionId` parameter is the backend KYC session token. It is non-nil on `.approved`, `.pendingManualReview`, `.rejected`, and `.failed`.
+
+### `VerityOption` parameters
+
+| Parameter | Type | Required | Description |
+|---|---|---|---|
+| `apiKey` | `String` | ✓ | Integration API key from the dashboard |
+| `integrationId` | `String` | ✓ | Integration UUID from the dashboard |
+| `firstName` | `String` | ✓ | Applicant first name |
+| `lastName` | `String` | ✓ | Applicant last name |
+| `isO2Code` | `String` | ✓ | Country ISO 3166-1 alpha-2 (e.g. `"AU"`) |
+| `dateOfBirth` | `String` | ✓ | `yyyy-MM-dd` format |
+| `vendorData` | `String?` | — | Opaque reference echoed in result |
+| `mode` | `VerityMode` | — | See Verification modes below (default `.biometric`) |
+| `preCreatedSessionId` | `String?` | — | Skip session creation when session was pre-created server-side |
+
+### Verification modes (`VerityMode`)
 
 | Mode | Description |
 |---|---|
-| `.biometric` | Document (front + back if required) + selfie + liveness |
-| `.document` | Document only, no liveness |
-| `.livenessOnly` | Liveness only, no document capture |
-| `.address` | Address document verification |
-| `.edd` | AUSTRAC Enhanced Due Diligence document submission |
-| `.combined` | Multi-step sequential flow (biometric + address + EDD) |
-| `.serverDriven` | Server creates the session; SDK renders it |
+| `.biometric` | Document (front + back) + selfie + liveness |
+| `.document` | Document capture only, no selfie |
+| `.livenessOnly` | Selfie + liveness only (returning users) |
+| `.address` | Address document upload |
+| `.edd` | Enhanced Due Diligence document upload |
+| `.combined` | Sequential: biometric → address → EDD |
+| `.serverDriven` | Server controls step order via session response |
 
-### Result fields (`LivenessResult`)
+### Brand customisation (`VpBrandConfig`)
 
-| Field | Type | Description |
-|---|---|---|
-| `success` | `Bool` | `true` when KYC passed |
-| `sessionId` | `String?` | Backend session token |
-| `sessionToken` | `String?` | AWS liveness session token (if applicable) |
-| `confidence` | `Float?` | Liveness confidence score (0–1) |
-| `error` | `String?` | Human-readable error when `success = false` |
-| `eddCaseId` | `String?` | Present when EDD upload succeeded |
+Override the primary brand colour and logo for white-label deployments:
+
+```swift
+VerityVerificationView(
+    options: options,
+    themeMode: .system
+) { state, sessionId in ... }
+```
+
+Pass `brandConfig` to `VerityOption` (or update `VerityOption` with a `brandConfig` field if wiring is complete):
+
+```swift
+let brandConfig = VpBrandConfig(
+    primaryColor: "#FF5500",   // hex string; nil = SDK default
+    logoUrl: nil               // optional remote logo URL
+)
+```
+
+### Theme modes
+
+| Value | Behaviour |
+|---|---|
+| `.light` | Forces light mode |
+| `.dark` | Forces dark mode |
+| `.system` | Follows device setting (default) |
 
 ---
 
 ## 3. Device Fingerprinting
 
-Device fingerprinting is **separate from KYC**. Call it at transaction time (send money, login from new device, payout change) and include the token in your transaction payload.
+Device fingerprinting is **separate from KYC**. Call it at transaction time (send money, new-device login, payout change) and include the token in your transaction payload.
 
-### Basic usage (standalone `VerityDevice` API)
+### Basic usage
 
 ```swift
 import VerityPro
 
 func onUserTapsSend() async {
-    // Collect device signals and mint a vpds_* token (~1–3s)
-    let deviceToken = await VerityDevice.collect(
+    let deviceToken = await VpDeviceSessionService.collectAndSubmit(
         apiKey:        "your-api-key",
+        baseUrl:       "https://api.skylinefare.com",
         integrationId: "your-integration-uuid"
-        // baseUrl defaults to https://api.skylinefare.com
     )
 
     await submitTransaction(
         amount:      500.00,
         currency:    "AUD",
         recipient:   recipientId,
-        deviceToken: deviceToken   // nil = token unavailable, still submit
+        deviceToken: deviceToken   // nil = collection failed, still submit
     )
 }
 ```
 
-### Direct `VpDeviceSessionService` (advanced)
-
-If you need more control (e.g. running on a background task alongside other work):
-
-```swift
-import VerityPro
-
-let token = await VpDeviceSessionService.collectAndSubmit(
-    apiKey:        "your-api-key",
-    baseUrl:       "https://api.skylinefare.com",
-    integrationId: "your-integration-uuid"
-)
-```
-
 ### What signals are collected
 
-The SDK collects device model (via `utsname()`), OS, screen, battery (`UIDevice`), disk / RAM via `ProcessInfo`, VPN detection via `CFNetworkCopySystemProxySettings`, jailbreak detection (5 independent methods: URL schemes, 7 suspicious file paths, sandbox write test, fork-proxy test, dylib scan), and a stable visitor ID stored in `UserDefaults` under `_vp_vid`. All signals are sent to VerityPro.
+Device model, OS, screen, battery, disk/RAM (`ProcessInfo`), VPN detection, jailbreak detection (5 independent methods — URL schemes, suspicious file paths, sandbox write, fork-proxy, dylib scan), and a stable visitor ID (`_vp_vid` in `UserDefaults`). All signals are sent to VerityPro — you never see them.
 
 ### Rules
 
 - **Never block the transaction** if `deviceToken` is nil.
 - **Call fresh each time** — tokens are short-lived and single-use.
-- **Never call this during KYC** — it is only for transaction / session flows.
-- **Never log or store the token**.
+- **Do not call during KYC** — only for transaction / session flows.
+- **Do not log or store the token**.
 
 ---
 
@@ -149,13 +190,12 @@ The SDK collects device model (via `utsname()`), OS, screen, battery (`UIDevice`
 
 ```swift
 func onUserTapsSend() async {
-    // 1. Collect device token (best-effort)
-    let deviceToken = await VerityDevice.collect(
+    let deviceToken = await VpDeviceSessionService.collectAndSubmit(
         apiKey:        "your-api-key",
+        baseUrl:       "https://api.skylinefare.com",
         integrationId: "your-integration-uuid"
     )
 
-    // 2. Submit to your backend
     let response = try await yourApiClient.submitTransaction(
         amount:             amount,
         currency:           currency,
@@ -163,8 +203,6 @@ func onUserTapsSend() async {
         deviceSessionToken: deviceToken
     )
 
-    // 3. Your backend forwarded deviceSessionToken to VerityPro
-    //    and received PASS / REVIEW / DECLINE
     switch response.decision {
     case "PASS":    showSuccessScreen()
     case "REVIEW":  showReviewPendingScreen()
@@ -178,28 +216,24 @@ func onUserTapsSend() async {
 
 ## 5. Error handling
 
-`VpDeviceSessionService.collectAndSubmit()` returns `nil` on any error — it never throws. `VerityProSDK.startVerification` delivers errors via the `LivenessResult.success = false` + `LivenessResult.error` path.
+`VpDeviceSessionService.collectAndSubmit()` returns `nil` on any error — it never throws.
 
-Common `error` values:
+`VerityVerificationView` delivers errors via `onResult` with state `.failed` (unrecoverable) or `.cancelled` (user dismissed). Common root causes:
 
-| Error message | Cause |
+| `VerityFlowState` | Cause |
 |---|---|
-| `"User cancelled"` | User dismissed the flow |
-| `"Verification cannot proceed on a compromised device..."` | Jailbreak detected |
-| `"missing_options"` | `VerityOption` was nil when passed to the activity |
+| `.failed` | Session creation failed (bad API key, network error) or device integrity block |
+| `.cancelled` | User tapped Back / dismissed the flow |
+| `.rejected` | Document or liveness failed decisioning |
 
 ---
 
 ## 6. Liveness check (AWS Rekognition)
 
-The liveness stage uses AWS Amplify + Rekognition. No Amplify configuration is required in your app — the SDK handles it internally using the credentials obtained from VerityPro's backend during the KYC session.
+The liveness stage uses AWS Amplify + Rekognition. No Amplify configuration is required in your app — the SDK obtains credentials from VerityPro's backend during the KYC session and passes them directly to `FaceLivenessDetectorView`.
 
 ---
 
-## 7. Theme modes
+## 7. ProGuard / R8
 
-```swift
-VerityProSDK(options: options, themeMode: .light)   // forces light
-VerityProSDK(options: options, themeMode: .dark)    // forces dark
-VerityProSDK(options: options, themeMode: .system)  // follows system setting
-```
+Not applicable for iOS. The XCFramework ships with `BUILD_LIBRARY_FOR_DISTRIBUTION = YES` — no additional symbol preservation is needed.
