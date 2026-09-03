@@ -10,6 +10,10 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -247,6 +251,7 @@ fun ProtoVerificationScreen(
         stage = if (next < moduleQueue.size) stageForModule(moduleQueue[next]) else ProtoStage.Submitting
     }
 
+    Box(Modifier.fillMaxSize()) {
     when (stage) {
         ProtoStage.Welcome -> ProtoWelcomeScreen(
             modules = protoIntroModules(options),
@@ -557,6 +562,32 @@ fun ProtoVerificationScreen(
                     onExit()
                 },
             )
+        }
+    }
+
+        // Persistent exit — cancels the whole verification and returns to the host app. Every proto
+        // screen otherwise only navigates within the flow (the welcome screen has no back/close at
+        // all), so without this the user has no way out. Wired to onExit (finishes the SDK activity
+        // and returns a cancelled result). Hidden on AllComplete, which has its own Done button —
+        // exiting there would report a completed verification as cancelled.
+        if (stage != ProtoStage.AllComplete) {
+            Box(
+                Modifier
+                    .align(Alignment.TopEnd)
+                    .statusBarsPadding()
+                    .padding(top = 8.dp, end = 16.dp)
+                    .size(34.dp)
+                    .clip(CircleShape)
+                    .background(Color.White)
+                    .border(2.dp, Proto.Ink, CircleShape)
+                    .protoClick(onExit),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    "✕", color = Proto.Ink, fontFamily = ProtoDisplay,
+                    fontSize = 15.sp, fontWeight = FontWeight.Black,
+                )
+            }
         }
     }
 }
