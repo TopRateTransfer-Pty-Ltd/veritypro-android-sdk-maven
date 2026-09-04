@@ -16,8 +16,8 @@ enum class VerityOutcome {
 }
 
 /**
- * Machine-readable error classification — mirrors Web SDK VerityErrorCode (21 values).
- * UNKNOWN is the safe fallback for codes added in a future backend version.
+ * Machine-readable error classification — mirrors Web SDK VerityErrorCode.
+ * 21 named error codes + UNKNOWN as a safe fallback for codes added in a future backend version.
  */
 enum class VerityErrorCode {
     CONFIG_INVALID,
