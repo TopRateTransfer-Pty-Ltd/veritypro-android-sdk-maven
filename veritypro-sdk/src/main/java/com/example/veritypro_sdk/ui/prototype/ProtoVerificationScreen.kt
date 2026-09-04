@@ -10,6 +10,10 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -31,6 +35,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -47,12 +52,15 @@ import com.amplifyframework.core.Amplify
 import com.example.veritypro_sdk.services.CountryDocumentItem
 import com.example.veritypro_sdk.services.Resource
 import com.example.veritypro_sdk.ui.verification.VerityProViewModel
+import com.example.veritypro_sdk.utils.VerityMode
 import com.example.veritypro_sdk.utils.VerityOption
+import kotlinx.coroutines.launch
 
-private enum class ProtoStage { Welcome, Connecting, ChooseId, CameraAccess, BeforeShoot, Capture, DocPreview, PairChecking, AddressEntry, SelfieIntro, Liveness, AddressUpload, EddUpload, Submitting, AllComplete }
+private enum class ProtoStage { Welcome, Connecting, ChooseId, CameraAccess, BeforeShoot, Capture, DocPreview, PairChecking, AddressEntry, SelfieIntro, Liveness, AddressUpload, EddUpload, Submitting, AllComplete, Error }
 
 // Ordered active modules for this product (document → biometric → address → edd).
-private fun protoModuleOrder(options: VerityOption): List<String> {
+// internal (not private) so the co-located [ClientFlowDriver] can reuse it as its start() computation.
+internal fun protoModuleOrder(options: VerityOption): List<String> {
     val w = protoWants(options)
     return buildList {
         if (w.document) add("DOCUMENT")
@@ -165,6 +173,15 @@ fun ProtoVerificationScreen(
     /// Called with true=approved/submitted, false=cancelled/failed when the flow reaches a terminal
     /// state and the user taps the done button. Fires before [onExit].
     onResult: (Boolean) -> Unit = {},
+    /// SERVER-DRIVEN only: reports the backend v2 VerificationSession id once the session is created.
+    /// The host persists it after a DOCUMENT-bearing run so a later returning-user step (EDD-only or
+    /// BIOMETRIC-only step-up) can pass it as previousEngineSessionId → the backend runs that step
+    /// standalone instead of prepending identity. Never fires in client mode.
+    onServerSessionEstablished: (String) -> Unit = {},
+    /// Flow-control seam. Null (default) resolves to the CLIENT driver for every non-server mode and
+    /// the SERVER driver for [VerityMode.SERVER_DRIVEN], so existing callers get identical behaviour.
+    /// Injectable for tests / explicit server-driven hosting.
+    flowDriver: FlowDriver? = null,
 ) {
     val vm: VerityProViewModel = viewModel()
     val kyc by vm.kycState.collectAsState()
@@ -179,6 +196,12 @@ fun ProtoVerificationScreen(
     var livenessApproved by remember { mutableStateOf(false) }
     // Overall terminal outcome shown on the completion screen (submission accepted end-to-end).
     var flowOk by remember { mutableStateOf(false) }
+    // SERVER-DRIVEN only: whether the document multipart already posted at the DOCUMENT module (so the
+    // final Submitting stage does not re-post it). Unused in client mode.
+    var docUploaded by remember { mutableStateOf(false) }
+    // SERVER-DRIVEN only: the per-step completion payload captured at an ADDRESS/EDD submit, read when
+    // that module's success observer fires advanceModule(). Unused in client mode (stays null).
+    var pendingStepData by remember { mutableStateOf<Map<String, Any?>?>(null) }
     var stage by remember { mutableStateOf(ProtoStage.Welcome) }
     var chosen by remember { mutableStateOf<CountryDocumentItem?>(null) }
     var capturedPath by remember { mutableStateOf<String?>(null) }
@@ -197,6 +220,21 @@ fun ProtoVerificationScreen(
     var retakeAttempts by remember { mutableStateOf(0) }
     val maxAutoRetakes = 3
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+
+    // Select the flow driver: explicit injection wins; otherwise SERVER_DRIVEN → ServerFlowDriver,
+    // every other mode → ClientFlowDriver (identical to the pre-refactor client behaviour).
+    val serverDriven = options.verityMode == VerityMode.SERVER_DRIVEN
+    val driver = remember(flowDriver) {
+        flowDriver ?: if (serverDriven) ServerFlowDriver(options, vm.repository())
+        else ClientFlowDriver(options, vm)
+    }
+    // Server-driven errors from the driver (start/completeModule throw) surface on the error screen.
+    var driverError by remember { mutableStateOf<String?>(null) }
+
+    // The engine session id downstream modules key against: the driver's id (server-driven) falls
+    // back to the createKyc session id (client) so both modes thread a single engine session.
+    fun engineSessionId(): String = driver.engineSessionId() ?: vm.getSessionId()
 
     // Ensure Amplify is configured for the liveness detector (idempotent). The real SDK Activity
     // configures it, but the prototype may be hosted by a plain Activity that doesn't.
@@ -222,14 +260,17 @@ fun ProtoVerificationScreen(
     // so requesting them here would wrongly 403 the whole flow if either isn't enabled. Send only the
     // KYC-session modules so a combined flow starts even when ADDRESS/EDD entitlements differ.
     LaunchedEffect(stage) {
-        if (stage == ProtoStage.Connecting) {
+        // CLIENT-driven only: server-driven mode creates its session via the driver in onGetStarted
+        // (and must NOT mint a separate createKyc engine session).
+        if (stage == ProtoStage.Connecting && !serverDriven) {
             val kycModules = protoModuleOrder(options).filter { it == "DOCUMENT" || it == "BIOMETRIC" }
             vm.createKyc(options.copy(requiredModules = kycModules.ifEmpty { listOf("DOCUMENT") }))
         }
     }
-    // Advance to Choose-ID once the session is live and the region documents have loaded.
+    // Advance to Choose-ID once the session is live and the region documents have loaded. Client-only:
+    // in server mode onGetStarted already advanced to the first module off driver.start().
     LaunchedEffect(kyc, docsState) {
-        if (stage == ProtoStage.Connecting && kyc is Resource.Success<*>) {
+        if (!serverDriven && stage == ProtoStage.Connecting && kyc is Resource.Success<*>) {
             val first = moduleQueue.firstOrNull() ?: "DOCUMENT"
             // The document module needs the region documents list; biometric-first does not.
             if (first == "DOCUMENT" && docsState !is Resource.Success<*>) return@LaunchedEffect
@@ -240,33 +281,102 @@ fun ProtoVerificationScreen(
         }
     }
 
-    // Move to the next active module, or submit once every module is done.
-    fun advanceModule() {
-        val next = moduleIndex + 1
-        moduleIndex = next
-        stage = if (next < moduleQueue.size) stageForModule(moduleQueue[next]) else ProtoStage.Submitting
+    // Move to the next active module, or submit once every module is done. Delegates to the driver:
+    // the CLIENT driver walks the local queue (identical to the old moduleIndex+1); the SERVER driver
+    // calls /steps/{STEP}/complete and returns the backend's nextAction. A driver error surfaces on
+    // the error screen (matching the web Orchestrator's throw-on-error contract).
+    fun advanceModule(stepData: Map<String, Any?>? = null) {
+        val completed = moduleQueue.getOrNull(moduleIndex) ?: return
+        scope.launch {
+            try {
+                // stepData is the server step-complete payload (ADDRESS: AddressSessionId; EDD: the
+                // security-assessment fields). null for DOCUMENT / BIOMETRIC and every client-mode call.
+                val next = driver.completeModule(completed, stepData)
+                if (next == null) {
+                    stage = ProtoStage.Submitting
+                } else {
+                    // Keep moduleIndex aligned with the rendered module so step counters and the
+                    // current-module lookup stay correct across both drivers.
+                    val at = moduleQueue.indexOf(next)
+                    moduleIndex = if (at >= 0) at else moduleIndex + 1
+                    stage = stageForModule(next)
+                }
+            } catch (e: Exception) {
+                driverError = e.message ?: "Something went wrong."
+                stage = ProtoStage.Error
+            }
+        }
     }
 
+    Box(Modifier.fillMaxSize()) {
     when (stage) {
         ProtoStage.Welcome -> ProtoWelcomeScreen(
             modules = protoIntroModules(options),
             onGetStarted = {
-                val queue = protoModuleOrder(options)
-                moduleQueue = queue
-                moduleIndex = 0
-                // Only DOCUMENT / BIOMETRIC need the KYC session (Connecting → createKyc). ADDRESS and
-                // EDD have their own creation calls (createAddressVerification / createEddCase), so an
-                // address- or EDD-first product goes straight to its module — its own call surfaces
-                // any entitlement error at the right step, not a spurious KYC error.
-                val first = queue.first()
-                stage = if (first == "DOCUMENT" || first == "BIOMETRIC") ProtoStage.Connecting
-                        else stageForModule(first)
+                if (serverDriven) {
+                    // SERVER-DRIVEN: the backend session owns the flow. Seed the queue from the
+                    // driver (create/fetch the v2 session → requestedSteps minus completedSteps),
+                    // then start at the first pending module. The document list is loaded WITHOUT
+                    // minting a KYC session (createKyc), so DOCUMENT keys update-kyc-verification
+                    // against the session's kycEngineSessionId (driver.engineSessionId()).
+                    stage = ProtoStage.Connecting
+                    scope.launch {
+                        try {
+                            val queue = driver.start()
+                            if (queue.isEmpty()) {
+                                driverError = "No verification steps were configured for this session."
+                                stage = ProtoStage.Error
+                                return@launch
+                            }
+                            moduleQueue = queue
+                            moduleIndex = 0
+                            val first = queue.first()
+                            // DOCUMENT needs the region documents; load them independently.
+                            if (queue.contains("DOCUMENT")) {
+                                vm.fetchCountryDocuments(options.apiKey, options.integrationId, options.isO2Code)
+                            }
+                            val sid = engineSessionId()
+                            if (queue.contains("DOCUMENT") && sid.isNotBlank()) onSessionEstablished(sid)
+                            // NB: onServerSessionEstablished is intentionally NOT fired here — the session
+                            // has no completed document yet. It fires only AFTER the DOCUMENT step's
+                            // evidence uploads successfully (below), so a persisted prior session is a
+                            // valid returning-user base with a real portrait (not an in-progress/failed one).
+                            stage = stageForModule(first)
+                        } catch (e: Exception) {
+                            driverError = e.message ?: "Couldn't start verification."
+                            stage = ProtoStage.Error
+                        }
+                    }
+                } else {
+                    // CLIENT-driven: identical to the pre-refactor path. ClientFlowDriver.start() is a
+                    // pure computation of protoModuleOrder(options) — no network, no suspension point in
+                    // practice — so the queue is available synchronously and the flow still goes
+                    // Welcome → Connecting (createKyc) → first module exactly as before. Running it in a
+                    // coroutine also seeds the driver's internal index for completeModule().
+                    val queue = protoModuleOrder(options)
+                    moduleQueue = queue
+                    moduleIndex = 0
+                    scope.launch { driver.start() }
+                    // Only DOCUMENT / BIOMETRIC need the KYC session (Connecting → createKyc). ADDRESS and
+                    // EDD have their own creation calls (createAddressVerification / createEddCase), so an
+                    // address- or EDD-first product goes straight to its module — its own call surfaces
+                    // any entitlement error at the right step, not a spurious KYC error.
+                    val first = queue.first()
+                    stage = if (first == "DOCUMENT" || first == "BIOMETRIC") ProtoStage.Connecting
+                            else stageForModule(first)
+                }
             },
             onPrivacy = {},
         )
 
         ProtoStage.Connecting -> when (val s = kyc) {
-            is Resource.Error -> ProtoErrorScreen(
+            // Server-driven mode does not use createKyc, so never surface a stale kyc error here —
+            // the driver's own start()/completeModule errors route to ProtoStage.Error instead.
+            is Resource.Error -> if (serverDriven) ProtoProcessingScreen(
+                kicker = "SECURE SESSION",
+                title = "Setting up your\nverification",
+                message = "Connecting to VerityPro…",
+            ) else ProtoErrorScreen(
                 kicker = "COULDN'T START",
                 title = "Something went wrong",
                 message = s.message,
@@ -372,10 +482,42 @@ fun ProtoVerificationScreen(
                     protoDocTypeInt(chosen?.documentType),
                 )
                 com.example.veritypro_sdk.services.MLV2Repository().pairCheck(
-                    captureSessionId = vm.getSessionId().ifBlank { "proto-${protoDocTypeInt(chosen?.documentType)}" },
+                    captureSessionId = engineSessionId().ifBlank { "proto-${protoDocTypeInt(chosen?.documentType)}" },
                     docTypeExpected = docTypeStr,
                 )
-                advanceModule()
+                // SERVER-DRIVEN: upload the document NOW, keyed by the session's kycEngineSessionId
+                // (mirroring the web Orchestrator: update-kyc-verification → completeStep(DOCUMENT)).
+                // The final Submitting stage must NOT re-post it. In CLIENT mode the document is posted
+                // once, later, at Submitting — unchanged.
+                if (serverDriven) {
+                    docUploaded = protoSubmitVerification(
+                        context = context,
+                        vm = vm,
+                        engineSessionId = engineSessionId(),
+                        docTypeInt = protoDocTypeInt(chosen?.documentType),
+                        frontPath = frontPath,
+                        backPath = backPath,
+                        videoPath = frontVideo ?: backVideo,
+                        livenessId = "", // liveness completes as its own server step, not here
+                        livenessConfidence = null,
+                        captureAttempts = retakeAttempts + 1,
+                    )
+                    if (docUploaded) {
+                        // Document evidence accepted → this session now has a portrait. Report its v2 id
+                        // so the host can persist it as a valid prior session for a later returning-user
+                        // EDD/BIOMETRIC step. Only now (not at start) — the document is actually complete.
+                        driver.serverSessionId()?.takeIf { it.isNotBlank() }?.let { onServerSessionEstablished(it) }
+                        advanceModule()
+                    } else {
+                        // Do NOT post /steps/DOCUMENT/complete when the evidence upload failed — that would
+                        // advance the backend flow with no accepted document. Surface the error instead.
+                        driverError = "We couldn't upload your document. Please try again."
+                        stage = ProtoStage.Error
+                    }
+                } else {
+                    // CLIENT mode is unchanged: the document posts later at Submitting; advance the queue.
+                    advanceModule()
+                }
             }
             ProtoProcessingScreen(
                 kicker = "DOCUMENT",
@@ -387,7 +529,9 @@ fun ProtoVerificationScreen(
 
         ProtoStage.SelfieIntro -> ProtoSelfieIntroScreen(
             onReady = {
-                vm.startBeginLiveness(vm.getSessionId(), forceRetry = true)
+                // begin-liveness needs the ENGINE session id. Client mode: createKyc session id.
+                // Server mode: the v2 session's kycEngineSessionId (via engineSessionId()).
+                vm.startBeginLiveness(engineSessionId(), forceRetry = true)
                 stage = ProtoStage.Liveness
             },
             onBack = { stage = ProtoStage.Welcome },
@@ -408,7 +552,16 @@ fun ProtoVerificationScreen(
                             livenessId = bs.data.id ?: aws
                             vm.verifyLivenessResult(livenessId ?: aws) { ok ->
                                 livenessApproved = ok
-                                advanceModule()
+                                if (serverDriven && !ok) {
+                                    // SERVER: never post /steps/BIOMETRIC/complete for a failed liveness
+                                    // result — that would advance the flow with an unverified selfie.
+                                    driverError = "The liveness check didn't pass. Please try again."
+                                    stage = ProtoStage.Error
+                                } else {
+                                    // CLIENT mode unchanged: advance regardless; the final submit carries
+                                    // livenessApproved and the backend decisions on it.
+                                    advanceModule()
+                                }
                             }
                         },
                         onError = { stage = ProtoStage.SelfieIntro },
@@ -457,7 +610,7 @@ fun ProtoVerificationScreen(
             LaunchedEffect(addressState) {
                 when (addressState) {
                     is Resource.Loading -> phase = "submitting"
-                    is Resource.Success<*> -> if (phase == "submitting") advanceModule()
+                    is Resource.Success<*> -> if (phase == "submitting") advanceModule(pendingStepData)
                     else -> {}
                 }
             }
@@ -472,6 +625,12 @@ fun ProtoVerificationScreen(
                 // Surface the actual backend reason (e.g. size/format/processing) instead of hiding it.
                 errorMsg = (addressState as? Resource.Error)?.message?.ifBlank { "Couldn't submit. Please try again." },
                 onSubmit = { type, file ->
+                    // SERVER-DRIVEN: the step-complete links the address verification session created at
+                    // the AddressEntry stage (createAddressVerification → vm.getAddressSessionId()) —
+                    // mirrors the web { AddressSessionId }. Client mode leaves this null.
+                    if (serverDriven) {
+                        pendingStepData = mapOf("AddressSessionId" to vm.getAddressSessionId())
+                    }
                     vm.submitAddressDocument(vm.getAddressSessionId(), file, type, "", "", options.apiKey, context)
                 },
                 onBack = onExit,
@@ -485,7 +644,7 @@ fun ProtoVerificationScreen(
             LaunchedEffect(eddState) {
                 when (eddState) {
                     is Resource.Loading -> phase = "submitting"
-                    is Resource.Success<*> -> if (phase == "submitting") advanceModule()
+                    is Resource.Success<*> -> if (phase == "submitting") advanceModule(pendingStepData)
                     else -> {}
                 }
             }
@@ -502,17 +661,44 @@ fun ProtoVerificationScreen(
                     // Subject = the KYC session when present; otherwise the integration id (EDD-only
                     // products have no KYC session).
                     val subject = vm.getSessionId().ifBlank { options.integrationId }
-                    vm.submitEddDocument(subject, "${options.firstName} ${options.lastName}", file, type, options.apiKey, context)
+                    if (serverDriven) {
+                        // SERVER-DRIVEN: build the step-complete payload the web sends for EDD
+                        // ({ SecurityAssessmentJson, PlatformUsed, IpLocation, DocumentType }) from the
+                        // SAME collectors the EDD upload uses, then submit. Built here (not recomputed in
+                        // the observer) so the value the server-complete sends is captured at submit time.
+                        scope.launch {
+                            val ipLocation = runCatching {
+                                com.example.veritypro_sdk.utils.LocationHelper(context).getCurrentLocation()
+                                    ?.let { "${it.latitude},${it.longitude}" }
+                            }.getOrNull().orEmpty().ifBlank { "" }
+                            val securityJson = runCatching {
+                                com.example.veritypro_sdk.utils.SecurityAssessmentCollector.collectJson(context)
+                            }.getOrNull().orEmpty()
+                            pendingStepData = mapOf(
+                                "SecurityAssessmentJson" to securityJson,
+                                "PlatformUsed" to "android",
+                                "IpLocation" to ipLocation,
+                                "DocumentType" to type.toString(),
+                            )
+                            vm.submitEddDocument(subject, "${options.firstName} ${options.lastName}", file, type, options.apiKey, context)
+                        }
+                    } else {
+                        vm.submitEddDocument(subject, "${options.firstName} ${options.lastName}", file, type, options.apiKey, context)
+                    }
                 },
                 onBack = onExit,
             )
         }
 
         ProtoStage.Submitting -> {
-            // Only document/KYC flows post the full multipart verification here. Address, EDD and
-            // biometric-only flows already submitted inside their own module — so those just finish.
+            // CLIENT mode: document/KYC flows post the full multipart verification HERE (deferred to
+            // the end so it carries the liveness id). Address, EDD and biometric-only flows already
+            // submitted inside their own module — those just finish.
+            // SERVER mode: the document was already posted at the DOCUMENT module (keyed by the engine
+            // session id) and every step advanced via completeV2Step, so there is nothing left to post
+            // — this stage only finalizes.
             val hasDocument = protoWants(options).document
-            if (hasDocument) {
+            if (hasDocument && !serverDriven) {
                 // Real backend submission: document + device + location + IP + security assessment +
                 // compressed document clip, keyed to session + liveness IDs. Await the result directly
                 // so the screen always advances (no kycState race).
@@ -531,16 +717,21 @@ fun ProtoVerificationScreen(
                     stage = ProtoStage.AllComplete
                 }
             } else {
-                // No document module — the prior module(s) already posted their evidence.
+                // Nothing left to post: prior module(s) already submitted their evidence (client
+                // address/EDD/biometric-only, or the whole server-driven flow).
                 LaunchedEffect(Unit) {
-                    flowOk = if (protoWants(options).biometric) livenessApproved else true
+                    flowOk = when {
+                        hasDocument -> docUploaded // server-driven: document already posted at its module
+                        protoWants(options).biometric -> livenessApproved
+                        else -> true
+                    }
                     stage = ProtoStage.AllComplete
                 }
             }
             ProtoProcessingScreen(
                 kicker = "SUBMITTING",
-                title = if (hasDocument) "Submitting your\nverification" else "Finishing\nup",
-                message = if (hasDocument) "Sending your document, device and location securely…"
+                title = if (hasDocument && !serverDriven) "Submitting your\nverification" else "Finishing\nup",
+                message = if (hasDocument && !serverDriven) "Sending your document, device and location securely…"
                 else "Wrapping up your verification…",
                 module = Proto.Brand,
             )
@@ -557,6 +748,41 @@ fun ProtoVerificationScreen(
                     onExit()
                 },
             )
+        }
+
+        ProtoStage.Error -> ProtoErrorScreen(
+            kicker = "COULDN'T CONTINUE",
+            title = "Something went wrong",
+            // Driver errors carry a user-safe message (repository already sanitises server errors).
+            message = driverError ?: "Please try again.",
+            onRetry = { driverError = null; stage = ProtoStage.Welcome },
+            onExit = onExit,
+        )
+    }
+
+        // Persistent exit — cancels the whole verification and returns to the host app. Every proto
+        // screen otherwise only navigates within the flow (the welcome screen has no back/close at
+        // all), so without this the user has no way out. Wired to onExit (finishes the SDK activity
+        // and returns a cancelled result). Hidden on AllComplete, which has its own Done button —
+        // exiting there would report a completed verification as cancelled.
+        if (stage != ProtoStage.AllComplete) {
+            Box(
+                Modifier
+                    .align(Alignment.TopEnd)
+                    .statusBarsPadding()
+                    .padding(top = 8.dp, end = 16.dp)
+                    .size(34.dp)
+                    .clip(CircleShape)
+                    .background(Color.White)
+                    .border(2.dp, Proto.Ink, CircleShape)
+                    .protoClick(onExit),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    "✕", color = Proto.Ink, fontFamily = ProtoDisplay,
+                    fontSize = 15.sp, fontWeight = FontWeight.Black,
+                )
+            }
         }
     }
 }

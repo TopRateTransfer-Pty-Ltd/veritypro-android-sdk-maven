@@ -415,8 +415,23 @@ class VerityProViewModel(
                         is Resource.Error -> {
                             lastError = resp.message
                             Log.e("BeginLiveness", "Attempt ${attempt + 1} failed: ${resp.message}")
-                            // Session refresh is now handled server-side (backend creates
-                            // new session + migrates documents). SDK just retries with backoff.
+                            // Do NOT retry on an HTTP 4xx — these are client/policy errors, not
+                            // transient. Critically, a 429 (rate limit: liveness-per-session, 5 per
+                            // 30 min) will NOT clear within the backoff window, and every retry burns
+                            // another permit, deepening the lockout. Surface it and stop immediately.
+                            val msg = resp.message ?: ""
+                            if (Regex("HTTP 4\\d\\d").containsMatchIn(msg)) {
+                                val friendly = if (msg.contains("429")) {
+                                    "Too many liveness attempts. Please wait a few minutes and try again."
+                                } else {
+                                    msg
+                                }
+                                _beginLivenessState.value = Resource.Error(friendly)
+                                _awsSessionId.value = null
+                                _livenessCredentials.value = null
+                                return@launch
+                            }
+                            // Transient (network / 5xx) — retry with backoff below.
                         }
                         else -> {
                             lastError = "Unknown beginLiveness response"
@@ -666,5 +681,12 @@ class VerityProViewModel(
      * Get current session ID
      */
     fun getSessionId(): String = currentSessionId
+
+    /**
+     * The shared [ApiRepository]. Exposed so the server-driven [FlowDriver] can reuse the same
+     * repository instance (and its v2 session wrappers) as the rest of the ViewModel, rather than
+     * constructing a second one.
+     */
+    fun repository(): ApiRepository = repository
 }
 
