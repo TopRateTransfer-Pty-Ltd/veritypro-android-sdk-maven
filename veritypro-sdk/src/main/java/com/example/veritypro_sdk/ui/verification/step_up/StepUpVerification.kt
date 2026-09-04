@@ -79,12 +79,13 @@ fun StepUpVerification(
 
     var bootState by remember { mutableStateOf<StepUpBootState>(StepUpBootState.Loading) }
 
-    // Boot: obtain AWS liveness credentials via the existing begin-liveness endpoint.
+    // Boot: obtain AWS liveness credentials via the step-up begin-liveness endpoint.
     LaunchedEffect(challengeId) {
         bootState = try {
-            val livenessResp = RetrofitInstance.api.beginLiveness(
-                sessionId = challengeId, // Use challengeId as the KYC session reference.
+            val livenessResp = RetrofitInstance.api.beginStepUpLiveness(
+                challengeId = challengeId,
                 apiKey = options.apiKey,
+                stepUpToken = token,
             )
             val creds = livenessResp.data
             if (creds == null) {
