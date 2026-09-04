@@ -46,11 +46,12 @@ interface VerityApiService {
         @Header("x-api-key") apiKey: String
     ): BeginLivenessResponse
 
-    /** Step-up begin-liveness — authenticated by the integrator API key (no JWT). */
+    /** Step-up begin-liveness — authenticated by API key OR capability token bearer. Retrofit omits null headers. */
     @POST("/kycintegration/api/v1/step-up/challenges/{challengeId}/begin-liveness")
     suspend fun beginStepUpLiveness(
         @Path("challengeId") challengeId: String,
-        @Header("x-api-key") apiKey: String,
+        @Header("x-api-key") apiKey: String? = null,
+        @Header("Authorization") authorization: String? = null,
     ): BeginLivenessResponse
 
     @GET("/kycintegration/country/get-country-document")
@@ -176,13 +177,15 @@ interface VerityApiService {
     @POST("/kycintegration/api/v1/step-up/challenges/{challengeId}/complete")
     suspend fun completeStepUpChallenge(
         @Path("challengeId") challengeId: String,
-        @Header("x-api-key") apiKey: String,
+        @Header("x-api-key") apiKey: String? = null,
+        @Header("Authorization") authorization: String? = null,
         @Body request: StepUpCompleteRequest,
     ): StepUpCompleteResponse
 
     @GET("/kycintegration/api/v1/step-up/challenges/{challengeId}")
     suspend fun getStepUpChallengeStatus(
         @Path("challengeId") challengeId: String,
-        @Header("x-api-key") apiKey: String,
+        @Header("x-api-key") apiKey: String? = null,
+        @Header("Authorization") authorization: String? = null,
     ): StepUpStatusResponse
 }
