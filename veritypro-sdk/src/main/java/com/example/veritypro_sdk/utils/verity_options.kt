@@ -122,6 +122,13 @@ data class VerityOption(
     /** Subject ID that was enrolled during KYC (required for STEP_UP_AUTH mode). */
     val stepUpSubjectId: String? = null,
     /**
+     * Optional short-lived, challenge-scoped capability token (issued via POST /native-token from the
+     * integrator's server). When set, step-up API calls send Authorization: Bearer instead of x-api-key,
+     * so the permanent API key never leaves the integrator's server. Recommended for production apps;
+     * falls back to apiKey when null.
+     */
+    val stepUpCapabilityToken: String? = null,
+    /**
      * Google Places API key for address autocomplete on the address-entry screen. When null/blank,
      * the screen falls back to a plain manual street-address field (no Places dependency at runtime).
      */

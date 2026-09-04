@@ -53,10 +53,10 @@ TMP_JAR="$(mktemp -t vp_classes.XXXXXX.jar)"
 trap 'rm -f "$TMP_JAR"' EXIT
 if unzip -p "$AAR_SRC" classes.jar > "$TMP_JAR" 2>/dev/null; then
   CLASS_COUNT="$(unzip -l "$TMP_JAR" 2>/dev/null \
-    | grep -ciE 'document_overlay|document_capture|camera_utils' || true)"
-  echo "  camera classes present: $CLASS_COUNT"
+    | grep -ciE 'ProtoVerificationScreen|MLCaptureDecision|VerityProSdkActivity' || true)"
+  echo "  proto/capture classes present: $CLASS_COUNT"
   if [[ "$CLASS_COUNT" -eq 0 ]]; then
-    echo "✗ AAR has no camera classes — aborting (build may be broken)."
+    echo "✗ AAR has no proto/capture classes — aborting (build may be broken)."
     exit 1
   fi
 else
