@@ -9,6 +9,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.activity.compose.setContent
 import com.example.veritypro_sdk.ui.prototype.ProtoVerificationScreen
 import com.example.veritypro_sdk.utils.LivenessResult
+import com.example.veritypro_sdk.utils.VerityResult
 import com.example.veritypro_sdk.utils.VerityOption
 import com.amplifyframework.core.Amplify
 import com.amplifyframework.auth.cognito.AWSCognitoAuthPlugin
@@ -50,7 +51,10 @@ class VerityProSdkActivity : AppCompatActivity() {
 
         if (options == null) {
             Log.e("VerityProSdkActivity", "Missing VerityOption - finishing")
-            setResult(RESULT_CANCELED, Intent().putExtra("verification_result", LivenessResult(success = false, error = "missing_options")))
+            val errLegacy = LivenessResult(success = false, error = "missing_options")
+            setResult(RESULT_CANCELED, Intent()
+                .putExtra("verification_result", errLegacy)
+                .putExtra("verity_result", VerityResult.from(errLegacy)))
             finish()
             return
         }
@@ -75,19 +79,24 @@ class VerityProSdkActivity : AppCompatActivity() {
                 ProtoVerificationScreen(
                     options = options!!,
                     onResult = { approved ->
-                        val result = if (approved) {
+                        val legacy = if (approved) {
                             LivenessResult(success = true)
                         } else {
                             LivenessResult(success = false, error = "Verification unsuccessful")
                         }
-                        setResult(RESULT_OK, Intent().putExtra("verification_result", result))
+                        setResult(RESULT_OK, Intent()
+                            .putExtra("verification_result", legacy)          // deprecated key — backward compat
+                            .putExtra("verity_result", VerityResult.from(legacy)))  // new typed key
                     },
                     onExit = { finish() },
                 )
             }
         } catch (t: Throwable) {
             Log.e("VerityProSdkActivity", "UI init failed", t)
-            setResult(RESULT_CANCELED, Intent().putExtra("verification_result", LivenessResult(success = false, error = "ui_init_failed: ${t.message}")))
+            val errLegacy = LivenessResult(success = false, error = "ui_init_failed: ${t.message}")
+            setResult(RESULT_CANCELED, Intent()
+                .putExtra("verification_result", errLegacy)
+                .putExtra("verity_result", VerityResult.from(errLegacy)))
             finish()
         }
     }

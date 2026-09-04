@@ -135,6 +135,11 @@ data class VerityOption(
     val placesApiKey: String? = null,
     /** Optional brand customisation (primary colour + logo). Null leaves all SDK defaults unchanged. */
     val brandConfig: VpBrandConfig? = null,
+    /**
+     * BCP-47 locale tag (e.g. "en-AU", "fr-FR"). Passed to the hosted-verify flow and API headers
+     * so the UI and decision messages are localised. Defaults to the device locale when null.
+     */
+    val locale: String? = null,
 ) : Parcelable {
     /** Resolved [VerityMode] from the serialized [mode] string. */
     val verityMode: VerityMode
