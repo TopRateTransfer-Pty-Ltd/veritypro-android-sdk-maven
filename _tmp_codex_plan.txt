@@ -1,0 +1,463 @@
+=============================================================
+CLAUDEX INVESTIGATION — LOCAL CODE + LIVE SERVER + EXPERT PANEL
+=============================================================
+
+TASK:
+Add brand customization support to the VerityPro native SDKs (iOS Swift, Android Kotlin, Flutter).
+Allow integrators to pass a logo URL and a primary brand color via VerityOption (or a nested BrandConfig object).
+The SDK applies these to all verification screens: headers/navigation bars, primary action buttons, progress indicators, and the logo slot on the intro/welcome screen.
+The web hosted verify page already supports primaryColor + logoUrl via integration settings (HostedGeneral.tsx / HostedConfirmation.tsx). The native SDKs must expose equivalent configurability.
+The brand customization must be optional — all fields null-safe with graceful defaults (existing VerityPro brand colors apply when not set).
+
+SERVER: root@143.198.128.79
+SSH KEY: use local key agent (should already be configured)
+
+=============================================================
+SOLUTION QUALITY MANDATE — ENFORCED BY ALL EXPERTS
+=============================================================
+
+Every solution proposed in this spec MUST satisfy ALL of the following.
+Any expert who identifies a violation must issue a BLOCKED verdict.
+
+PROHIBITED — these are automatic disqualifiers:
+
+1. BAND-AID / SYMPTOM PATCH
+   Required: trace the full execution path, fix the root cause.
+
+2. FALLBACK HIDING A BROKEN PRIMARY
+   Required: the primary path must work.
+
+3. GRACEFUL SILENT FAILURE
+   Required: every error must be logged at ERROR level with full context.
+
+4. MOCK / STUB IN PRODUCTION PATH
+   Required: real integration, real data, real logic.
+
+5. UNREALISTIC SOLUTION
+   Required: every dependency, library, and pattern must be verified to exist in this stack.
+
+REQUIRED:
+
+6. INDUSTRY-STANDARD PATTERNS — Veriff, Sumsub, Onfido, Jumio SDK theming patterns.
+
+7. ADVANCED IMPLEMENTATION — proper abstractions, correct propagation through composition tree.
+
+8. ROOT CAUSE FIXED — implement the full feature, not a partial stub.
+
+9. PRODUCTION-GRADE ERROR HANDLING — logo URL loading: handle failures gracefully.
+
+=============================================================
+PHASE A — LOCAL CODE AUDIT
+=============================================================
+
+Read every file listed below in full. Do not skim.
+
+LOCAL FILES TO READ:
+
+iOS SDK:
+- verity-pro-ios/VerityPro/models/VerityOption.swift
+- verity-pro-ios/VerityPro/theme/colors.swift
+- verity-pro-ios/VerityPro/theme/VerityTheme.swift
+- verity-pro-ios/VerityPro/theme/theme_mode.swift
+- verity-pro-ios/VerityPro/utils/verity_pro.swift
+- verity-pro-ios/VerityPro/redesign/ directory listing, then read VerityCaptureScreenBridge.swift and VerityVerificationView.swift if they exist
+- List all files in verity-pro-ios/VerityPro/views/ and read any intro/welcome/loading view
+
+Android SDK:
+- veritypro-android-sdk-maven/veritypro-sdk/src/main/java/com/example/veritypro_sdk/utils/verity_options.kt
+- veritypro-android-sdk-maven/veritypro-sdk/src/main/java/com/example/veritypro_sdk/ui/theme/Theme.kt
+- veritypro-android-sdk-maven/veritypro-sdk/src/main/java/com/example/veritypro_sdk/ui/theme/VerityTokens.kt
+- veritypro-android-sdk-maven/veritypro-sdk/src/main/java/com/example/veritypro_sdk/ui/redesign/components/VerityButton.kt
+- veritypro-android-sdk-maven/veritypro-sdk/src/main/java/com/example/veritypro_sdk/ui/redesign/components/VerityStepProgress.kt
+- veritypro-android-sdk-maven/veritypro-sdk/src/main/java/com/example/veritypro_sdk/ui/redesign/components/VerityScaffold.kt
+- veritypro-android-sdk-maven/veritypro-sdk/src/main/java/com/example/veritypro_sdk/utils/verification_flow_router.kt
+- veritypro-android-sdk-maven/veritypro-sdk/src/main/java/com/example/veritypro_sdk/ui/prototype/ProtoWelcomeScreen.kt
+- veritypro-android-sdk-maven/veritypro-sdk/src/main/java/com/example/veritypro_sdk/ui/prototype/ProtoVerificationScreen.kt
+- veritypro-android-sdk-maven/veritypro-sdk/src/main/java/com/example/veritypro_sdk/ui/prototype/ProtoDesign.kt
+- Check build.gradle.kts for the veritypro-sdk module to verify if Coil is already a dependency
+
+Flutter SDK + plugins:
+- verity_flutter_sdk/lib/models.dart
+- verity_flutter_sdk/lib/verity.dart
+- verity_flutter_sdk/lib/verity_method_channel.dart
+- verity_flutter_sdk/android/src/main/kotlin/com/example/verity/VerityPlugin.kt
+- verity_flutter_sdk/ios/Classes/VerityPlugin.swift
+
+Web reference (feature parity target):
+- VerityPro-Customer.Web/src/app/(dashboard)/integration/components/hostedVerification/HostedGeneral.tsx
+  (look for primaryColor and logoUrl usage)
+
+For each file record:
+- Current implementation state (complete / partial / stub / absent)
+- Where brand/color/theme is currently hardcoded
+- Exact prop/parameter signature that callers use
+- Where VerityOption fields are extracted and forwarded to native screens
+- Any existing logo slots (welcome/intro screens)
+
+=============================================================
+PHASE B — LIVE SERVER AUDIT (via SSH)
+=============================================================
+
+This is a client-side SDK feature. Run the following for reference:
+
+--- B1: Container inventory ---
+ssh root@143.198.128.79 "docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' | head -20"
+
+--- B2: KYC Integration health ---
+ssh root@143.198.128.79 "curl -s http://localhost:3044/health | python3 -m json.tool 2>/dev/null || echo 'HEALTH FAILED'"
+
+--- B3: Customer.Web health ---
+ssh root@143.198.128.79 "curl -s -o /dev/null -w '%{http_code}' http://localhost:3033/"
+
+--- B4: Unhealthy containers ---
+ssh root@143.198.128.79 "docker ps --format '{{.Names}}\t{{.Status}}' | grep -i 'restarting\|unhealthy\|exited' || echo 'No unhealthy containers'"
+
+=============================================================
+PHASE C — DELTA ANALYSIS
+=============================================================
+
+Produce a delta table:
+
+| Dimension | iOS current | Android current | Flutter current | Web target | Gap |
+|---|---|---|---|---|---|
+| Primary color | hardcoded ThemeColors | brandDefault=0xFF0400E5 | inherits native | primaryColor param | Not exposable via VerityOption |
+| Logo display | check intro view | check ProtoWelcomeScreen | inherits native | logoUrl param | Not exposable |
+| Brand config object | Absent | Absent | Absent | Exists | Must create |
+| Flutter bridge | VerityOption.toMap() | VerityOption Parcelable | both | N/A | Must extend |
+
+Key questions:
+1. Which iOS views hardcode primary/button color vs read from ThemeColors?
+2. Does Android VerityProTheme() accept any override params today?
+3. Does the Flutter VerityPlugin extract all VerityOption fields?
+4. Is there a logo/image slot on any existing welcome screen?
+5. Is Coil already a dependency in the Android SDK?
+
+=============================================================
+PHASE D — EXPERT PANEL REVIEW
+=============================================================
+
+You are a six-person expert panel at a tier-1 KYC platform (Veriff / Sumsub / Onfido standard).
+
+-------------------------------------------------------------
+[1] TECH BOSS — CTO / Head of Engineering
+-------------------------------------------------------------
+Architecture decision: Should brand customization be a nested BrandConfig object or flat fields on VerityOption?
+Answer: BrandConfig object is industry standard (Veriff uses SDKConfiguration, Sumsub uses SNSColorScheme).
+Flat fields scale poorly as we add more brand tokens.
+
+Review:
+- iOS: ThemeColors.primary() hardcodes Color.blue — this is the gap.
+  Fix: VerityBrandConfig as SwiftUI EnvironmentKey, propagated from SDK init → root view.
+- Android: VerityProTheme() currently ignores brand override.
+  Fix: Add brandConfig param, derive overridden VerityColors from primary hex.
+- Flutter: VpBrandConfig serialized in toMap() → plugin → native.
+- Performance: logo URL loaded once with platform image cache.
+- Solution quality audit: flag any stub, hardcoded result, or TODO placeholder.
+
+VERDICT: APPROVED / APPROVED-WITH-CONDITIONS / BLOCKED
+CONDITIONS:
+
+-------------------------------------------------------------
+[2] PRODUCT OWNER
+-------------------------------------------------------------
+User story: As an integrator, I want to pass my company logo and primary color when launching
+the SDK so that end users see a consistent branded experience during verification.
+
+Acceptance criteria:
+1. Given brandConfig.primaryColor="#FF5500", When any button renders, Then background=#FF5500
+2. Given brandConfig.logoUrl="https://...", When welcome screen appears, Then logo is displayed
+3. Given brandConfig=nil, When SDK launches, Then existing VerityPro colors apply (no regression)
+4. Given logoUrl 404 fails to load, Then placeholder appears (no crash, no error screen)
+5. Given only primaryColor set, When buttons render, Then color applies; logo slot shows placeholder
+
+OUT OF SCOPE: font customization, per-screen overrides, dark-mode brand variants.
+
+USER STORIES:
+ACCEPTANCE CRITERIA:
+OUT OF SCOPE:
+
+-------------------------------------------------------------
+[3] BUSINESS ANALYST
+-------------------------------------------------------------
+Functional requirements:
+1. VpBrandConfig: primaryColor: String? (hex "#RRGGBB"), logoUrl: String? (HTTPS only)
+2. VerityOption gains optional brandConfig: VpBrandConfig? field (all 3 SDKs)
+3. iOS: brand color applied to buttons, progress, liveness ring via SwiftUI environment
+4. Android: brand color applied via VerityProTheme overrideBrand() + CompositionLocal
+5. Flutter: VpBrandConfig serialized to map, extracted in both native plugins
+6. Brand tokens affected: button background, progress fill, step indicators, liveness ring active
+7. Logo slot on iOS intro and Android welcome screen; graceful load failure
+8. Non-breaking API change: all new fields optional with nil defaults
+
+Data flow: integrator passes VpBrandConfig via VerityOption → SDK init → theme provider → all screens
+
+Edge cases:
+- Invalid hex string (e.g. "#ZZZ") → log warning at WARN level, use default brand color
+- HTTP (non-HTTPS) logo URL → log warning, do not display logo
+- Empty string primaryColor → treat as nil, use default
+- Logo load failure → show VerityPro placeholder icon, log at WARN
+
+FUNCTIONAL REQUIREMENTS:
+DATA FLOW:
+EDGE CASES:
+
+-------------------------------------------------------------
+[4] TECH LEAD
+-------------------------------------------------------------
+Exact files, exact changes, exact sequence.
+
+STEP 1 — Create VpBrandConfig:
+
+iOS (CREATE: verity-pro-ios/VerityPro/models/VpBrandConfig.swift):
+```swift
+import SwiftUI
+public struct VpBrandConfig: Sendable {
+    public let primaryColor: String?
+    public let logoUrl: String?
+    public init(primaryColor: String? = nil, logoUrl: String? = nil) {
+        self.primaryColor = primaryColor
+        self.logoUrl = logoUrl
+    }
+    func resolvedPrimaryColor() -> Color? {
+        guard let hex = primaryColor, !hex.isEmpty else { return nil }
+        // parse "#RRGGBB" or "#RGB" → Color
+        var str = hex.trimmingCharacters(in: .whitespaces)
+        if str.hasPrefix("#") { str = String(str.dropFirst()) }
+        guard str.count == 6 || str.count == 3 else {
+            print("[VpBrandConfig] WARNING: invalid primaryColor '\(hex)', using default")
+            return nil
+        }
+        let full = str.count == 3 ? str.flatMap { [$0, $0] }.map(String.init).joined() : str
+        guard let value = UInt64(full, radix: 16) else {
+            print("[VpBrandConfig] WARNING: could not parse hex '\(hex)', using default")
+            return nil
+        }
+        return Color(red: Double((value >> 16) & 0xFF)/255,
+                     green: Double((value >> 8) & 0xFF)/255,
+                     blue: Double(value & 0xFF)/255)
+    }
+    func resolvedLogoUrl() -> URL? {
+        guard let raw = logoUrl, !raw.isEmpty else { return nil }
+        guard let url = URL(string: raw), url.scheme == "https" else {
+            print("[VpBrandConfig] WARNING: logoUrl must be HTTPS, logo will not be shown")
+            return nil
+        }
+        return url
+    }
+}
+```
+
+Android (ADD to verity_options.kt):
+```kotlin
+@Parcelize
+data class VpBrandConfig(
+    val primaryColor: String? = null,
+    val logoUrl: String? = null
+) : Parcelable {
+    fun resolvedPrimaryColor(): androidx.compose.ui.graphics.Color? {
+        val hex = primaryColor?.trim()?.trimStart('#') ?: return null
+        return try {
+            val value = java.lang.Long.parseLong(
+                if (hex.length == 3) hex.flatMap { listOf(it, it) }.joinToString("") else hex,
+                16
+            )
+            androidx.compose.ui.graphics.Color(
+                red = ((value shr 16) and 0xFF).toFloat() / 255f,
+                green = ((value shr 8) and 0xFF).toFloat() / 255f,
+                blue = (value and 0xFF).toFloat() / 255f
+            )
+        } catch (e: NumberFormatException) {
+            android.util.Log.w("VpBrandConfig", "Invalid primaryColor '$primaryColor', using default")
+            null
+        }
+    }
+    fun resolvedLogoUrl(): android.net.Uri? {
+        val raw = logoUrl ?: return null
+        val uri = android.net.Uri.parse(raw)
+        if (uri.scheme != "https") {
+            android.util.Log.w("VpBrandConfig", "logoUrl must be HTTPS, logo will not be shown")
+            return null
+        }
+        return uri
+    }
+}
+```
+
+Flutter (ADD to lib/models.dart):
+```dart
+class VpBrandConfig {
+    final String? primaryColor;
+    final String? logoUrl;
+    const VpBrandConfig({this.primaryColor, this.logoUrl});
+    Map<String, dynamic> toMap() => {
+        if (primaryColor != null) 'brandPrimaryColor': primaryColor,
+        if (logoUrl != null) 'brandLogoUrl': logoUrl,
+    };
+}
+```
+
+STEP 2 — Add brandConfig to VerityOption (all 3 SDKs):
+- iOS: add `public let brandConfig: VpBrandConfig?` + `brandConfig: VpBrandConfig? = nil` init param
+- Android: add `val brandConfig: VpBrandConfig? = null` to @Parcelize data class
+- Flutter: add `final VpBrandConfig? brandConfig;` + update constructor + toMap()
+
+STEP 3 — iOS theme environment:
+CREATE verity-pro-ios/VerityPro/theme/VerityBrandEnvironment.swift:
+- `class VerityBrandState: ObservableObject` with `primaryColor: Color?` and `logoUrl: URL?`
+- `private struct VerityBrandKey: EnvironmentKey { static let defaultValue = VerityBrandState() }`
+- `extension EnvironmentValues { var verityBrand: VerityBrandState { get/set } }`
+
+MODIFY verity-pro-ios/VerityPro/utils/verity_pro.swift:
+- Build `VerityBrandState` from `options.brandConfig` in `startVerification()`
+- Inject via `.environmentObject(brandState)` on the root SwiftUI view
+
+MODIFY iOS button/primary color usage sites (read views to find them):
+- Replace hardcoded `.blue` / `ThemeColors.buttonBackground()` with `@EnvironmentObject var brand: VerityBrandState` then `brand.primaryColor ?? VerityFlowColors.ctaBlue`
+
+MODIFY iOS intro/welcome view:
+- Add AsyncImage(url: brand.logoUrl) with ProgressView() placeholder
+- On image failure: log warning at WARN, show default icon
+
+STEP 4 — Android theme override:
+MODIFY VerityTokens.kt — add extension function:
+```kotlin
+fun VerityColors.overrideBrand(primary: androidx.compose.ui.graphics.Color?): VerityColors {
+    if (primary == null) return this
+    return copy(
+        brandDefault = primary,
+        brandHover = primary.copy(alpha = 0.85f),
+        brandPressed = primary.copy(alpha = 0.70f),
+        brandSubtle = primary.copy(alpha = 0.12f),
+        progressFill = primary,
+        progressStepCurrent = primary,
+        progressStepDone = primary,
+        livenessRingActive = primary,
+        captureStateCapturing = primary,
+        focusRing = primary,
+        textLink = primary,
+        statusProcessingFg = primary
+    )
+}
+```
+
+MODIFY Theme.kt — VerityProTheme signature:
+```kotlin
+fun VerityProTheme(
+    mode: ThemeMode = ThemeMode.SYSTEM,
+    dynamicColor: Boolean = true,
+    brandConfig: VpBrandConfig? = null,  // ADD
+    content: @Composable () -> Unit
+) {
+    ...
+    val verityColors = (if (useDarkTheme) VerityDarkColors else VerityLightColors)
+        .overrideBrand(brandConfig?.resolvedPrimaryColor())  // ADD
+    ...
+    // ADD LocalVerityBrandConfig
+    CompositionLocalProvider(
+        LocalCustomColors provides customColors,
+        LocalVerityColors provides verityColors,
+        LocalVerityBrandConfig provides brandConfig   // ADD
+    ) { content() }
+}
+```
+ADD: `val LocalVerityBrandConfig = staticCompositionLocalOf<VpBrandConfig?> { null }`
+
+MODIFY verification_flow_router.kt:
+- Extract `option.brandConfig` and pass to VerityProTheme(brandConfig=...)
+
+MODIFY ProtoWelcomeScreen.kt:
+- Read `val brand = LocalVerityBrandConfig.current`
+- If `brand?.resolvedLogoUrl() != null`: show AsyncImage using coil-compose
+  (verify Coil is in gradle; if not, add `implementation("io.coil-kt:coil-compose:2.6.0")`)
+- placeholder: CircularProgressIndicator; error: default VerityPro logo icon
+
+STEP 5 — Flutter plugin updates:
+MODIFY verity_flutter_sdk/android/src/main/kotlin/com/example/verity/VerityPlugin.kt:
+- In startVerification case: extract `call.argument<String>("brandPrimaryColor")` and `call.argument<String>("brandLogoUrl")`
+- Build `val brandCfg = if (brandPrimaryColor != null || brandLogoUrl != null) VpBrandConfig(primaryColor=brandPrimaryColor, logoUrl=brandLogoUrl) else null`
+- Add `brandConfig = brandCfg` to VerityOption constructor call
+
+MODIFY verity_flutter_sdk/ios/Classes/VerityPlugin.swift:
+- In startVerification case: extract `params["brandPrimaryColor"] as? String` and `params["brandLogoUrl"] as? String`
+- Build `VpBrandConfig(primaryColor: brandPrimaryColor, logoUrl: brandLogoUrl)` (nil if both nil)
+- Pass `brandConfig:` to VerityOption initializer
+
+API CONTRACTS:
+- VpBrandConfig map keys (Flutter→native): "brandPrimaryColor", "brandLogoUrl"
+- primaryColor format: "#RRGGBB" (with or without #, 6 or 3 digit hex)
+- logoUrl: HTTPS URL string
+
+ERROR HANDLING SPEC:
+- Invalid hex: log WARN, return nil (use default color)
+- Non-HTTPS logo: log WARN, return nil (no logo shown)
+- AsyncImage/Coil load failure: log WARN, show placeholder icon, no crash, no error screen
+
+TEST REQUIREMENTS:
+- Unit: VpBrandConfig.resolvedPrimaryColor() for valid hex, invalid hex, nil, 3-digit
+- Unit: resolvedLogoUrl() for HTTPS, HTTP, nil, malformed
+- UI smoke: launch with primaryColor="#FF5500" → button is orange
+- UI smoke: launch with brandConfig=nil → button uses default brand color (regression)
+- Flutter integration: VerityOption with VpBrandConfig → toMap() contains correct keys
+
+LIVE GAPS TO FIX: None (client-side feature, no server changes required)
+
+-------------------------------------------------------------
+[5] AMLCO — AML Compliance Officer
+-------------------------------------------------------------
+This is a pure UI customization feature.
+
+COMPLIANCE REQUIREMENTS:
+1. Logo URL MUST be HTTPS-only (validated at SDK initialization, HTTP rejected with warning)
+2. Brand customization MUST NOT affect: verification decision logic, document scoring, liveness results, AML screening
+3. Default VerityPro styling MUST apply when brandConfig is nil (no regression in unbranded flows)
+
+RED LINES:
+- Brand color MUST NOT override stateErrorFg/Bg, stateWarningFg/Bg (regulatory meaning preserved)
+- Logo asset MUST NOT be a KYC document, face image, or user PII — integrator provides their company logo only
+- Brand config MUST NOT be logged at DEBUG/INFO with the full URL (only WARN on validation failure)
+
+FAIL-OPEN PATHS: None — theming cannot affect verification decisions.
+
+AUDIT TRAIL SPEC: Not required for brand config (configuration, not a KYC event).
+
+-------------------------------------------------------------
+[6] SCRUM MASTER
+-------------------------------------------------------------
+Scope: iOS + Android + Flutter plugins + Flutter SDK lib — fully client-side, no backend deps.
+SCRUM VERDICT: SCOPED
+
+DEFINITION OF DONE:
+[ ] VpBrandConfig model: iOS Swift, Android Kotlin, Flutter Dart — all created
+[ ] brandConfig field added to VerityOption: iOS, Android, Flutter — all three
+[ ] iOS: VerityBrandEnvironment.swift created with EnvironmentKey
+[ ] iOS: brand state injected at root SwiftUI view in verity_pro.swift
+[ ] iOS: buttons and progress indicators use brand.primaryColor ?? default
+[ ] iOS: logo slot on intro/welcome screen with AsyncImage + error handling
+[ ] Android: overrideBrand() extension in VerityTokens.kt
+[ ] Android: VerityProTheme() accepts brandConfig param, applies overrideBrand()
+[ ] Android: LocalVerityBrandConfig CompositionLocal provided in VerityProTheme
+[ ] Android: verification_flow_router passes brandConfig to VerityProTheme
+[ ] Android: logo slot on ProtoWelcomeScreen with Coil AsyncImage + error placeholder
+[ ] Flutter: VpBrandConfig.toMap() produces "brandPrimaryColor" and "brandLogoUrl" keys
+[ ] Flutter Android plugin: extracts brandPrimaryColor + brandLogoUrl → VpBrandConfig → VerityOption
+[ ] Flutter iOS plugin: extracts brandPrimaryColor + brandLogoUrl → VpBrandConfig → VerityOption
+[ ] Invalid hex → WARN log, default color, no crash
+[ ] HTTP logo URL → WARN log, no logo, no crash
+[ ] Logo load failure → WARN log, placeholder shown, no crash
+[ ] All three SDK builds: zero errors
+[ ] brandConfig=nil: no regression in unbranded flows
+
+QA CHECKLIST:
+- Launch with nil brandConfig → unchanged VerityPro colors
+- Launch with primaryColor="#FF5500" → buttons/progress/ring = orange
+- Launch with valid HTTPS logoUrl → logo on welcome/intro screen
+- Launch with 404 logoUrl → placeholder, no crash
+- Launch with HTTP logoUrl → no logo, WARN logged
+- Launch with invalid hex "#ZZZ" → default color, WARN logged
+- Flutter: VerityOption({ brandConfig: VpBrandConfig(primaryColor: "#FF5500") }) → native button orange
+
+OPEN QUESTIONS: None.
+
+=============================================================
+OUTPUT THE SPEC ONLY AS _tmp_codex_spec.md. DO NOT MODIFY ANY SOURCE FILES.
+=============================================================

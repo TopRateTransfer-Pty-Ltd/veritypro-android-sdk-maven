@@ -681,5 +681,12 @@ class VerityProViewModel(
      * Get current session ID
      */
     fun getSessionId(): String = currentSessionId
+
+    /**
+     * The shared [ApiRepository]. Exposed so the server-driven [FlowDriver] can reuse the same
+     * repository instance (and its v2 session wrappers) as the rest of the ViewModel, rather than
+     * constructing a second one.
+     */
+    fun repository(): ApiRepository = repository
 }
 

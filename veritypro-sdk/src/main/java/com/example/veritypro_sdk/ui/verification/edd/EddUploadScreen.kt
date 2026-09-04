@@ -3,22 +3,16 @@ package com.example.veritypro_sdk.ui.verification.edd
 import ScaleUtil
 import android.util.Log
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Cancel
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -76,7 +70,6 @@ fun EddUploadScreen(
         uploadProgress = 0f
 
         coroutineScope.launch {
-            // Animate progress while uploading
             launch {
                 while (uploadProgress < 0.8f) {
                     delay(100)
@@ -84,7 +77,6 @@ fun EddUploadScreen(
                 }
             }
 
-            // File size validation (10MB max)
             val maxSize = 10 * 1024 * 1024
             if (file.length() > maxSize) {
                 isUploading = false
@@ -92,7 +84,6 @@ fun EddUploadScreen(
                 return@launch
             }
 
-            // Use authToken for EDD auth if provided; fall back to apiKey
             val eddApiKey = opts.authToken?.takeIf { it.isNotBlank() } ?: opts.apiKey
 
             val result = repository.createEddCase(
@@ -126,151 +117,150 @@ fun EddUploadScreen(
                 }
             }
 
-            // Clean up temp file
             file.delete()
         }
     }
 
-    // Start upload on appear
     LaunchedEffect(Unit) {
         performUpload()
     }
 
-    Column(
+    Box(
         modifier = Modifier
             .fillMaxSize()
             .background(MaterialTheme.customColors.background)
-            .padding(
-                horizontal = ScaleUtil.scaleWidth(24.dp),
-                vertical = ScaleUtil.scaleHeight(40.dp)
-            )
-            .verticalScroll(rememberScrollState()),
-        horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(60.dp)))
-
-        Text(
-            text = "VERITYPRO",
-            fontWeight = FontWeight.W700,
-            color = MaterialTheme.colorScheme.onSurface,
-            textAlign = TextAlign.Center,
-            fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(24.dp).toSp() },
-            modifier = Modifier.fillMaxWidth()
-        )
-
-        Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(40.dp)))
-
         if (isUploading && errorMessage == null) {
-            CircularProgressIndicator(
-                modifier = Modifier.size(48.dp),
-                color = Color(0xFF034EBE),
-                strokeWidth = 4.dp
-            )
-
-            Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(16.dp)))
-
-            Text(
-                text = "Uploading document...",
-                fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(18.dp).toSp() },
-                fontWeight = FontWeight.W700,
-                color = MaterialTheme.colorScheme.onSurface
-            )
-
-            Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(8.dp)))
-
-            Text(
-                text = "Please wait while we securely upload your ${docType.displayName}.",
-                fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(14.dp).toSp() },
-                color = MaterialTheme.customColors.description,
-                textAlign = TextAlign.Center,
-                modifier = Modifier.padding(horizontal = ScaleUtil.scaleWidth(20.dp))
-            )
-
-            Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(20.dp)))
-
-            LinearProgressIndicator(
-                progress = { uploadProgress },
+            // iOS-style uploading overlay: label, large headline, subtitle, progress bar
+            Column(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = ScaleUtil.scaleWidth(20.dp)),
-                color = Color(0xFF2B7AEF),
-            )
-
-            Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(8.dp)))
-
-            Text(
-                text = "${(uploadProgress * 100).toInt()}%",
-                fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(14.dp).toSp() },
-                fontWeight = FontWeight.W500,
-                color = MaterialTheme.customColors.subTitle
-            )
-        } else if (errorMessage != null) {
-            Icon(
-                imageVector = Icons.Default.Cancel,
-                contentDescription = "Error",
-                modifier = Modifier.size(72.dp),
-                tint = Color(0xFFF44336)
-            )
-
-            Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(16.dp)))
-
-            Text(
-                text = "Upload failed",
-                fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(22.dp).toSp() },
-                fontWeight = FontWeight.W700,
-                color = MaterialTheme.colorScheme.onSurface
-            )
-
-            Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(8.dp)))
-
-            Text(
-                text = errorMessage ?: "Unknown error",
-                fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(14.dp).toSp() },
-                color = MaterialTheme.customColors.description,
-                textAlign = TextAlign.Center,
-                modifier = Modifier.padding(horizontal = ScaleUtil.scaleWidth(20.dp))
-            )
-
-            Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(20.dp)))
-
-            Button(
-                onClick = { performUpload() },
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = Color(0xFF2B7AEF)
-                ),
-                shape = RoundedCornerShape(ScaleUtil.scaleWidth(4.dp)),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(ScaleUtil.scaleHeight(48.dp))
+                    .fillMaxSize()
+                    .padding(
+                        horizontal = ScaleUtil.scaleWidth(24.dp),
+                        vertical = ScaleUtil.scaleHeight(48.dp)
+                    ),
+                horizontalAlignment = Alignment.Start
             ) {
+                // Module label
                 Text(
-                    text = "Try again",
-                    fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(16.dp).toSp() },
-                    fontWeight = FontWeight.W600,
-                    color = MaterialTheme.customColors.content
+                    text = "ENHANCED DUE DILIGENCE · UPLOADING",
+                    fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(11.dp).toSp() },
+                    fontWeight = FontWeight.W700,
+                    color = Color(0xFF2B7AEF),
+                    letterSpacing = LocalDensity.current.run { ScaleUtil.scaleTextSize(1.5.dp).toSp() }
+                )
+
+                Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(32.dp)))
+
+                // Large headline
+                Text(
+                    text = "Uploading &\nverifying",
+                    fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(40.dp).toSp() },
+                    fontWeight = FontWeight.W700,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    lineHeight = LocalDensity.current.run { ScaleUtil.scaleTextSize(46.dp).toSp() }
+                )
+
+                Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(16.dp)))
+
+                // Subtitle
+                Text(
+                    text = "Sending your document securely…",
+                    fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(14.dp).toSp() },
+                    fontWeight = FontWeight.W400,
+                    color = MaterialTheme.customColors.description
+                )
+
+                Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(24.dp)))
+
+                // Progress bar
+                LinearProgressIndicator(
+                    progress = { uploadProgress },
+                    modifier = Modifier.fillMaxWidth(),
+                    color = Color(0xFF2B7AEF),
+                    trackColor = Color(0xFF2B7AEF).copy(alpha = 0.18f)
                 )
             }
-
-            Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(12.dp)))
-
-            OutlinedButton(
-                onClick = { onComplete(false, errorMessage, null) },
-                shape = RoundedCornerShape(ScaleUtil.scaleWidth(4.dp)),
+        } else if (errorMessage != null) {
+            Column(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .height(ScaleUtil.scaleHeight(44.dp))
+                    .fillMaxSize()
+                    .padding(
+                        horizontal = ScaleUtil.scaleWidth(24.dp),
+                        vertical = ScaleUtil.scaleHeight(48.dp)
+                    ),
+                horizontalAlignment = Alignment.Start
             ) {
                 Text(
-                    text = "Cancel",
-                    fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(16.dp).toSp() },
-                    fontWeight = FontWeight.W600,
-                    color = Color(0xFF2B7AEF)
+                    text = "ENHANCED DUE DILIGENCE · UPLOAD FAILED",
+                    fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(11.dp).toSp() },
+                    fontWeight = FontWeight.W700,
+                    color = Color(0xFFF44336),
+                    letterSpacing = LocalDensity.current.run { ScaleUtil.scaleTextSize(1.5.dp).toSp() }
                 )
+
+                Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(32.dp)))
+
+                Text(
+                    text = "Upload failed",
+                    fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(36.dp).toSp() },
+                    fontWeight = FontWeight.W700,
+                    color = MaterialTheme.colorScheme.onSurface
+                )
+
+                Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(12.dp)))
+
+                Text(
+                    text = errorMessage ?: "Unknown error",
+                    fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(14.dp).toSp() },
+                    color = MaterialTheme.customColors.description,
+                    textAlign = TextAlign.Start
+                )
+
+                Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(32.dp)))
+
+                Button(
+                    onClick = { performUpload() },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2B7AEF)),
+                    shape = RoundedCornerShape(ScaleUtil.scaleWidth(4.dp)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(ScaleUtil.scaleHeight(48.dp))
+                ) {
+                    Text(
+                        text = "Try again",
+                        fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(16.dp).toSp() },
+                        fontWeight = FontWeight.W600,
+                        color = MaterialTheme.customColors.content
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(ScaleUtil.scaleHeight(12.dp)))
+
+                OutlinedButton(
+                    onClick = { onComplete(false, errorMessage, null) },
+                    shape = RoundedCornerShape(ScaleUtil.scaleWidth(4.dp)),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(ScaleUtil.scaleHeight(44.dp))
+                ) {
+                    Text(
+                        text = "Cancel",
+                        fontSize = LocalDensity.current.run { ScaleUtil.scaleTextSize(16.dp).toSp() },
+                        fontWeight = FontWeight.W600,
+                        color = Color(0xFF2B7AEF)
+                    )
+                }
             }
         }
 
-        Spacer(modifier = Modifier.weight(1f))
-
-        EddPoweredByFooter()
+        // Footer pinned to bottom
+        Box(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = ScaleUtil.scaleHeight(24.dp))
+        ) {
+            EddPoweredByFooter()
+        }
     }
 }

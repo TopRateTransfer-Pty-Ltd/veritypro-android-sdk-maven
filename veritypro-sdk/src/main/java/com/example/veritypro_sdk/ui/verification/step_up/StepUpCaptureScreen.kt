@@ -82,7 +82,6 @@ private sealed class StepUpScreenState {
  * it fires [StepUpResult.Expired] without hitting the API.
  *
  * @param challengeId      KYC Integration challenge ID.
- * @param stepUpToken      Short-lived JWT issued with the challenge.
  * @param subjectId        Subject ID for display (not sent to the engine; engine uses JWT).
  * @param livenessCredentials  AWS liveness credentials from [beginLiveness] endpoint.
  * @param apiKey           Integration API key for the completion call.
@@ -93,7 +92,6 @@ private sealed class StepUpScreenState {
 @Composable
 fun StepUpCaptureScreen(
     challengeId: String,
-    stepUpToken: String,
     subjectId: String,
     livenessCredentials: BeginLivenessData,
     apiKey: String,
@@ -144,7 +142,6 @@ fun StepUpCaptureScreen(
                     screenState = StepUpScreenState.Submitting
                     submitChallenge(
                         challengeId = challengeId,
-                        stepUpToken = stepUpToken,
                         livenessSessionId = livenessSessionId,
                         selfieBytes = selfieBytes,
                         apiKey = apiKey,
@@ -364,7 +361,6 @@ private fun SubmittingContent() {
 
 private suspend fun submitChallenge(
     challengeId: String,
-    stepUpToken: String,
     livenessSessionId: String,
     selfieBytes: ByteArray,
     apiKey: String,
@@ -380,7 +376,6 @@ private suspend fun submitChallenge(
             val response = RetrofitInstance.api.completeStepUpChallenge(
                 challengeId = challengeId,
                 apiKey = apiKey,
-                stepUpToken = stepUpToken,
                 request = StepUpCompleteRequest(
                     livenessSessionId = livenessSessionId,
                     selfieImageB64 = selfieB64,

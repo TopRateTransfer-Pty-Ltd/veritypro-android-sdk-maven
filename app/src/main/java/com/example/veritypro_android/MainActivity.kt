@@ -34,7 +34,11 @@ import androidx.compose.runtime.mutableStateOf
 import com.example.veritypro_sdk.ui.prototype.ProtoVerificationScreen
 import com.example.veritypro_sdk.ui.theme.ThemeMode
 import com.example.veritypro_sdk.utils.LivenessResult
+import com.example.veritypro_sdk.utils.VerityMode
 import com.example.veritypro_sdk.utils.VerityOption
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.padding
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -75,11 +79,30 @@ fun VerityProDemoApp() {
     val showRedesign = remember { mutableStateOf(false) }
     // Product picker: which modules to request (drives the dynamic welcome intro + flow).
     val product = remember { mutableStateOf<List<String>?>(null) } // null = default (doc + selfie)
+    // Orchestration source: false = CLIENT-driven (on-device module queue), true = SERVER-driven
+    // (backend /v2/sessions owns the flow via ServerFlowDriver). Lets us exercise BOTH paths from
+    // the native demo without the Flutter layer.
+    val serverMode = remember { mutableStateOf(false) }
+    // vendorData identifies the subject. CLIENT mode keeps a FIXED GUID so a later liveness step-up
+    // can face-match against the same subject's prior document session. SERVER mode uses a FRESH GUID
+    // per test launch: the backend returns an EXISTING active session for a reused vendorData
+    // (ignoring the newly-requested steps), so reusing one GUID made every server test inherit the
+    // first session's steps (Address showed the Document module). A fresh GUID = a clean session that
+    // honours exactly the requested steps. Set at launch time in launchProduct below.
+    val vendorData = remember { mutableStateOf(DEMO_VENDOR_USER) }
     if (showRedesign.value) {
         val mods = product.value ?: emptyList()
         val isBiometricOnly = mods.size == 1 && mods.contains("BIOMETRIC")
-        // For a liveness step-up, supply the persisted session id from a prior document run.
-        val priorSession = if (isBiometricOnly) prefs.getString("last_doc_session", null) else null
+        val isEddOnly = mods.size == 1 && mods.contains("EDD")
+        // The prior session id to send as previousEngineSessionId:
+        //  • CLIENT liveness step-up → the persisted v1 KYC session id (backend face-matches against it).
+        //  • SERVER EDD-only / BIOMETRIC-only → the persisted v2 session id of a prior server run, so the
+        //    backend runs the step STANDALONE (skips the identity prepend in AutoPromoteSteps).
+        val priorSession = when {
+            isBiometricOnly && !serverMode.value -> prefs.getString("last_doc_session", null)
+            serverMode.value && (isBiometricOnly || isEddOnly) -> prefs.getString("srv_prev_session", null)
+            else -> null
+        }
         ProtoVerificationScreen(
             options = VerityOption(
                 apiKey = BuildConfig.API_KEY,
@@ -87,17 +110,27 @@ fun VerityProDemoApp() {
                 signingKey = null,
                 placesApiKey = BuildConfig.PLACES_API_KEY,
                 requiredModules = product.value,
+                // SERVER_DRIVEN routes ProtoVerificationScreen to ServerFlowDriver (backend owns the
+                // step order); any other mode uses ClientFlowDriver (unchanged on-device behaviour).
+                mode = if (serverMode.value) VerityMode.SERVER_DRIVEN.name else VerityMode.BIOMETRIC.name,
                 firstName = "Ade",
                 lastName = "Oba",
                 dateOfBirth = "1990-01-15T00:00:00.000Z",
-                vendorData = DEMO_VENDOR_USER,
+                vendorData = vendorData.value,
                 isO2Code = "AU",
                 streetAddress = null,
                 previousEngineSessionId = priorSession,
             ),
-            onExit = { showRedesign.value = false },
-            // Persist the session id from document-bearing runs so a later liveness step-up can reuse it.
+            onExit = { showRedesign.value = false; serverMode.value = false },
+            // Persist the session id from document-bearing CLIENT runs so a later liveness step-up can reuse it.
             onSessionEstablished = { sid -> prefs.edit().putString("last_doc_session", sid).apply() },
+            // Persist a DOCUMENT-bearing SERVER session's v2 id so a later 🌐 EDD-only / 🌐 Biometric-only
+            // run can pass it as previousEngineSessionId and run standalone (returning-user path).
+            onServerSessionEstablished = { sid ->
+                if (product.value?.any { it.equals("DOCUMENT", true) } == true) {
+                    prefs.edit().putString("srv_prev_session", sid).apply()
+                }
+            },
         )
         return
     }
@@ -127,8 +160,11 @@ fun VerityProDemoApp() {
     )
     val sdk = remember { VerityPro(options, themeMode = ThemeMode.LIGHT) }
     Column(
-        modifier = Modifier.fillMaxSize(),
-        verticalArrangement = Arrangement.Center,
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(vertical = 24.dp),
+        verticalArrangement = Arrangement.Top,
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Text(
@@ -146,22 +182,45 @@ fun VerityProDemoApp() {
                 fontWeight = FontWeight.Bold
             )
         }
-        Box(modifier = Modifier.height(20.dp))
-        Text("Preview new design — pick a product:", fontWeight = FontWeight.Bold, fontSize = 13.sp)
-        Box(modifier = Modifier.height(8.dp))
-        listOf(
+
+        // The same six products run through EITHER orchestration source, so we can compare
+        // client-driven vs server-driven behaviour on-device from one screen.
+        val products = listOf(
             "Document only" to listOf("DOCUMENT"),
             "Document + Selfie" to listOf("DOCUMENT", "BIOMETRIC"),
             "Biometric only (step-up)" to listOf("BIOMETRIC"),
             "Address" to listOf("ADDRESS"),
             "EDD" to listOf("EDD"),
             "Combined (all)" to listOf("DOCUMENT", "BIOMETRIC", "ADDRESS", "EDD"),
-        ).forEach { (label, mods) ->
-            Button(onClick = {
-                val isBiometricOnly = mods.size == 1 && mods.contains("BIOMETRIC")
-                // Liveness-only is a RETURNING-USER step-up: it face-matches the selfie against the
-                // portrait from a prior document session, so the backend requires that prior session.
-                // Guard here instead of firing a request the backend correctly rejects with HTTP 400.
+        )
+
+        // Shared launch logic: guard the returning-user step-up, pick the right vendorData for the
+        // orchestration source, then enter the flow.
+        val launchProduct: (List<String>, Boolean) -> Unit = { mods, useServer ->
+            val isBiometricOnly = mods.size == 1 && mods.contains("BIOMETRIC")
+            if (useServer) {
+                // EDD-only and BIOMETRIC-only are RETURNING-USER steps: the backend runs them standalone
+                // only when a prior session is supplied (else it prepends identity / rejects biometric).
+                // Require a prior 🌐 server run that established identity (persisted as srv_prev_session).
+                val isEddOnly = mods.size == 1 && mods.contains("EDD")
+                val needsPrior = isBiometricOnly || isEddOnly
+                if (needsPrior && prefs.getString("srv_prev_session", null) == null) {
+                    Toast.makeText(
+                        context,
+                        "Run a 🌐 server-driven Document (or Document + Selfie) first — 🌐 EDD and 🌐 Liveness-only are returning-user steps.",
+                        Toast.LENGTH_LONG,
+                    ).show()
+                } else {
+                    // FRESH GUID per server launch → a clean session that honours exactly these steps
+                    // (the backend returns an existing active session for a reused vendorData). The prior
+                    // server session is linked via previousEngineSessionId (set in the render block above).
+                    vendorData.value = java.util.UUID.randomUUID().toString()
+                    product.value = mods; serverMode.value = true; showRedesign.value = true
+                }
+            } else {
+                // CLIENT mode: FIXED GUID so a later liveness step-up face-matches the same subject.
+                // Liveness-only is a RETURNING-USER step-up: it needs the prior document session, so
+                // guard here instead of firing a request the backend correctly rejects with HTTP 400.
                 if (isBiometricOnly && prefs.getString("last_doc_session", null) == null) {
                     Toast.makeText(
                         context,
@@ -169,10 +228,28 @@ fun VerityProDemoApp() {
                         Toast.LENGTH_LONG,
                     ).show()
                 } else {
-                    product.value = mods; showRedesign.value = true
+                    vendorData.value = DEMO_VENDOR_USER
+                    product.value = mods; serverMode.value = false; showRedesign.value = true
                 }
-            }) {
+            }
+        }
+
+        Box(modifier = Modifier.height(20.dp))
+        Text("CLIENT-driven (on-device flow):", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+        Box(modifier = Modifier.height(8.dp))
+        products.forEach { (label, mods) ->
+            Button(onClick = { launchProduct(mods, false) }) {
                 Text(label, fontWeight = FontWeight.Bold)
+            }
+            Box(modifier = Modifier.height(8.dp))
+        }
+
+        Box(modifier = Modifier.height(16.dp))
+        Text("SERVER-driven (/v2/sessions backend flow):", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+        Box(modifier = Modifier.height(8.dp))
+        products.forEach { (label, mods) ->
+            Button(onClick = { launchProduct(mods, true) }) {
+                Text("🌐 $label", fontWeight = FontWeight.Bold)
             }
             Box(modifier = Modifier.height(8.dp))
         }

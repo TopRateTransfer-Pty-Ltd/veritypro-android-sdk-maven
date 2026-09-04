@@ -34,7 +34,8 @@ private sealed class StepUpBootState {
  *
  * Launches liveness credentials request then hands off to [StepUpCaptureScreen].
  * The integrator passes [options] with [VerityMode.STEP_UP_AUTH] and the required
- * [VerityOption.stepUpChallengeId], [VerityOption.stepUpSubjectId], and [VerityOption.stepUpToken].
+ * [VerityOption.stepUpChallengeId] and [VerityOption.stepUpSubjectId]. Authentication is the
+ * integrator API key (no JWT) — subject/integration/template are derived server-side from the challenge.
  *
  * Usage from a host Activity/Screen:
  * ```kotlin
@@ -44,7 +45,6 @@ private sealed class StepUpBootState {
  *         mode = VerityMode.STEP_UP_AUTH.name,
  *         stepUpChallengeId = challenge.challengeId,
  *         stepUpSubjectId = challenge.subjectId,
- *         stepUpToken = challenge.token,
  *         // other fields can be empty strings for step-up mode
  *         integrationId = "", firstName = "", lastName = "",
  *         dateOfBirth = "", vendorData = "", isO2Code = "",
@@ -62,15 +62,14 @@ fun StepUpVerification(
 ) {
     val challengeId = options.stepUpChallengeId
     val subjectId = options.stepUpSubjectId
-    val token = options.stepUpToken
 
-    // Guard: required fields must be present.
-    if (challengeId.isNullOrBlank() || subjectId.isNullOrBlank() || token.isNullOrBlank()) {
+    // Guard: required fields must be present. Authentication is the integrator API key (no JWT).
+    if (challengeId.isNullOrBlank() || subjectId.isNullOrBlank()) {
         LaunchedEffect(Unit) {
             onResult(
                 StepUpResult.Error(
                     challengeId = challengeId,
-                    message = "step-up mode requires stepUpChallengeId, stepUpSubjectId, and stepUpToken",
+                    message = "step-up mode requires stepUpChallengeId and stepUpSubjectId",
                 )
             )
         }
@@ -85,7 +84,6 @@ fun StepUpVerification(
             val livenessResp = RetrofitInstance.api.beginStepUpLiveness(
                 challengeId = challengeId,
                 apiKey = options.apiKey,
-                stepUpToken = token,
             )
             val creds = livenessResp.data
             if (creds == null) {
@@ -122,7 +120,6 @@ fun StepUpVerification(
         is StepUpBootState.Ready -> {
             StepUpCaptureScreen(
                 challengeId = challengeId,
-                stepUpToken = token,
                 subjectId = subjectId,
                 livenessCredentials = b.credentials,
                 apiKey = options.apiKey,

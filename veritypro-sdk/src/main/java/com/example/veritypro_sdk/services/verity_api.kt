@@ -46,12 +46,11 @@ interface VerityApiService {
         @Header("x-api-key") apiKey: String
     ): BeginLivenessResponse
 
-    /** Step-up specific begin-liveness — correct path + X-StepUp-Token header. */
+    /** Step-up begin-liveness — authenticated by the integrator API key (no JWT). */
     @POST("/kycintegration/api/v1/step-up/challenges/{challengeId}/begin-liveness")
     suspend fun beginStepUpLiveness(
         @Path("challengeId") challengeId: String,
         @Header("x-api-key") apiKey: String,
-        @Header("X-StepUp-Token") stepUpToken: String,
     ): BeginLivenessResponse
 
     @GET("/kycintegration/country/get-country-document")
@@ -178,7 +177,6 @@ interface VerityApiService {
     suspend fun completeStepUpChallenge(
         @Path("challengeId") challengeId: String,
         @Header("x-api-key") apiKey: String,
-        @Header("X-StepUp-Token") stepUpToken: String,
         @Body request: StepUpCompleteRequest,
     ): StepUpCompleteResponse
 

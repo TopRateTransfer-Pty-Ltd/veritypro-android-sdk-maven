@@ -37,6 +37,13 @@ suspend fun protoSubmitVerification(
     livenessId: String,
     livenessConfidence: Double?,
     captureAttempts: Int?,
+    /**
+     * Engine session id to key the multipart against. Blank (default) uses the ViewModel's createKyc
+     * session id — the CLIENT-mode behaviour. Server-driven mode passes the v2 session's
+     * kycEngineSessionId so the document is attached to the backend-owned engine session (mirrors the
+     * web Orchestrator) rather than a separately-minted one.
+     */
+    engineSessionId: String = "",
 ): Boolean {
     val loc = LocationHelper(context)
     val ip = runCatching { loc.getLocalIpAddress() }.getOrNull() ?: ""
@@ -69,9 +76,10 @@ suspend fun protoSubmitVerification(
             "security=${securityJson != null} livenessId=$livenessId",
     )
 
+    val sessionId = engineSessionId.ifBlank { vm.getSessionId() }
     val result = vm.submitKycAwait(
         VerificationRequestMultipart(
-            SessionId = vm.getSessionId(),
+            SessionId = sessionId,
             LivenessId = livenessId,
             DocumentType = docTypeInt,
             PlatformUsed = "android",

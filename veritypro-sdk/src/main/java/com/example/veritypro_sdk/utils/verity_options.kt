@@ -121,8 +121,6 @@ data class VerityOption(
     val stepUpChallengeId: String? = null,
     /** Subject ID that was enrolled during KYC (required for STEP_UP_AUTH mode). */
     val stepUpSubjectId: String? = null,
-    /** Short-lived JWT issued alongside the challenge (required for STEP_UP_AUTH mode). */
-    val stepUpToken: String? = null,
     /**
      * Google Places API key for address autocomplete on the address-entry screen. When null/blank,
      * the screen falls back to a plain manual street-address field (no Places dependency at runtime).
