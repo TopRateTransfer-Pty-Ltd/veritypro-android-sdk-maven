@@ -101,7 +101,7 @@ fun StepUpCaptureScreen(
     riskReason: String? = null,
     onResult: (StepUpResult) -> Unit,
 ) {
-    var screenState by remember { mutableStateOf<StepUpScreenState>(StepUpScreenState.Briefing) }
+    var screenState by remember { mutableStateOf<StepUpScreenState>(StepUpScreenState.LivenessRunning) }
     var countdown by remember { mutableIntStateOf(remainingSeconds.coerceIn(0, 300)) }
 
     // Countdown ticker — cancels when not in Briefing and restarts are impossible after Done.
