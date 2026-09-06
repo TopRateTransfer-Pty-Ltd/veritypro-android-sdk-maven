@@ -1,12 +1,18 @@
 package com.example.veritypro_sdk
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.util.Log
 import android.view.WindowManager
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import androidx.compose.ui.platform.LocalContext
+import androidx.core.content.ContextCompat
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -221,6 +227,34 @@ private fun StepUpFlowScreen(
         }
     }
 
+    // Amplify FaceLivenessDetector requires CAMERA to already be granted; it does NOT
+    // request the runtime permission itself. On a cold install this leaves the camera
+    // black / liveness unable to start (TopRate Issue 1). Gate entry on a runtime request.
+    val context = LocalContext.current
+    val cameraGranted = remember {
+        mutableStateOf(
+            ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
+                PackageManager.PERMISSION_GRANTED,
+        )
+    }
+    val cameraPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (granted) {
+            cameraGranted.value = true
+            beginLiveness()
+        } else {
+            onResult(StepUpResult.Error(challengeId, "camera_permission_denied"))
+        }
+    }
+    val onReady: () -> Unit = {
+        if (cameraGranted.value) {
+            beginLiveness()
+        } else {
+            cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+        }
+    }
+
     val completeLiveness: (String) -> Unit = { livenessSessionId ->
         phase = StepUpPhase.Analyzing
         scope.launch {
@@ -247,7 +281,7 @@ private fun StepUpFlowScreen(
     }
 
     when (val p = phase) {
-        is StepUpPhase.Intro -> StepUpIntroScreen(onReady = beginLiveness, onCancel = onCancel)
+        is StepUpPhase.Intro -> StepUpIntroScreen(onReady = onReady, onCancel = onCancel)
         is StepUpPhase.Starting -> StepUpProcessingScreen("Preparing\nyour camera")
         is StepUpPhase.Detecting -> StepUpLivenessScreen(
             awsSessionId = p.awsSessionId,
