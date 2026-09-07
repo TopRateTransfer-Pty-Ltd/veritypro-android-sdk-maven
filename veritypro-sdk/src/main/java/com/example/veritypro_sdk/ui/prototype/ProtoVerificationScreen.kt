@@ -254,6 +254,20 @@ fun ProtoVerificationScreen(
         if (grants[Manifest.permission.CAMERA] == true) stage = ProtoStage.BeforeShoot
     }
 
+    // Separate permission launcher for the liveness path. FaceLivenessDetector(disableStartView=true)
+    // starts immediately without a camera-prompt of its own; without this gate it silently calls
+    // onError on first run (LIVENESS_ONLY mode never goes through CameraAccess), which throws the
+    // flow back to SelfieIntro and creates an infinite retry loop.
+    val livenessCameraLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (granted) {
+            vm.startBeginLiveness(engineSessionId(), forceRetry = true)
+            stage = ProtoStage.Liveness
+        }
+        // If denied, we stay on SelfieIntro; the user can try again or exit.
+    }
+
     // Fire the real backend session creation when the user consents and continues.
     // createKyc validates requiredModules against integration entitlements. The KYC session only
     // covers DOCUMENT + BIOMETRIC; ADDRESS and EDD are separate services with their OWN create calls,
@@ -531,8 +545,15 @@ fun ProtoVerificationScreen(
             onReady = {
                 // begin-liveness needs the ENGINE session id. Client mode: createKyc session id.
                 // Server mode: the v2 session's kycEngineSessionId (via engineSessionId()).
-                vm.startBeginLiveness(engineSessionId(), forceRetry = true)
-                stage = ProtoStage.Liveness
+                val camGranted = ContextCompat.checkSelfPermission(
+                    context, Manifest.permission.CAMERA
+                ) == PackageManager.PERMISSION_GRANTED
+                if (camGranted) {
+                    vm.startBeginLiveness(engineSessionId(), forceRetry = true)
+                    stage = ProtoStage.Liveness
+                } else {
+                    livenessCameraLauncher.launch(Manifest.permission.CAMERA)
+                }
             },
             onBack = { stage = ProtoStage.Welcome },
         )
@@ -593,8 +614,13 @@ fun ProtoVerificationScreen(
                 initial = addressStreet,
                 submitting = addressCreateState is Resource.Loading,
                 errorMsg = (addressCreateState as? Resource.Error)?.let { "Couldn't start address verification. Please try again." },
-                placesApiKey = options.placesApiKey,
-                countryIso2 = options.isO2Code,
+                // Backend-proxied autocomplete — SDK carries no Google key. Country biases results.
+                onAutocomplete = { query, token ->
+                    vm.repository().addressAutocomplete(query, options.isO2Code, token, options.apiKey)
+                },
+                onResolveDetails = { placeId, token ->
+                    vm.repository().addressDetails(placeId, token, options.apiKey)
+                },
                 onSubmit = { street ->
                     addressStreet = street
                     vm.createAddressVerification(options, street)
