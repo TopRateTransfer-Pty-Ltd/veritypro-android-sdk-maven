@@ -21,9 +21,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import com.amplifyframework.core.Action
-import com.amplifyframework.core.Consumer
 import com.amplifyframework.ui.liveness.ui.FaceLivenessDetector
+import com.amplifyframework.ui.liveness.ui.LivenessColorScheme
 import com.example.veritypro_sdk.services.BeginLivenessCredentials
 import com.example.veritypro_sdk.services.LivenessCredentialsProvider
 import androidx.compose.ui.Alignment
@@ -116,16 +115,16 @@ fun ProtoLivenessScreen(
     // liveness. Also stops a recomposition from firing the callbacks again.
     val handled = remember { mutableStateOf(false) }
     Box(Modifier.fillMaxSize().background(Color.Black)) {
-        MaterialTheme {
+        MaterialTheme(colorScheme = LivenessColorScheme.default()) {
             FaceLivenessDetector(
                 sessionId = awsSessionId,
                 region = region,
                 disableStartView = true,
                 credentialsProvider = credentialsProvider,
-                onComplete = Action {
+                onComplete = {
                     if (!handled.value) { handled.value = true; onComplete() }
                 },
-                onError = Consumer { ex ->
+                onError = { ex ->
                     if (!handled.value) { handled.value = true; onError(ex.message ?: "Liveness check failed. Please try again.") }
                 },
             )

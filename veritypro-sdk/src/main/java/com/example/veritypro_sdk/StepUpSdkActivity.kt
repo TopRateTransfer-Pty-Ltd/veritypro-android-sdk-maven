@@ -29,10 +29,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.amplifyframework.auth.cognito.AWSCognitoAuthPlugin
-import com.amplifyframework.core.Action
 import com.amplifyframework.core.Amplify
-import com.amplifyframework.core.Consumer
 import com.amplifyframework.ui.liveness.ui.FaceLivenessDetector
+import com.amplifyframework.ui.liveness.ui.LivenessColorScheme
 import com.example.veritypro_sdk.services.BeginLivenessCredentials
 import com.example.veritypro_sdk.services.LivenessCredentialsProvider
 import com.example.veritypro_sdk.services.RetrofitInstance
@@ -442,16 +441,16 @@ private fun StepUpLivenessScreen(
     }
     val handled = remember { mutableStateOf(false) }
     Box(Modifier.fillMaxSize().background(Color.Black)) {
-        MaterialTheme {
+        MaterialTheme(colorScheme = LivenessColorScheme.default()) {
             FaceLivenessDetector(
                 sessionId = awsSessionId,
                 region = region,
                 disableStartView = true,
                 credentialsProvider = credentialsProvider,
-                onComplete = Action {
+                onComplete = {
                     if (!handled.value) { handled.value = true; onComplete() }
                 },
-                onError = Consumer { ex ->
+                onError = { ex ->
                     if (!handled.value) { handled.value = true; onError(ex.message ?: "Liveness failed.") }
                 },
             )
