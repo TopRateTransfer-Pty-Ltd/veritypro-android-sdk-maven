@@ -50,6 +50,9 @@ import com.example.veritypro_sdk.services.MLV2Repository
 import com.example.veritypro_sdk.services.Resource
 import com.example.veritypro_sdk.ui.verification.V2CaptureConfig
 import com.example.veritypro_sdk.ui.verification.VerityProViewModel
+import com.example.veritypro_sdk.utils.DocumentVideoTier
+import com.example.veritypro_sdk.utils.VerityVideoModule
+import com.example.veritypro_sdk.utils.VerityVideoRecorder
 import kotlinx.coroutines.delay
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -113,30 +116,75 @@ fun ProtoDocumentCaptureScreen(
     frameAspect: Float = 1.586f,
     onCaptured: (String, List<Bitmap>, String?) -> Unit,
     onClose: () -> Unit,
+    onMotionCollected: (com.example.veritypro_sdk.utils.CaptureRuntimeData) -> Unit = {},
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
-    // Photo-only binding — no video recording phase in the Proto capture screen.
-    // This eliminates the video-stop → rebind → settle cycle (~1 second on TCL T442M quirk)
-    // so the camera goes directly from live preview to still capture on tap, matching iOS speed.
-    val imageCapture = remember { CameraUtils.createSmartImageCapture(context, withVideoCapture = false) }
+    val stopMotion = com.example.veritypro_sdk.utils.rememberCaptureMotion(onCollected = onMotionCollected)
+    // Video recording — SD tier (480p, 800 kbps, 8 MiB cap) for the document compliance clip.
+    // Taking the still photo WHILE video is recording avoids the video-stop → rebind → settle
+    // cycle (~1 second on TCL T442M) — the camera never needs to rebind between video and still.
+    val videoRecorder = remember { VerityVideoRecorder(context) }
+    val videoTier = remember { CameraUtils.getDocumentVideoTier(context) }
+    val videoCapture = remember { videoRecorder.buildVideoCapture(videoTier) }
+    var videoBound by remember { mutableStateOf(false) }
+    val recordingStarted = remember { mutableStateOf(false) }
+    // ImageCapture at RECORD size so it can co-exist with VideoCapture on LIMITED hardware.
+    val imageCapture = remember { CameraUtils.createSmartImageCapture(context, withVideoCapture = true) }
     var capturing by remember { mutableStateOf(false) }
     var cameraReady by remember { mutableStateOf(false) }
     var shootTriggered by remember { mutableStateOf(false) }
     var pendingPads by remember { mutableStateOf<List<Bitmap>>(emptyList()) }
-    // PAD frame ring buffer (iOS ProtoCameraController parity): an ImageAnalysis use case fills this
-    // continuously during live preview, so the last 5 frames already exist at shutter time — no
-    // per-tap previewView.bitmap polling (which returns null on SurfaceView and added ~350ms lag).
+    // PAD frame ring buffer: populated on FULL hardware (Preview + VideoCapture + ImageAnalysis
+    // can coexist); on LIMITED hardware (TCL T442M) CameraUtils skips ImageAnalysis when
+    // VideoCapture is bound, so padRing stays empty. V1 fallback in preview handles that case.
     val padRing = remember { ArrayDeque<Bitmap>() }
     val padLock = remember { Any() }
-    // Count of real PAD frames collected so far. The shutter stays disabled until ≥ PAD_TARGET real
-    // frames exist so we never capture with fabricated/duplicate/empty PAD evidence (spec §4.4).
     var padCount by remember { mutableIntStateOf(0) }
-    val readyToShoot = cameraReady && padCount >= PAD_TARGET
+    // Shoot as soon as the camera is streaming — video provides the anti-spoof signal when
+    // PAD frames cannot be collected alongside VideoCapture on LIMITED hardware.
+    val readyToShoot = cameraReady && (padCount >= PAD_TARGET || videoBound)
+
+    // Coordinate photo + video: onCaptured fires only when both are finalized.
+    val captureCoord = remember {
+        object {
+            var photoPath: String? = null
+            var videoPath: String? = null
+            var photoReady = false
+            var videoReady = false
+            var capturedPads: List<Bitmap> = emptyList()
+            var notify: ((String, List<Bitmap>, String?) -> Unit)? = null
+            fun onPhoto(path: String, pads: List<Bitmap>) {
+                photoPath = path; capturedPads = pads; photoReady = true; check()
+            }
+            fun onVideo(file: java.io.File?) {
+                videoPath = file?.absolutePath; videoReady = true; check()
+            }
+            private fun check() {
+                if (photoReady && videoReady) notify?.invoke(photoPath!!, capturedPads, videoPath)
+            }
+        }
+    }
+    captureCoord.notify = onCaptured
 
     DisposableEffect(Unit) {
         onDispose {
             synchronized(padLock) { padRing.forEach { it.recycle() }; padRing.clear() }
+            videoRecorder.stopRecording()
+        }
+    }
+
+    // Start recording once the camera is streaming and VideoCapture was successfully bound.
+    LaunchedEffect(cameraReady, videoBound) {
+        if (cameraReady && videoBound && !recordingStarted.value) {
+            recordingStarted.value = true
+            videoRecorder.startRecording(
+                videoCapture = videoCapture,
+                module = VerityVideoModule.DOCUMENT,
+                sessionId = "proto_${sideLabel.lowercase()}",
+                tier = videoTier,
+                onStopped = { file -> captureCoord.onVideo(file) },
+            )
         }
     }
 
@@ -145,16 +193,24 @@ fun ProtoDocumentCaptureScreen(
         shootTriggered = true
         val file = File(context.cacheDir, "proto_doc_${sideLabel.lowercase()}.jpg")
         val opts = ImageCapture.OutputFileOptions.Builder(file).build()
+        // Take the still FIRST (while video is still recording) — avoids any rebind/settle delay.
+        // After the JPEG is saved, stop the video; onStopped fires asynchronously and triggers
+        // onCaptured once both the photo and video file are ready.
         imageCapture.takePicture(
             opts, ContextCompat.getMainExecutor(context),
             object : ImageCapture.OnImageSavedCallback {
                 override fun onImageSaved(result: ImageCapture.OutputFileResults) {
-                    // video=null in proto flow; video recording happens in the main SDK flow only.
-                    onCaptured(file.absolutePath, pendingPads, null)
+                    stopMotion()
+                    captureCoord.onPhoto(file.absolutePath, pendingPads)
+                    if (videoBound) {
+                        videoRecorder.stopRecording() // triggers onVideo via onStopped callback
+                    } else {
+                        captureCoord.onVideo(null) // no video — complete immediately
+                    }
                 }
                 override fun onError(exc: ImageCaptureException) {
-                    // Surface the failure and reset to a recoverable live state (spec §4.5).
                     Log.e("ProtoDocCapture", "takePicture failed: ${exc.imageCaptureError}", exc)
+                    if (videoBound) videoRecorder.stopRecording()
                     capturing = false
                     shootTriggered = false
                 }
@@ -164,8 +220,6 @@ fun ProtoDocumentCaptureScreen(
 
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         // Camera preview — stays visible during "CAPTURING…" just like iOS.
-        // The live feed continues while pads are collected and the still is taken;
-        // the user sees the document scene the whole time (iOS parity from the video).
         AndroidView(
             modifier = Modifier.fillMaxSize(),
             factory = { ctx ->
@@ -176,10 +230,10 @@ fun ProtoDocumentCaptureScreen(
                         if (st == PreviewView.StreamState.STREAMING) cameraReady = true
                     }
                 }.also { pv ->
-                    // Bind Preview + ImageCapture + a PAD-frame ImageAnalysis (3 use cases, CameraX
-                    // guaranteed, no VideoCapture → no TCL quirk). The analyzer fills padRing off-thread.
                     CameraUtils.bindSmartCamera(
-                        ctx, lifecycleOwner, pv, imageCapture, videoCapture = null,
+                        ctx, lifecycleOwner, pv, imageCapture,
+                        videoCapture = videoCapture,
+                        onVideoCaptureBound = { bound -> videoBound = bound },
                         frameCollector = { bmp ->
                             synchronized(padLock) {
                                 padRing.addLast(bmp)
@@ -187,8 +241,7 @@ fun ProtoDocumentCaptureScreen(
                                 padCount = padRing.size
                             }
                         },
-                        // No viewport crop: keep the still at the sensor's native 4:3 like iOS `.photo`
-                        // so the captured document fills the preview box without white side bands.
+                        // No viewport crop: keep the still at the sensor's native 4:3 like iOS `.photo`.
                         useViewPort = false,
                     )
                 }
@@ -239,10 +292,11 @@ fun ProtoDocumentCaptureScreen(
                                     padRing.toList().takeLast(PAD_TARGET)
                                         .map { it.copy(Bitmap.Config.ARGB_8888, false) }
                                 }
-                                if (pads.size < MLV2Repository.MIN_PAD_FRAMES) {
-                                    // Defence in depth: ring drained unexpectedly — do not fabricate
-                                    // frames. Stay live and let the ring refill (spec §4.4).
-                                    Log.w("ProtoDocCapture", "Shutter tapped with only ${pads.size} PAD frames — ignoring")
+                                if (!videoBound && pads.size < MLV2Repository.MIN_PAD_FRAMES) {
+                                    // No video recording AND insufficient PAD frames — stay live.
+                                    // When video IS recording, PAD frames are not required (the
+                                    // compliance clip provides the anti-spoof signal instead).
+                                    Log.w("ProtoDocCapture", "Shutter: ${pads.size} PAD frames, no video — ignoring")
                                     return@protoClick
                                 }
                                 capturing = true
@@ -288,10 +342,12 @@ fun ProtoDocumentPreviewScreen(
     LaunchedEffect(imagePath) {
         outcome = null; hint = "Checking your photo…"
         val file = File(imagePath)
-        if (V2CaptureConfig.useV2CaptureVerify) {
+        if (V2CaptureConfig.useV2CaptureVerify && padFrames.size >= MLV2Repository.MIN_PAD_FRAMES) {
             // ── V2 device-first path: POST /docai/v2/kyc/doc/capture-verify ──
+            // Requires PAD frames for temporal anti-spoof. Falls through to V1 when PAD frames
+            // are unavailable (e.g. VideoCapture is bound and ImageAnalysis could not coexist).
             val primary = BitmapFactory.decodeFile(imagePath)
-            if (primary == null || padFrames.size < MLV2Repository.MIN_PAD_FRAMES) {
+            if (primary == null) {
                 outcome = "RETRY"; hint = "Not enough frames captured. Hold steady."
                 return@LaunchedEffect
             }
