@@ -11,6 +11,11 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
@@ -71,8 +76,13 @@ val ProtoMono = FontFamily(
 
 /** clickable without the Material ripple — keeps the flat brutalist feel. */
 @Composable
-fun Modifier.protoClick(onClick: () -> Unit): Modifier =
+fun Modifier.protoClick(onClick: () -> Unit): Modifier = protoClick(enabled = true, onClick = onClick)
+
+@Composable
+fun Modifier.protoClick(enabled: Boolean, onClick: () -> Unit): Modifier =
     this.clickable(
+        enabled = enabled,
+        role = Role.Button,
         interactionSource = remember { MutableInteractionSource() },
         indication = null,
         onClick = onClick,
@@ -105,7 +115,7 @@ fun BrutalBox(
 fun MonoLabel(
     text: String,
     color: Color,
-    size: Int = 11,
+    size: Int = 12,
     modifier: Modifier = Modifier,
 ) {
     Text(
@@ -113,8 +123,8 @@ fun MonoLabel(
         color = color,
         fontFamily = ProtoMono,
         fontSize = size.sp,
-        fontWeight = FontWeight.Medium,
-        letterSpacing = 2.sp,
+        fontWeight = FontWeight.SemiBold,
+        letterSpacing = 1.5.sp,
         modifier = modifier,
     )
 }
@@ -128,16 +138,17 @@ fun ProtoPrimaryButton(
     textColor: Color = Color.White,
     onClick: () -> Unit,
 ) {
-    BrutalBox(background = if (enabled) background else Proto.Disabled, shadow = enabled) {
+    BrutalBox(background = if (enabled) background else Proto.Disabled) {
         Text(
             label,
-            color = textColor,
+            color = if (enabled) textColor else Proto.Sub,
             fontFamily = ProtoDisplay,
-            fontSize = 17.sp,
+            fontSize = 18.sp,
             fontWeight = FontWeight.Black,
             modifier = Modifier
                 .fillMaxWidth()
-                .protoClick { if (enabled) onClick() }
+                .heightIn(min = 48.dp)
+                .protoClick(enabled = enabled, onClick = onClick)
                 .padding(vertical = 18.dp),
             textAlign = androidx.compose.ui.text.style.TextAlign.Center,
         )
@@ -151,17 +162,16 @@ fun ProtoTopBar(
     onBack: (() -> Unit)? = null,
 ) {
     Row(
-        Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 14.dp),
+        Modifier.fillMaxWidth().padding(start = 24.dp, end = 24.dp, top = 16.dp, bottom = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         if (onBack != null) {
-            Text(
+            Box(Modifier.size(48.dp).semantics { contentDescription = "Back" }.protoClick(onClick = onBack), contentAlignment = Alignment.Center) { Text(
                 "←",
                 color = Proto.Ink,
                 fontSize = 22.sp,
                 fontWeight = FontWeight.Black,
-                modifier = Modifier.protoClick(onBack),
-            )
+            ) }
         }
         if (step != null) {
             Box(Modifier.fillMaxWidth()) {

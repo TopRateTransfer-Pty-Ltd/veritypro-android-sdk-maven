@@ -43,7 +43,14 @@ interface VerityApiService {
     @POST("/kycintegration/kyc-verification/begin-liveness")
     suspend fun beginLiveness(
         @Query("sessionId") sessionId: String,
-        @Header("x-api-key") apiKey: String
+        @Header("x-api-key") apiKey: String,
+    ): BeginLivenessResponse
+
+    @POST("/kycintegration/kyc-verification/begin-liveness")
+    suspend fun beginLivenessWithAssessment(
+        @Query("sessionId") sessionId: String,
+        @Header("x-api-key") apiKey: String,
+        @Body assessment: BeginLivenessAssessmentRequest,
     ): BeginLivenessResponse
 
     /** Step-up begin-liveness — authenticated by API key OR capability token bearer. Retrofit omits null headers. */
@@ -52,7 +59,7 @@ interface VerityApiService {
         @Path("challengeId") challengeId: String,
         @Header("x-api-key") apiKey: String? = null,
         @Header("Authorization") authorization: String? = null,
-    ): BeginLivenessResponse
+    ): StepUpBeginResponse
 
     @GET("/kycintegration/country/get-country-document")
     suspend fun getCountryDocuments(
@@ -73,6 +80,22 @@ interface VerityApiService {
     ): LivenessResultResponse
 
     // ── Address Verification ──
+
+    // Backend-proxied address autocomplete (Google Places server-side; SDK holds no Google key).
+    @GET("/addressverification/api/v1/address/autocomplete")
+    suspend fun addressAutocomplete(
+        @Query("q") query: String,
+        @Query("country") country: String?,
+        @Query("sessionToken") sessionToken: String?,
+        @Header("x-api-key") apiKey: String
+    ): ApiResponse<AddressAutocompleteResponse>
+
+    @GET("/addressverification/api/v1/address/details")
+    suspend fun addressDetails(
+        @Query("placeId") placeId: String,
+        @Query("sessionToken") sessionToken: String?,
+        @Header("x-api-key") apiKey: String
+    ): ApiResponse<AddressDetailsResponse>
 
     @POST("/addressverification/address-verification/add-verification")
     suspend fun createAddressVerification(
@@ -127,7 +150,10 @@ interface VerityApiService {
         @Part("City") city: RequestBody? = null,
         @Part("StateOrProvince") stateOrProvince: RequestBody? = null,
         @Part("PostalCode") postalCode: RequestBody? = null,
-        @Header("x-api-key") apiKey: String
+        @Part("Country") country: RequestBody? = null,
+        @Part("KycProfileJson") profile: RequestBody? = null,
+        @Header("Authorization") authorization: String? = null,
+        @Header("x-api-key") apiKey: String?
     ): EddApiResponse<EddCaseData>
 
     @GET("/edd/api/edd/cases/{caseId}/status")
@@ -180,12 +206,12 @@ interface VerityApiService {
         @Header("x-api-key") apiKey: String? = null,
         @Header("Authorization") authorization: String? = null,
         @Body request: StepUpCompleteRequest,
-    ): StepUpCompleteResponse
+    ): StepUpCompletionEnvelope
 
     @GET("/kycintegration/api/v1/step-up/challenges/{challengeId}")
     suspend fun getStepUpChallengeStatus(
         @Path("challengeId") challengeId: String,
         @Header("x-api-key") apiKey: String? = null,
         @Header("Authorization") authorization: String? = null,
-    ): StepUpStatusResponse
+    ): StepUpCompletionEnvelope
 }

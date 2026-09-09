@@ -21,9 +21,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import com.amplifyframework.core.Action
-import com.amplifyframework.core.Consumer
 import com.amplifyframework.ui.liveness.ui.FaceLivenessDetector
+import com.amplifyframework.ui.liveness.ui.LivenessColorScheme
 import com.example.veritypro_sdk.services.BeginLivenessCredentials
 import com.example.veritypro_sdk.services.LivenessCredentialsProvider
 import androidx.compose.ui.Alignment
@@ -36,10 +35,16 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
 /** Screen 7 — selfie intro (biometric module). No backend/vendor names shown. */
+internal fun selfieIntroCopy(hasDocument: Boolean): String = if (hasDocument)
+    "We match your face to your document and check you're really there."
+else "We check that you're really there, live in front of the camera."
+
 @Composable
 fun ProtoSelfieIntroScreen(
     onReady: () -> Unit,
     onBack: () -> Unit = {},
+    hasDocument: Boolean = true,
+    step: String? = null,
 ) {
     val points = listOf(
         "Look straight at the camera",
@@ -47,7 +52,7 @@ fun ProtoSelfieIntroScreen(
         "Make sure only your face is visible",
     )
     Column(Modifier.fillMaxSize().background(Proto.Canvas).verticalScroll(rememberScrollState())) {
-        ProtoTopBar(step = "2/4", onBack = onBack)
+        ProtoTopBar(step = step, onBack = onBack)
         Column(Modifier.fillMaxWidth().padding(horizontal = 24.dp)) {
             MonoLabel("BIOMETRIC · LIVENESS", Proto.Teal, size = 12)
             Spacer(Modifier.height(12.dp))
@@ -57,7 +62,7 @@ fun ProtoSelfieIntroScreen(
             )
             Spacer(Modifier.height(10.dp))
             Text(
-                "We match your face to your document and check you're really there. No photos are kept.",
+                selfieIntroCopy(hasDocument),
                 color = Proto.Sub, fontFamily = ProtoDisplay, fontSize = 15.sp,
             )
             Spacer(Modifier.height(20.dp))
@@ -105,6 +110,7 @@ fun ProtoLivenessScreen(
     credentials: BeginLivenessCredentials?,
     onComplete: () -> Unit,
     onError: (String) -> Unit,
+    onMotionCollected: (com.example.veritypro_sdk.utils.CaptureRuntimeData) -> Unit = {},
 ) {
     val credentialsProvider = remember(credentials) { credentials?.let { LivenessCredentialsProvider(it) } }
     if (credentialsProvider == null) {
@@ -115,18 +121,19 @@ fun ProtoLivenessScreen(
     // completion; without this guard that bounced the flow back to the intro and forced a 2nd
     // liveness. Also stops a recomposition from firing the callbacks again.
     val handled = remember { mutableStateOf(false) }
+    val stopMotion = com.example.veritypro_sdk.utils.rememberCaptureMotion(onCollected = onMotionCollected)
     Box(Modifier.fillMaxSize().background(Color.Black)) {
-        MaterialTheme {
+        MaterialTheme(colorScheme = LivenessColorScheme.default()) {
             FaceLivenessDetector(
                 sessionId = awsSessionId,
                 region = region,
                 disableStartView = true,
                 credentialsProvider = credentialsProvider,
-                onComplete = Action {
-                    if (!handled.value) { handled.value = true; onComplete() }
+                onComplete = {
+                    if (!handled.value) { handled.value = true; stopMotion(); onComplete() }
                 },
-                onError = Consumer { ex ->
-                    if (!handled.value) { handled.value = true; onError(ex.message ?: "Liveness check failed. Please try again.") }
+                onError = { ex ->
+                    if (!handled.value) { handled.value = true; stopMotion(); onError(ex.message ?: "Liveness check failed. Please try again.") }
                 },
             )
         }

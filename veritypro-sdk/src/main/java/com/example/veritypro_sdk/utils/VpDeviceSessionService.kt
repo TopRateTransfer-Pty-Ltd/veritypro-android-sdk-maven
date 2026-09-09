@@ -135,7 +135,7 @@ object VpDeviceSessionService {
                     put("ratio", metrics.density.toDouble())
                 })
                 put("tz_name", tz.id)
-                put("tz_offset", tz.rawOffset / 60_000)
+                put("tz_offset", timezoneOffsetMinutes(tz, System.currentTimeMillis()))
                 put("language", locale.language)
                 put("touch_points", 5)
                 getBatteryLevel(context)?.let { put("battery", it) }

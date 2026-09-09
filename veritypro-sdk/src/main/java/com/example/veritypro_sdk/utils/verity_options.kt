@@ -129,9 +129,11 @@ data class VerityOption(
      */
     val stepUpCapabilityToken: String? = null,
     /**
-     * Google Places API key for address autocomplete on the address-entry screen. When null/blank,
-     * the screen falls back to a plain manual street-address field (no Places dependency at runtime).
+     * DEPRECATED — no longer used. Address autocomplete is now BACKEND-PROXIED: the SDK calls the
+     * address service (which holds the Google key server-side), so no Google Places key ships in the
+     * client binary. Retained for source/binary compatibility; the value is ignored.
      */
+    @Deprecated("Autocomplete is backend-proxied; no client Google key is used. This value is ignored.")
     val placesApiKey: String? = null,
     /** Optional brand customisation (primary colour + logo). Null leaves all SDK defaults unchanged. */
     val brandConfig: VpBrandConfig? = null,
@@ -140,6 +142,12 @@ data class VerityOption(
      * so the UI and decision messages are localised. Defaults to the device locale when null.
      */
     val locale: String? = null,
+    val apiBaseUrl: String? = null,
+    val optionalModules: List<String> = emptyList(),
+    /** Stable integrator customer reference for EDD. Defaults to vendorData, never integrationId. */
+    val subjectId: String? = null,
+    val country: String? = null,
+    val eddProfile: Map<String, String>? = null,
 ) : Parcelable {
     /** Resolved [VerityMode] from the serialized [mode] string. */
     val verityMode: VerityMode
