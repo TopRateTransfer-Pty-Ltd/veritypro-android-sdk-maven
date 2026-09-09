@@ -44,10 +44,24 @@ import com.example.veritypro_sdk.ui.prototype.ProtoDisplay
 import com.example.veritypro_sdk.ui.prototype.ProtoPrimaryButton
 import com.example.veritypro_sdk.ui.prototype.ProtoTopBar
 import com.example.veritypro_sdk.utils.StepUpResult
+import com.example.veritypro_sdk.utils.VerityResult
+import com.example.veritypro_sdk.utils.VerityVerificationError
+import com.example.veritypro_sdk.utils.NativeOperations
+import androidx.activity.OnBackPressedCallback
 import kotlinx.coroutines.launch
+import com.example.veritypro_sdk.utils.CaptureRuntimeData
+import com.example.veritypro_sdk.utils.SecurityAssessmentCollector
+import com.example.veritypro_sdk.utils.withCurrentLocation
+import com.example.veritypro_sdk.utils.rememberCaptureMotion
 
 /** Hosted step-up biometric challenge. Launched by [VerityPro.startStepUp]. */
 class StepUpSdkActivity : AppCompatActivity() {
+    private var resultSent = false
+    private lateinit var operationId: String
+    override fun onDestroy() {
+        if (::operationId.isInitialized && !isChangingConfigurations) NativeOperations.unregister(operationId)
+        super.onDestroy()
+    }
 
     companion object {
         private const val TAG = "StepUpSdkActivity"
@@ -62,6 +76,12 @@ class StepUpSdkActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        operationId = intent.getStringExtra(VerityPro.EXTRA_OPERATION_ID) ?: java.util.UUID.randomUUID().toString()
+        val cancel = { returnResult(StepUpResult.Cancelled(intent.getStringExtra(EXTRA_CHALLENGE_ID))) }
+        NativeOperations.register(operationId, cancel)
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() = cancel()
+        })
 
         val hostDebuggable =
             (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) != 0
@@ -96,6 +116,7 @@ class StepUpSdkActivity : AppCompatActivity() {
                 challengeId = challengeId,
                 apiKey = apiKey,
                 capabilityToken = capabilityToken,
+                apiBaseUrl = intent.getStringExtra("api_base_url"),
                 onResult = { returnResult(it) },
                 onCancel = { returnResult(StepUpResult.Cancelled(challengeId)) },
             )
@@ -103,7 +124,35 @@ class StepUpSdkActivity : AppCompatActivity() {
     }
 
     private fun returnResult(result: StepUpResult) {
+        if (resultSent) return
+        resultSent = true
+        val payload = result.toSerializable()
+        val status = when (result) {
+            is StepUpResult.Passed -> "APPROVED"
+            is StepUpResult.ManualReview -> "PENDING_MANUAL_REVIEW"
+            is StepUpResult.Cancelled -> "CANCELLED"
+            is StepUpResult.Failed -> "REJECTED"
+            else -> "FAILED"
+        }
+        val typed = VerityResult(status, operationId = operationId,
+            challengeId = payload.getString("challengeId"), decisionId = payload.getString("decisionId"),
+            completedSteps = if (result is StepUpResult.Passed) listOf("BIOMETRIC") else emptyList(),
+            verdict = when (result) {
+                is StepUpResult.Passed -> "passed"
+                is StepUpResult.ManualReview -> "manual_review"
+                is StepUpResult.NoEnrolledTemplate -> "no_enrolled_template"
+                is StepUpResult.Locked -> "locked"
+                is StepUpResult.Expired -> "expired"
+                is StepUpResult.Cancelled -> "cancelled"
+                is StepUpResult.Failed -> "failed"
+                else -> "error"
+            },
+            similarityScore = if (payload.containsKey("similarityScore")) payload.getDouble("similarityScore") else null,
+            attemptCount = if (payload.containsKey("attemptCount")) payload.getInt("attemptCount") else null,
+            maxAttempts = if (payload.containsKey("maxAttempts")) payload.getInt("maxAttempts") else null,
+            error = if (result is StepUpResult.Error) VerityVerificationError("UNKNOWN", result.message) else null)
         val data = Intent().apply {
+            putExtra("verity_result", typed)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 // StepUpResult is a sealed class — parcel via wrapper
                 putExtra(RESULT_KEY, result.toSerializable())
@@ -112,6 +161,7 @@ class StepUpSdkActivity : AppCompatActivity() {
             }
         }
         setResult(RESULT_OK, data)
+        NativeOperations.unregister(operationId)
         finish()
     }
 
@@ -185,14 +235,18 @@ private fun StepUpFlowScreen(
     challengeId: String,
     apiKey: String?,
     capabilityToken: String?,
+    apiBaseUrl: String? = null,
     onResult: (StepUpResult) -> Unit,
     onCancel: () -> Unit,
 ) {
     val scope = rememberCoroutineScope()
     var phase by remember { mutableStateOf<StepUpPhase>(StepUpPhase.Intro) }
     val startedRef = remember { mutableStateOf(false) }
+    var captureRuntime by remember { mutableStateOf(CaptureRuntimeData()) }
+    val stopMotion = rememberCaptureMotion(active = phase is StepUpPhase.Detecting) { captureRuntime = it }
 
     val authHeader = capabilityToken?.let { "Bearer $it" }
+    val api = remember(apiBaseUrl) { apiBaseUrl?.let { RetrofitInstance.createApi(it) } ?: RetrofitInstance.api }
 
     val beginLiveness: () -> Unit = beginLiveness@{
         if (startedRef.value) return@beginLiveness
@@ -200,19 +254,24 @@ private fun StepUpFlowScreen(
         phase = StepUpPhase.Starting
         scope.launch {
             try {
-                val response = RetrofitInstance.api.beginStepUpLiveness(
+                val response = api.beginStepUpLiveness(
                     challengeId = challengeId,
                     apiKey = if (authHeader == null) apiKey else null,
                     authorization = authHeader,
                 )
                 val data = response.data
-                val sessionId = data?.awsSessionId ?: data?.id ?: ""
+                val sessionId = data?.livenessSessionId.orEmpty()
                 val region = data?.region ?: "ap-southeast-2"
                 if (sessionId.isBlank()) {
                     onResult(StepUpResult.Error(challengeId, "liveness_session_missing"))
                     return@launch
                 }
-                phase = StepUpPhase.Detecting(sessionId, region, data?.credentials)
+                val credentials = data?.credentials()
+                if (credentials == null) {
+                    onResult(StepUpResult.Error(challengeId, "liveness_credentials_missing"))
+                    return@launch
+                }
+                phase = StepUpPhase.Detecting(sessionId, region, credentials)
             } catch (e: retrofit2.HttpException) {
                 val mapped = when (e.code()) {
                     410 -> StepUpResult.Expired(challengeId)
@@ -255,16 +314,21 @@ private fun StepUpFlowScreen(
     }
 
     val completeLiveness: (String) -> Unit = { livenessSessionId ->
+        stopMotion()
         phase = StepUpPhase.Analyzing
         scope.launch {
             try {
-                val resp = RetrofitInstance.api.completeStepUpChallenge(
+                val resp = api.completeStepUpChallenge(
                     challengeId = challengeId,
                     apiKey = if (authHeader == null) apiKey else null,
                     authorization = authHeader,
-                    request = StepUpCompleteRequest(livenessSessionId = livenessSessionId, selfieImageB64 = ""),
+                    request = StepUpCompleteRequest(livenessSessionId = livenessSessionId,
+                        securityAssessmentJson = SecurityAssessmentCollector.collectJson(context, captureRuntime.withCurrentLocation(context))),
                 )
-                val result = mapCompleteResponse(resp, challengeId)
+                val data = resp.data
+                val result = if (data != null && data.challengeId == challengeId)
+                    mapCompleteResponse(data, challengeId)
+                else StepUpResult.Error(challengeId, "invalid_completion_response")
                 onResult(result)
             } catch (e: retrofit2.HttpException) {
                 val mapped = when (e.code()) {
@@ -298,14 +362,14 @@ private fun mapCompleteResponse(
     resp: com.example.veritypro_sdk.services.StepUpCompleteResponse,
     challengeId: String,
 ): StepUpResult = when (resp.verdict?.lowercase()) {
-    "passed" -> StepUpResult.Passed(
+    "passed" -> if (!resp.isAuthorized()) StepUpResult.Error(challengeId, "challenge_not_authorized") else StepUpResult.Passed(
         challengeId = challengeId,
         similarityScore = resp.similarityScore ?: 0.0,
-        livenessVerdict = resp.livenessVerdict ?: "",
+        livenessVerdict = resp.livenessVerdict?.toString() ?: "",
         decisionId = resp.decisionId,
     )
-    "failed" -> if (resp.lockedUntilEpochSeconds != null && resp.lockedUntilEpochSeconds > 0) {
-        StepUpResult.Locked(challengeId, resp.lockedUntilEpochSeconds)
+    "failed" -> if (resp.lockEpochSeconds() > 0) {
+        StepUpResult.Locked(challengeId, resp.lockEpochSeconds())
     } else {
         StepUpResult.Failed(
             challengeId = challengeId,
@@ -314,14 +378,14 @@ private fun mapCompleteResponse(
             maxAttempts = resp.maxAttempts,
         )
     }
-    "manualreview" -> StepUpResult.ManualReview(
+    "manualreview", "manual_review" -> StepUpResult.ManualReview(
         challengeId = challengeId,
         similarityScore = resp.similarityScore ?: 0.0,
         decisionId = resp.decisionId,
     )
-    "noenrolledtemplate" -> StepUpResult.NoEnrolledTemplate(challengeId)
+    "noenrolledtemplate", "no_enrolled_template" -> StepUpResult.NoEnrolledTemplate(challengeId)
     "expired" -> StepUpResult.Expired(challengeId)
-    "locked" -> StepUpResult.Locked(challengeId, resp.lockedUntilEpochSeconds ?: 0L)
+    "locked" -> StepUpResult.Locked(challengeId, resp.lockEpochSeconds())
     else -> StepUpResult.Error(challengeId, "unexpected_verdict: ${resp.verdict}")
 }
 
@@ -350,7 +414,7 @@ private fun StepUpIntroScreen(onReady: () -> Unit, onCancel: () -> Unit) {
             )
             Spacer(Modifier.height(10.dp))
             Text(
-                "A quick face scan confirms you're really here before this action is authorised. No photos are kept.",
+                "Your face is compared with your previous verification.",
                 color = Proto.Sub,
                 fontFamily = ProtoDisplay,
                 fontSize = 15.sp,

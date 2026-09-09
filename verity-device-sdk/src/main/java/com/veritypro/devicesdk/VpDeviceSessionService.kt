@@ -42,7 +42,7 @@ object VpDeviceSessionService {
             val collectedAt = System.currentTimeMillis()
 
             val metrics = context.resources.displayMetrics
-            val tzOffset = -TimeZone.getDefault().rawOffset / 60_000
+            val tzOffset = -TimeZone.getDefault().getOffset(collectedAt) / 60_000
 
             val screen = JSONObject().apply {
                 put("w", metrics.widthPixels)
@@ -61,7 +61,7 @@ object VpDeviceSessionService {
                 put("touch_points", 5)
                 put("is_rooted", rooted)
                 put("is_emulator", emulator)
-                put("is_frida_detected", frida)
+                put("is_frida_detected", frida ?: JSONObject.NULL)
                 put("is_jailbroken", JSONObject.NULL)
                 put("is_cloned_app", JSONObject.NULL)
                 put("is_remote_control", JSONObject.NULL)
@@ -181,18 +181,18 @@ object VpDeviceSessionService {
         Build.HARDWARE.contains("goldfish") ||
         Build.HARDWARE.contains("ranchu")
 
-    private fun isFridaDetected(): Boolean {
-        // Check for frida-server process and known frida port 27042
-        return try {
-            val proc = Runtime.getRuntime().exec("ls /proc")
-            proc.waitFor()
-            false // Process listing is sandboxed on non-rooted devices
-        } catch (e: Exception) { false }
-    }
+    private fun isFridaDetected(): Boolean? = fridaSignal(runCatching {
+        java.io.File("/proc/self/maps").readText()
+    }.getOrNull())
 
     private fun buildUA(): String {
         val release = Build.VERSION.RELEASE
         val model = Build.MODEL
         return "Mozilla/5.0 (Linux; Android $release; $model) AppleWebKit/537.36 VerityProDeviceSDK/1.0.0"
     }
+}
+
+/** Unknown collection is distinct from a completed negative observation. */
+internal fun fridaSignal(processMaps: String?): Boolean? = processMaps?.let {
+    it.contains("frida", ignoreCase = true) || it.contains("libgadget", ignoreCase = true)
 }

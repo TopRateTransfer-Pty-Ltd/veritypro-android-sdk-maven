@@ -22,7 +22,21 @@ private fun createSafeLoggingInterceptor(level: HttpLoggingInterceptor.Level): H
 }
 
 object RetrofitInstance {
-    private const val BASE_URL = "https://api.skylinefare.com"
+    // Retrofit requires every base URL to end in '/'.  Keep the default
+    // singleton on the same normalized form as createApi(baseUrl), otherwise
+    // the first SDK request fails while constructing Retrofit before any HTTP
+    // call is made.
+    private const val BASE_URL = "https://api.skylinefare.com/"
+    /** A session owns its endpoint; configuring one integrator never changes another session. */
+    fun createApi(baseUrl: String): VerityApiService {
+        val uri = java.net.URI(baseUrl)
+        require(uri.scheme == "https" && !uri.host.isNullOrBlank() && uri.userInfo == null && uri.query == null && uri.fragment == null) {
+            "apiBaseUrl must be an HTTPS origin without credentials, query or fragment"
+        }
+        require(uri.path.isNullOrEmpty() || uri.path == "/") { "apiBaseUrl must be the gateway origin" }
+        return Retrofit.Builder().baseUrl(baseUrl.trimEnd('/') + "/")
+            .addConverterFactory(GsonConverterFactory.create()).client(okHttpClient).build().create(VerityApiService::class.java)
+    }
 
     // Certificate pinning for api.skylinefare.com — pinned to Let's Encrypt ROOT CAs
     // so that leaf cert renewals (every 90 days) never break the app.

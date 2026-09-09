@@ -54,6 +54,8 @@ class MotionAnalysisCollector(context: Context) : SensorEventListener {
         val accelStdDev: FloatArray,
         val gyroStdDev: FloatArray,
         val motionScore: Float,
+        val accelerometerSampleCount: Int = 0,
+        val gyroscopeSampleCount: Int = 0,
     )
 
     /**
@@ -97,6 +99,8 @@ class MotionAnalysisCollector(context: Context) : SensorEventListener {
             accelStdDev = accelStd,
             gyroStdDev = gyroStd,
             motionScore = raw,
+            accelerometerSampleCount = accelSnapshot.size,
+            gyroscopeSampleCount = gyroSnapshot.size,
         )
     }
 
