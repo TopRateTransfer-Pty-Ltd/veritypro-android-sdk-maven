@@ -9,6 +9,8 @@ import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleOwner
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.Executors
 
@@ -31,18 +33,45 @@ import java.util.concurrent.Executors
  * imperfect proxy would stop legitimate verifications — strictly worse than the problem being
  * solved. A failing check advises; the caller still offers a way through.
  *
- * Thresholds and the centre-crop rule are deliberately identical to the web implementation
- * (hosted-verify/proto/lightingCheck.ts) so the two platforms agree on what "too dark" means.
+ * KNOWN LIMITS — read before trusting a reading or tightening a threshold:
+ *
+ *  • UNCALIBRATED. The thresholds are not derived from AWS's metric. AWS reports face Brightness
+ *    on a 0-100 scale over a DETECTED FACE REGION; this is mean luma over a fixed centre crop.
+ *    There is no published mapping between them, and arithmetic like "110/255 ≈ 43 > 40" proves
+ *    nothing. Calibrating properly needs paired samples — this reading alongside the actual
+ *    reference-frame brightness the engine recorded — across devices, skin tones and backgrounds.
+ *    Every reading is logged with the PREFLIGHT_LUMA tag to make that correlation possible.
+ *
+ *  • It measures the wrong moment and the wrong region. The user is not yet framed as they will
+ *    be during the challenge: a phone held low reads a dark shirt and warns for nothing, while a
+ *    backlit face passes and is rejected later anyway. There is no face detection here.
+ *
+ *  • NOT numerically comparable across platforms, despite the shared constants. CameraX's
+ *    YUV_420_888 fixes the plane layout but not the encoding range (video-range 16-235 vs full
+ *    0-255); iOS pins full-range explicitly; web measures already-converted RGB. The range cannot
+ *    be detected from a mean, and guessing at a rescale would introduce its own error, so no
+ *    normalisation is attempted. Treat the three as three separate, individually-tunable signals.
+ *
+ * Because of the above this is advice, not a gate, and should be judged on whether it actually
+ * improves completion rates — not assumed to work.
  */
 object LightingCheck {
 
     private const val TAG = "LightingCheck"
 
-    /** Mean luma (0-255) below which we advise better lighting. */
+    /**
+     * Mean luma (0-255) below which we advise better lighting.
+     *
+     * Grounded in what actually fails: every recorded SELFIE_QUALITY_TOO_LOW rejection sat at
+     * face brightness 11.4-32.3 (mean 18.1) against the engine's threshold of 40 — 10 of 10, with
+     * none above it. Dark frames are the failure mode; this is the one worth warning about.
+     */
     const val LOW_LIGHT_LUMA = 110
 
-    /** Mean luma above which the frame is blown out and the face may be washed away. */
-    const val HIGH_LIGHT_LUMA = 235
+    // There is deliberately NO high-brightness warning. An overexposure check was written and then
+    // removed: across every recorded biometric failure the maximum face brightness was 84.6, and
+    // not one rejection was caused by too much light. Warning about it would add a step for a
+    // failure mode that has never occurred.
 
     /**
      * Fraction of the frame, centred, that we sample. Faces sit in the middle; averaging the
@@ -119,18 +148,22 @@ object LightingCheck {
                     Log.w(TAG, "No settled frame within ${TIMEOUT_MS}ms — treating as indeterminate")
                 }
 
-            Log.i(TAG, "Pre-liveness mean centre luma=$luma (low<$LOW_LIGHT_LUMA high>$HIGH_LIGHT_LUMA)")
-            when {
-                luma < LOW_LIGHT_LUMA -> Verdict.Poor(
+            // Tagged for correlation against the engine's recorded face_brightness. Until enough
+            // paired samples exist the thresholds below are a guess, and this line is the only
+            // thing that will let anyone replace that guess with a measurement.
+            Log.i(
+                TAG,
+                "PREFLIGHT_LUMA luma=$luma low=$LOW_LIGHT_LUMA crop=$CENTRE_CROP " +
+                    "verdict=${if (luma < LOW_LIGHT_LUMA) "LOW" else "OK"}",
+            )
+            if (luma < LOW_LIGHT_LUMA) {
+                Verdict.Poor(
                     luma,
                     "It's quite dark where you are. Move somewhere brighter, or face a window " +
                         "or lamp — otherwise your selfie may not be usable.",
                 )
-                luma > HIGH_LIGHT_LUMA -> Verdict.Poor(
-                    luma,
-                    "There's a lot of glare. Move out of direct light so your face isn't washed out.",
-                )
-                else -> Verdict.Ok(luma)
+            } else {
+                Verdict.Ok(luma)
             }
         } catch (e: Exception) {
             // No front camera, permission revoked mid-flow, provider failure. AWS surfaces its
@@ -138,10 +171,17 @@ object LightingCheck {
             Log.w(TAG, "Lighting check unavailable: ${e.message}")
             Verdict.Indeterminate
         } finally {
-            try {
-                provider?.let { p -> withContext_Main(context) { p.unbindAll() } }
-            } catch (e: Exception) {
-                Log.w(TAG, "unbind after lighting check failed: ${e.message}")
+            // NonCancellable is load-bearing. If the caller cancels this check — the user taps
+            // "Continue anyway" while a recheck is still running — every suspend call in a
+            // cancelled coroutine throws, so a plain withContext here would skip the unbind and
+            // leave the camera BOUND while AWS tries to open it. Releasing the device is exactly
+            // the work that must still happen on the cancellation path.
+            withContext(NonCancellable) {
+                try {
+                    provider?.let { p -> withContext_Main(context) { p.unbindAll() } }
+                } catch (e: Exception) {
+                    Log.w(TAG, "unbind after lighting check failed: ${e.message}")
+                }
             }
             executor.shutdown()
         }

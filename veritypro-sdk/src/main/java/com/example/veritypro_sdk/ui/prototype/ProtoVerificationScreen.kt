@@ -239,6 +239,42 @@ fun ProtoVerificationScreen(
     // a poor frame — see LightingCheck for why a poor reading advises rather than blocks.
     var lightingAdvice by remember { mutableStateOf<String?>(null) }
 
+    // Exactly one lighting check may be in flight. Without this, tapping "check again" and then
+    // "Continue anyway" leaves the first check running: it later resolves, moves the stage, and
+    // unbinds the camera WHILE AWS is opening it. Starting a new check — or continuing past the
+    // warning — cancels any outstanding one first.
+    var lightingJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
+    // Bumped whenever a check is started or abandoned. A result whose generation no longer
+    // matches belongs to a superseded attempt and is discarded — cancellation alone is not
+    // enough, because a check can finish measuring in the instant before its cancel lands.
+    var lightingGen by remember { mutableStateOf(0) }
+
+    /**
+     * Run the check, then hand off. Supersedes any in-flight check so only the latest decision
+     * can move the flow. [onPoor] fires only for a measured-poor frame; an unmeasurable check
+     * proceeds, because it must never block.
+     */
+    fun runLightingCheckThen(onPoor: (String) -> Unit, onProceed: () -> Unit) {
+        lightingJob?.cancel()
+        lightingGen += 1
+        val gen = lightingGen
+        lightingJob = scope.launch {
+            val verdict = LightingCheck.measure(context, lifecycleOwner)
+            // Superseded while measuring — must not move the stage or the user could be pulled
+            // out of the AWS handoff that has already begun.
+            if (gen != lightingGen) return@launch
+            if (verdict is LightingCheck.Verdict.Poor) onPoor(verdict.advice) else onProceed()
+        }
+    }
+
+    /** Skip the check entirely and hand off, abandoning anything still measuring. */
+    fun cancelLightingCheckAndProceed(onProceed: () -> Unit) {
+        lightingJob?.cancel()
+        lightingJob = null
+        lightingGen += 1 // invalidates any result still in flight
+        onProceed()
+    }
+
     // Select the flow driver: explicit injection wins; otherwise SERVER_DRIVEN → ServerFlowDriver,
     // every other mode → ClientFlowDriver (identical to the pre-refactor client behaviour).
     val serverDriven = options.verityMode == VerityMode.SERVER_DRIVEN
@@ -581,19 +617,19 @@ fun ProtoVerificationScreen(
                     // brightness gate runs server-side after the whole challenge, so without
                     // this a user can pass liveness at 99.63 and still be told their selfie was
                     // unusable. Advisory only — see LightingCheck for why it must not block.
-                    scope.launch {
-                        val verdict = LightingCheck.measure(context, lifecycleOwner)
-                        if (verdict is LightingCheck.Verdict.Poor) {
-                            lightingAdvice = verdict.advice
+                    runLightingCheckThen(
+                        onPoor = { advice ->
+                            lightingAdvice = advice
                             stage = ProtoStage.LightingWarning
-                        } else {
+                        },
+                        onProceed = {
                             // Reset any stale liveness state from a previous attempt (same VM
                             // lifecycle, e.g. LIVENESS_ONLY run followed by BIOMETRIC).
                             vm.resetLivenessState()
                             vm.startBeginLivenessWithAssessment(engineSessionId(), context)
                             stage = ProtoStage.Liveness
-                        }
-                    }
+                        },
+                    )
                 } else {
                     livenessCameraLauncher.launch(Manifest.permission.CAMERA)
                 }
@@ -604,23 +640,25 @@ fun ProtoVerificationScreen(
         ProtoStage.LightingWarning -> ProtoLightingWarningScreen(
             advice = lightingAdvice.orEmpty(),
             onRecheck = {
-                scope.launch {
-                    val verdict = LightingCheck.measure(context, lifecycleOwner)
-                    if (verdict is LightingCheck.Verdict.Poor) {
-                        lightingAdvice = verdict.advice
-                    } else {
+                runLightingCheckThen(
+                    onPoor = { advice -> lightingAdvice = advice },
+                    onProceed = {
                         vm.resetLivenessState()
                         vm.startBeginLivenessWithAssessment(engineSessionId(), context)
                         stage = ProtoStage.Liveness
-                    }
-                }
+                    },
+                )
             },
             onContinueAnyway = {
-                vm.resetLivenessState()
-                vm.startBeginLivenessWithAssessment(engineSessionId(), context)
-                stage = ProtoStage.Liveness
+                // Cancels any recheck still measuring, so it cannot unbind the camera out from
+                // under the AWS handoff that is about to start.
+                cancelLightingCheckAndProceed {
+                    vm.resetLivenessState()
+                    vm.startBeginLivenessWithAssessment(engineSessionId(), context)
+                    stage = ProtoStage.Liveness
+                }
             },
-            onBack = { stage = ProtoStage.SelfieIntro },
+            onBack = { cancelLightingCheckAndProceed { stage = ProtoStage.SelfieIntro } },
         )
 
         ProtoStage.Liveness -> when (val bs = beginState) {
