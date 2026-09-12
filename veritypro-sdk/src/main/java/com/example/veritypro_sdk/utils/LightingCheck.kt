@@ -8,6 +8,7 @@ import androidx.camera.core.ImageProxy
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleOwner
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
@@ -165,6 +166,13 @@ object LightingCheck {
             } else {
                 Verdict.Ok(luma)
             }
+        } catch (e: CancellationException) {
+            // MUST be rethrown, never folded into the catch below. Cancellation is not a failure
+            // of the check — it is the caller saying "stop, I have moved on" (tapping
+            // "Continue anyway" while a recheck is running). Swallowing it reports a normal
+            // completion for a job that was cancelled, which breaks structured concurrency and
+            // was observed on-device as a spurious "Lighting check unavailable" warning.
+            throw e
         } catch (e: Exception) {
             // No front camera, permission revoked mid-flow, provider failure. AWS surfaces its
             // own errors — never turn an unmeasurable check into a blocked verification.
