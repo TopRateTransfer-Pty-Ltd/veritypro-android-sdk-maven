@@ -54,11 +54,12 @@ import com.amplifyframework.core.Amplify
 import com.example.veritypro_sdk.services.CountryDocumentItem
 import com.example.veritypro_sdk.services.Resource
 import com.example.veritypro_sdk.ui.verification.VerityProViewModel
+import com.example.veritypro_sdk.utils.LightingCheck
 import com.example.veritypro_sdk.utils.VerityMode
 import com.example.veritypro_sdk.utils.VerityOption
 import kotlinx.coroutines.launch
 
-private enum class ProtoStage { Welcome, Connecting, ChooseId, CameraAccess, BeforeShoot, Capture, DocPreview, PairChecking, AddressEntry, SelfieIntro, Liveness, AddressUpload, EddUpload, Submitting, AllComplete, Error }
+private enum class ProtoStage { Welcome, Connecting, ChooseId, CameraAccess, BeforeShoot, Capture, DocPreview, PairChecking, AddressEntry, SelfieIntro, LightingWarning, Liveness, AddressUpload, EddUpload, Submitting, AllComplete, Error }
 
 // Ordered active modules for this product (document → biometric → address → edd).
 // internal (not private) so the co-located [ClientFlowDriver] can reuse it as its start() computation.
@@ -232,6 +233,11 @@ fun ProtoVerificationScreen(
     val maxAutoRetakes = 3
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+
+    // User-facing lighting advice from the pre-liveness check. Null unless the check measured
+    // a poor frame — see LightingCheck for why a poor reading advises rather than blocks.
+    var lightingAdvice by remember { mutableStateOf<String?>(null) }
 
     // Select the flow driver: explicit injection wins; otherwise SERVER_DRIVEN → ServerFlowDriver,
     // every other mode → ClientFlowDriver (identical to the pre-refactor client behaviour).
@@ -571,16 +577,50 @@ fun ProtoVerificationScreen(
                     context, Manifest.permission.CAMERA
                 ) == PackageManager.PERMISSION_GRANTED
                 if (camGranted) {
-                    // Reset any stale liveness state from a previous attempt (same VM lifecycle,
-                    // e.g. LIVENESS_ONLY run followed by BIOMETRIC) before starting fresh.
-                    vm.resetLivenessState()
-                    vm.startBeginLivenessWithAssessment(engineSessionId(), context)
-                    stage = ProtoStage.Liveness
+                    // Measure the room BEFORE spending a liveness session on it. The engine's
+                    // brightness gate runs server-side after the whole challenge, so without
+                    // this a user can pass liveness at 99.63 and still be told their selfie was
+                    // unusable. Advisory only — see LightingCheck for why it must not block.
+                    scope.launch {
+                        val verdict = LightingCheck.measure(context, lifecycleOwner)
+                        if (verdict is LightingCheck.Verdict.Poor) {
+                            lightingAdvice = verdict.advice
+                            stage = ProtoStage.LightingWarning
+                        } else {
+                            // Reset any stale liveness state from a previous attempt (same VM
+                            // lifecycle, e.g. LIVENESS_ONLY run followed by BIOMETRIC).
+                            vm.resetLivenessState()
+                            vm.startBeginLivenessWithAssessment(engineSessionId(), context)
+                            stage = ProtoStage.Liveness
+                        }
+                    }
                 } else {
                     livenessCameraLauncher.launch(Manifest.permission.CAMERA)
                 }
             },
             onBack = { stage = ProtoStage.Welcome },
+        )
+
+        ProtoStage.LightingWarning -> ProtoLightingWarningScreen(
+            advice = lightingAdvice.orEmpty(),
+            onRecheck = {
+                scope.launch {
+                    val verdict = LightingCheck.measure(context, lifecycleOwner)
+                    if (verdict is LightingCheck.Verdict.Poor) {
+                        lightingAdvice = verdict.advice
+                    } else {
+                        vm.resetLivenessState()
+                        vm.startBeginLivenessWithAssessment(engineSessionId(), context)
+                        stage = ProtoStage.Liveness
+                    }
+                }
+            },
+            onContinueAnyway = {
+                vm.resetLivenessState()
+                vm.startBeginLivenessWithAssessment(engineSessionId(), context)
+                stage = ProtoStage.Liveness
+            },
+            onBack = { stage = ProtoStage.SelfieIntro },
         )
 
         ProtoStage.Liveness -> when (val bs = beginState) {
