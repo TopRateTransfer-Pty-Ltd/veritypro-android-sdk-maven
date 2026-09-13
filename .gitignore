@@ -8,7 +8,12 @@
 /.idea/navEditor.xml
 /.idea/assetWizardSettings.xml
 .DS_Store
-/build
+# Gradle output, at ANY depth. This was `/build`, which git anchors to the repo
+# root, so every module's own output directory -- verity-device-sdk/build/,
+# veritypro-sdk/build/ -- was left untracked-but-not-ignored. 274 such files were
+# sitting in `git status`, which buries real untracked source in the noise and is
+# one careless `git add -A` away from being committed.
+build/
 /captures
 .externalNativeBuild
 .cxx
@@ -19,3 +24,10 @@ nul
 hs_err_pid*.log
 replay_pid*.log
 .kotlin/
+
+# Ad-hoc device screenshots and captured logs from manual test runs. They are
+# evidence for a single session, not artefacts anyone else can use.
+*.png
+!veritypro-sdk/src/main/res/**/*.png
+!**/src/main/res/**/*.png
+$log.err
