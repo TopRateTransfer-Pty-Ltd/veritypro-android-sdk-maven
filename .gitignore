@@ -19,3 +19,11 @@ nul
 hs_err_pid*.log
 replay_pid*.log
 .kotlin/
+
+# --- build output / local caches (added 2026-09-13) ---
+# Gradle build output in every module, not just the repo root.
+# '/build' above is root-anchored and never matched 'verity-device-sdk/build/'.
+build/
+.gradle/
+/app_home.png
+/app_launch.png
