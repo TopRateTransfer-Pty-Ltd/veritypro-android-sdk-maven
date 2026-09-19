@@ -681,10 +681,11 @@ fun ProtoVerificationScreen(
                             vm.verifyLivenessResult(livenessId ?: aws) { ok ->
                                 livenessApproved = ok
                                 if (!ok) {
-                                    // SERVER: never post /steps/BIOMETRIC/complete for a failed liveness
-                                    // result — that would advance the flow with an unverified selfie.
-                                    driverError = "The liveness check didn't pass. Please try again."
-                                    stage = ProtoStage.Error
+                                    // Liveness didn't pass — go back to the selfie intro so the user
+                                    // can try again WITHOUT losing their captured document.
+                                    // Previously this went to ProtoStage.Error whose onRetry reset the
+                                    // entire flow to Welcome, discarding front/back document images.
+                                    stage = ProtoStage.SelfieIntro
                                 } else {
                                     // CLIENT mode unchanged: advance regardless; the final submit carries
                                     // livenessApproved and the backend decisions on it.
