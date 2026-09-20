@@ -277,10 +277,12 @@ fun ProtoVerificationScreen(
 
     // Select the flow driver: explicit injection wins; otherwise SERVER_DRIVEN → ServerFlowDriver,
     // every other mode → ClientFlowDriver (identical to the pre-refactor client behaviour).
+    // Gap 2 fix: pass the repository to ClientFlowDriver so it can fetch requestedSteps from the
+    // backend when options.serverSessionId is set, making client mode server-authoritative for modules.
     val serverDriven = options.verityMode == VerityMode.SERVER_DRIVEN
     val driver = remember(flowDriver) {
         flowDriver ?: if (serverDriven) ServerFlowDriver(options, vm.repository())
-        else ClientFlowDriver(options, vm)
+        else ClientFlowDriver(options, vm, repository = vm.repository())
     }
     // Server-driven errors from the driver (start/completeModule throw) surface on the error screen.
     var driverError by remember { mutableStateOf<String?>(null) }

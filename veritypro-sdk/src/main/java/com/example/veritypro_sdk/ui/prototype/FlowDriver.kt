@@ -74,12 +74,34 @@ private fun orderSteps(steps: List<String>?): List<String> {
 class ClientFlowDriver(
     private val options: VerityOption,
     private val vm: VerityProViewModel,
+    /** Optional repository. When set AND options.serverSessionId is non-null, start() fetches
+     *  the backend session's requestedSteps so the module order is server-authoritative (Gap 2 fix).
+     *  When null, falls back to the fully local protoModuleOrder() derivation. */
+    private val repository: ApiRepository? = null,
 ) : FlowDriver {
 
     private var queue: List<String> = emptyList()
     private var index: Int = 0
 
     override suspend fun start(): List<String> {
+        // Gap 2 fix: when a serverSessionId is set, fetch the backend's requestedSteps so the
+        // module list is server-authoritative rather than a local guess. Falls back to the local
+        // protoModuleOrder() if the fetch fails, keeping backward compatibility.
+        val existingId = options.serverSessionId?.takeIf { it.isNotBlank() }
+        if (existingId != null && repository != null) {
+            val result = repository.getV2SessionState(existingId, options.apiKey)
+            if (result is Resource.Success) {
+                val state = result.data
+                val requested = orderSteps(state.requestedSteps)
+                val completed = state.completedSteps.map { it.uppercase() }.toSet()
+                val pending = requested.filter { it !in completed }
+                if (pending.isNotEmpty()) {
+                    queue = pending
+                    index = 0
+                    return queue
+                }
+            }
+        }
         queue = protoModuleOrder(options)
         index = 0
         return queue
