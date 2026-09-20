@@ -52,6 +52,12 @@ interface FlowDriver {
     fun serverSessionId(): String? = null
     fun completedModules(): List<String> = emptyList()
     fun terminalResult(): com.example.veritypro_sdk.utils.VerityResult? = null
+    /**
+     * The Attempt ID of the KYC verification record for the current session.
+     * Matches the attemptId field in decision webhook payloads.
+     * Null for client-driven flows or before the document step creates a KYCVerification.
+     */
+    fun attemptId(): String? = null
 }
 
 /** Canonical module order — matches the web Orchestrator's CANONICAL_ORDER. */
@@ -196,6 +202,7 @@ class ServerFlowDriver(
     // establish a returning-user session that runs EDD/BIOMETRIC standalone (no identity prepend).
     override fun serverSessionId(): String? = session?.id?.takeIf { it.isNotBlank() }
     override fun completedModules(): List<String> = session?.completedSteps.orEmpty()
+    override fun attemptId(): String? = session?.attemptId?.takeIf { it.isNotBlank() }
     override fun terminalResult(): com.example.veritypro_sdk.utils.VerityResult? = session?.let {
         com.example.veritypro_sdk.utils.VerityResult.fromServerStatus(it.status, it.kycEngineSessionId, it.completedSteps, it.id)
     }
