@@ -10,6 +10,7 @@ import com.example.veritypro_sdk.utils.CaptureRuntimeData
 import com.example.veritypro_sdk.utils.DeviceUtils
 import com.example.veritypro_sdk.utils.LocationHelper
 import com.example.veritypro_sdk.utils.SecurityAssessmentCollector
+import com.example.veritypro_sdk.utils.withCurrentLocation
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.MultipartBody
 import okhttp3.RequestBody.Companion.asRequestBody
@@ -47,18 +48,13 @@ suspend fun protoSubmitVerification(
 ): Boolean {
     val loc = LocationHelper(context)
     val ip = runCatching { loc.getLocalIpAddress() }.getOrNull() ?: ""
-    val location = runCatching { loc.getCurrentLocation() }.getOrNull()
-    val locString = location?.let { "${it.latitude},${it.longitude}" } ?: ""
+    val runtime = vm.captureRuntimeData().withCurrentLocation(context)
+    val locString = if (runtime.latitude != null && runtime.longitude != null) "${runtime.latitude},${runtime.longitude}" else ""
 
     val securityJson = runCatching {
         SecurityAssessmentCollector.collectJson(
             context,
-            CaptureRuntimeData(
-                latitude = location?.latitude,
-                longitude = location?.longitude,
-                locationAccuracy = location?.accuracy,
-                locationString = locString,
-                locationSource = if (location != null) "gps" else "none",
+            runtime.copy(
                 livenessConfidence = livenessConfidence,
                 captureAttempts = captureAttempts,
             ),

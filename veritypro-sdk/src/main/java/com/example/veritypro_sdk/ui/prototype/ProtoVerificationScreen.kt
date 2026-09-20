@@ -39,6 +39,8 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -52,22 +54,28 @@ import com.amplifyframework.core.Amplify
 import com.example.veritypro_sdk.services.CountryDocumentItem
 import com.example.veritypro_sdk.services.Resource
 import com.example.veritypro_sdk.ui.verification.VerityProViewModel
+import com.example.veritypro_sdk.utils.LightingCheck
 import com.example.veritypro_sdk.utils.VerityMode
 import com.example.veritypro_sdk.utils.VerityOption
 import kotlinx.coroutines.launch
 
-private enum class ProtoStage { Welcome, Connecting, ChooseId, CameraAccess, BeforeShoot, Capture, DocPreview, PairChecking, AddressEntry, SelfieIntro, Liveness, AddressUpload, EddUpload, Submitting, AllComplete, Error }
+private enum class ProtoStage { Welcome, Connecting, ChooseId, CameraAccess, BeforeShoot, Capture, DocPreview, PairChecking, AddressEntry, SelfieIntro, LightingWarning, Liveness, AddressUpload, EddUpload, Submitting, AllComplete, Error }
 
 // Ordered active modules for this product (document → biometric → address → edd).
 // internal (not private) so the co-located [ClientFlowDriver] can reuse it as its start() computation.
 internal fun protoModuleOrder(options: VerityOption): List<String> {
+    require(options.optionalModules.isEmpty()) { "Optional modules are not supported by this native flow" }
+    val supported = setOf("DOCUMENT", "BIOMETRIC", "LIVENESS", "LIVENESS_ONLY", "ADDRESS", "EDD")
+    require(options.requiredModules.orEmpty().all { it.uppercase() in supported }) { "Unsupported verification module" }
+    require(runCatching { VerityMode.valueOf(options.mode.uppercase()) }.isSuccess) { "Unsupported verification mode" }
+    if (options.verityMode == VerityMode.SERVER_DRIVEN && options.requiredModules.isNullOrEmpty()) return emptyList()
     val w = protoWants(options)
     return buildList {
         if (w.document) add("DOCUMENT")
         if (w.biometric) add("BIOMETRIC")
         if (w.address) add("ADDRESS")
         if (w.edd) add("EDD")
-    }.ifEmpty { listOf("DOCUMENT") }
+    }.also { require(it.isNotEmpty()) { "No verification modules configured" } }
 }
 
 // The stage that starts a given module.
@@ -115,7 +123,7 @@ private fun protoWants(options: VerityOption): ProtoWants {
     } else {
         ProtoWants(
             document = mode in setOf("DOCUMENT", "BIOMETRIC", "COMBINED"),
-            biometric = mode in setOf("BIOMETRIC", "LIVENESS_ONLY", "COMBINED"),
+            biometric = mode in setOf("BIOMETRIC", "LIVENESS_ONLY", "COMBINED", "STEP_UP_AUTH"),
             address = mode in setOf("ADDRESS", "COMBINED"),
             edd = mode in setOf("EDD", "COMBINED"),
         )
@@ -182,15 +190,18 @@ fun ProtoVerificationScreen(
     /// the SERVER driver for [VerityMode.SERVER_DRIVEN], so existing callers get identical behaviour.
     /// Injectable for tests / explicit server-driven hosting.
     flowDriver: FlowDriver? = null,
+    onTypedResult: (com.example.veritypro_sdk.utils.VerityResult) -> Unit = {},
+    onIdentifiers: (String?, String?, String?) -> Unit = { _, _, _ -> },
 ) {
     val vm: VerityProViewModel = viewModel()
+    // Credentials exist before either client- or server-owned modules make requests.
+    remember(options) { vm.initializeSession(options); true }
     val kyc by vm.kycState.collectAsState()
     val docsState by vm.countryDocumentsState.collectAsState()
     val beginState by vm.beginLivenessState.collectAsState()
     val livenessRegion by vm.livenessRegion.collectAsState()
     val livenessCredentials by vm.livenessCredentials.collectAsState()
     val addressState by vm.addressState.collectAsState()
-    val addressCreateState by vm.addressCreateState.collectAsState()
     val eddState by vm.eddState.collectAsState()
     var addressStreet by remember { mutableStateOf(options.streetAddress ?: "") }
     var livenessApproved by remember { mutableStateOf(false) }
@@ -214,6 +225,7 @@ fun ProtoVerificationScreen(
     var livenessId by remember { mutableStateOf<String?>(null) }
     var moduleQueue by remember { mutableStateOf<List<String>>(emptyList()) }
     var moduleIndex by remember { mutableStateOf(0) }
+    var completedModules by remember { mutableStateOf<List<String>>(emptyList()) }
     // Cap the auto-retake loop: after this many consecutive failed attempts on a side, stop
     // auto-returning to the camera and show a manual failure (so a persistently-failing capture
     // — e.g. a document the server won't accept — can never loop forever).
@@ -221,6 +233,47 @@ fun ProtoVerificationScreen(
     val maxAutoRetakes = 3
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+
+    // User-facing lighting advice from the pre-liveness check. Null unless the check measured
+    // a poor frame — see LightingCheck for why a poor reading advises rather than blocks.
+    var lightingAdvice by remember { mutableStateOf<String?>(null) }
+
+    // Exactly one lighting check may be in flight. Without this, tapping "check again" and then
+    // "Continue anyway" leaves the first check running: it later resolves, moves the stage, and
+    // unbinds the camera WHILE AWS is opening it. Starting a new check — or continuing past the
+    // warning — cancels any outstanding one first.
+    var lightingJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
+    // Bumped whenever a check is started or abandoned. A result whose generation no longer
+    // matches belongs to a superseded attempt and is discarded — cancellation alone is not
+    // enough, because a check can finish measuring in the instant before its cancel lands.
+    var lightingGen by remember { mutableStateOf(0) }
+
+    /**
+     * Run the check, then hand off. Supersedes any in-flight check so only the latest decision
+     * can move the flow. [onPoor] fires only for a measured-poor frame; an unmeasurable check
+     * proceeds, because it must never block.
+     */
+    fun runLightingCheckThen(onPoor: (String) -> Unit, onProceed: () -> Unit) {
+        lightingJob?.cancel()
+        lightingGen += 1
+        val gen = lightingGen
+        lightingJob = scope.launch {
+            val verdict = LightingCheck.measure(context, lifecycleOwner)
+            // Superseded while measuring — must not move the stage or the user could be pulled
+            // out of the AWS handoff that has already begun.
+            if (gen != lightingGen) return@launch
+            if (verdict is LightingCheck.Verdict.Poor) onPoor(verdict.advice) else onProceed()
+        }
+    }
+
+    /** Skip the check entirely and hand off, abandoning anything still measuring. */
+    fun cancelLightingCheckAndProceed(onProceed: () -> Unit) {
+        lightingJob?.cancel()
+        lightingJob = null
+        lightingGen += 1 // invalidates any result still in flight
+        onProceed()
+    }
 
     // Select the flow driver: explicit injection wins; otherwise SERVER_DRIVEN → ServerFlowDriver,
     // every other mode → ClientFlowDriver (identical to the pre-refactor client behaviour).
@@ -235,6 +288,9 @@ fun ProtoVerificationScreen(
     // The engine session id downstream modules key against: the driver's id (server-driven) falls
     // back to the createKyc session id (client) so both modes thread a single engine session.
     fun engineSessionId(): String = driver.engineSessionId() ?: vm.getSessionId()
+    androidx.compose.runtime.SideEffect {
+        onIdentifiers(engineSessionId().takeIf { it.isNotBlank() }, driver.serverSessionId(), vm.getAddressSessionId().takeIf { it.isNotBlank() })
+    }
 
     // Ensure Amplify is configured for the liveness detector (idempotent). The real SDK Activity
     // configures it, but the prototype may be hosted by a plain Activity that doesn't.
@@ -252,6 +308,21 @@ fun ProtoVerificationScreen(
     ) { grants ->
         // Camera is required to advance; coarse location consent is requested alongside it (optional).
         if (grants[Manifest.permission.CAMERA] == true) stage = ProtoStage.BeforeShoot
+    }
+
+    // Separate permission launcher for the liveness path. FaceLivenessDetector(disableStartView=true)
+    // starts immediately without a camera-prompt of its own; without this gate it silently calls
+    // onError on first run (LIVENESS_ONLY mode never goes through CameraAccess), which throws the
+    // flow back to SelfieIntro and creates an infinite retry loop.
+    val livenessCameraLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (granted) {
+            vm.resetLivenessState()
+            vm.startBeginLivenessWithAssessment(engineSessionId(), context)
+            stage = ProtoStage.Liveness
+        }
+        // If denied, we stay on SelfieIntro; the user can try again or exit.
     }
 
     // Fire the real backend session creation when the user consents and continues.
@@ -292,6 +363,7 @@ fun ProtoVerificationScreen(
                 // stepData is the server step-complete payload (ADDRESS: AddressSessionId; EDD: the
                 // security-assessment fields). null for DOCUMENT / BIOMETRIC and every client-mode call.
                 val next = driver.completeModule(completed, stepData)
+                if (completed != "DOCUMENT" || serverDriven) completedModules = (completedModules + completed).distinct()
                 if (next == null) {
                     stage = ProtoStage.Submitting
                 } else {
@@ -324,11 +396,13 @@ fun ProtoVerificationScreen(
                         try {
                             val queue = driver.start()
                             if (queue.isEmpty()) {
-                                driverError = "No verification steps were configured for this session."
-                                stage = ProtoStage.Error
+                                completedModules = driver.completedModules()
+                                flowOk = true
+                                stage = ProtoStage.AllComplete
                                 return@launch
                             }
                             moduleQueue = queue
+                            completedModules = driver.completedModules()
                             moduleIndex = 0
                             val first = queue.first()
                             // DOCUMENT needs the region documents; load them independently.
@@ -336,6 +410,7 @@ fun ProtoVerificationScreen(
                                 vm.fetchCountryDocuments(options.apiKey, options.integrationId, options.isO2Code)
                             }
                             val sid = engineSessionId()
+                            vm.initializeSession(options, sid)
                             if (queue.contains("DOCUMENT") && sid.isNotBlank()) onSessionEstablished(sid)
                             // NB: onServerSessionEstablished is intentionally NOT fired here — the session
                             // has no completed document yet. It fires only AFTER the DOCUMENT step's
@@ -429,6 +504,7 @@ fun ProtoVerificationScreen(
             val sides = protoSides(chosen?.documentType)
             val isBack = sides.getOrElse(sideIndex) { false }
             ProtoDocumentCaptureScreen(
+                onMotionCollected = vm::recordCaptureMotion,
                 docLabel = chosen?.documentType ?: "Document",
                 sideLabel = if (isBack) "Back" else "Front",
                 frameAspect = protoFrameAspect(chosen?.documentType),
@@ -528,13 +604,61 @@ fun ProtoVerificationScreen(
         }
 
         ProtoStage.SelfieIntro -> ProtoSelfieIntroScreen(
+            hasDocument = moduleQueue.contains("DOCUMENT"),
+            step = if (moduleQueue.size > 1) "${moduleIndex + 1}/${moduleQueue.size}" else null,
             onReady = {
                 // begin-liveness needs the ENGINE session id. Client mode: createKyc session id.
                 // Server mode: the v2 session's kycEngineSessionId (via engineSessionId()).
-                vm.startBeginLiveness(engineSessionId(), forceRetry = true)
-                stage = ProtoStage.Liveness
+                val camGranted = ContextCompat.checkSelfPermission(
+                    context, Manifest.permission.CAMERA
+                ) == PackageManager.PERMISSION_GRANTED
+                if (camGranted) {
+                    // Measure the room BEFORE spending a liveness session on it. The engine's
+                    // brightness gate runs server-side after the whole challenge, so without
+                    // this a user can pass liveness at 99.63 and still be told their selfie was
+                    // unusable. Advisory only — see LightingCheck for why it must not block.
+                    runLightingCheckThen(
+                        onPoor = { advice ->
+                            lightingAdvice = advice
+                            stage = ProtoStage.LightingWarning
+                        },
+                        onProceed = {
+                            // Reset any stale liveness state from a previous attempt (same VM
+                            // lifecycle, e.g. LIVENESS_ONLY run followed by BIOMETRIC).
+                            vm.resetLivenessState()
+                            vm.startBeginLivenessWithAssessment(engineSessionId(), context)
+                            stage = ProtoStage.Liveness
+                        },
+                    )
+                } else {
+                    livenessCameraLauncher.launch(Manifest.permission.CAMERA)
+                }
             },
             onBack = { stage = ProtoStage.Welcome },
+        )
+
+        ProtoStage.LightingWarning -> ProtoLightingWarningScreen(
+            advice = lightingAdvice.orEmpty(),
+            onRecheck = {
+                runLightingCheckThen(
+                    onPoor = { advice -> lightingAdvice = advice },
+                    onProceed = {
+                        vm.resetLivenessState()
+                        vm.startBeginLivenessWithAssessment(engineSessionId(), context)
+                        stage = ProtoStage.Liveness
+                    },
+                )
+            },
+            onContinueAnyway = {
+                // Cancels any recheck still measuring, so it cannot unbind the camera out from
+                // under the AWS handoff that is about to start.
+                cancelLightingCheckAndProceed {
+                    vm.resetLivenessState()
+                    vm.startBeginLivenessWithAssessment(engineSessionId(), context)
+                    stage = ProtoStage.Liveness
+                }
+            },
+            onBack = { cancelLightingCheckAndProceed { stage = ProtoStage.SelfieIntro } },
         )
 
         ProtoStage.Liveness -> when (val bs = beginState) {
@@ -543,20 +667,25 @@ fun ProtoVerificationScreen(
                 if (aws.isNullOrBlank()) {
                     ProtoProcessingScreen("BIOMETRIC", "Preparing the\nliveness check", "One moment…", Proto.Teal)
                 } else {
-                    // Call the liveness detector directly in a neo-brutalist wrapper (no legacy prep UI).
+                    // Pull region + credentials from the same Success object — avoids any timing
+                    // gap between the beginState StateFlow update and the separate livenessCredentials
+                    // / livenessRegion StateFlow updates (all set in the same coroutine continuation,
+                    // but Compose may snapshot them across frames in edge cases).
                     ProtoLivenessScreen(
+                        onMotionCollected = vm::recordCaptureMotion,
                         awsSessionId = aws,
-                        region = livenessRegion,
-                        credentials = livenessCredentials,
+                        region = bs.data.region ?: "us-east-1",
+                        credentials = bs.data.credentials,
                         onComplete = {
                             livenessId = bs.data.id ?: aws
                             vm.verifyLivenessResult(livenessId ?: aws) { ok ->
                                 livenessApproved = ok
-                                if (serverDriven && !ok) {
-                                    // SERVER: never post /steps/BIOMETRIC/complete for a failed liveness
-                                    // result — that would advance the flow with an unverified selfie.
-                                    driverError = "The liveness check didn't pass. Please try again."
-                                    stage = ProtoStage.Error
+                                if (!ok) {
+                                    // Liveness didn't pass — go back to the selfie intro so the user
+                                    // can try again WITHOUT losing their captured document.
+                                    // Previously this went to ProtoStage.Error whose onRetry reset the
+                                    // entire flow to Welcome, discarding front/back document images.
+                                    stage = ProtoStage.SelfieIntro
                                 } else {
                                     // CLIENT mode unchanged: advance regardless; the final submit carries
                                     // livenessApproved and the backend decisions on it.
@@ -580,24 +709,21 @@ fun ProtoVerificationScreen(
         }
 
         ProtoStage.AddressEntry -> {
-            // Step 1: capture the address + register the verification session (create).
-            var phase by remember { mutableStateOf("idle") }
-            LaunchedEffect(addressCreateState) {
-                when (addressCreateState) {
-                    is Resource.Loading -> phase = "creating"
-                    is Resource.Success<*> -> if (phase == "creating") stage = ProtoStage.AddressUpload
-                    else -> {}
-                }
-            }
+            // Capture the address locally. Create the service session only with proof ready.
             ProtoAddressEntryScreen(
                 initial = addressStreet,
-                submitting = addressCreateState is Resource.Loading,
-                errorMsg = (addressCreateState as? Resource.Error)?.let { "Couldn't start address verification. Please try again." },
-                placesApiKey = options.placesApiKey,
-                countryIso2 = options.isO2Code,
+                submitting = false,
+                errorMsg = null,
+                // Backend-proxied autocomplete — SDK carries no Google key. Country biases results.
+                onAutocomplete = { query, token ->
+                    vm.repository().addressAutocomplete(query, options.isO2Code, token, options.apiKey)
+                },
+                onResolveDetails = { placeId, token ->
+                    vm.repository().addressDetails(placeId, token, options.apiKey)
+                },
                 onSubmit = { street ->
                     addressStreet = street
-                    vm.createAddressVerification(options, street)
+                    stage = ProtoStage.AddressUpload
                 },
                 onBack = onExit,
             )
@@ -610,7 +736,10 @@ fun ProtoVerificationScreen(
             LaunchedEffect(addressState) {
                 when (addressState) {
                     is Resource.Loading -> phase = "submitting"
-                    is Resource.Success<*> -> if (phase == "submitting") advanceModule(pendingStepData)
+                    is Resource.Success<*> -> if (phase == "submitting") {
+                        pendingStepData = if (serverDriven) mapOf("AddressSessionId" to vm.getAddressSessionId()) else null
+                        advanceModule(pendingStepData)
+                    }
                     else -> {}
                 }
             }
@@ -625,13 +754,8 @@ fun ProtoVerificationScreen(
                 // Surface the actual backend reason (e.g. size/format/processing) instead of hiding it.
                 errorMsg = (addressState as? Resource.Error)?.message?.ifBlank { "Couldn't submit. Please try again." },
                 onSubmit = { type, file ->
-                    // SERVER-DRIVEN: the step-complete links the address verification session created at
-                    // the AddressEntry stage (createAddressVerification → vm.getAddressSessionId()) —
-                    // mirrors the web { AddressSessionId }. Client mode leaves this null.
-                    if (serverDriven) {
-                        pendingStepData = mapOf("AddressSessionId" to vm.getAddressSessionId())
-                    }
-                    vm.submitAddressDocument(vm.getAddressSessionId(), file, type, "", "", options.apiKey, context)
+                    phase = "submitting"
+                    vm.submitAddressProof(options, addressStreet, file, type, context)
                 },
                 onBack = onExit,
             )
@@ -660,7 +784,7 @@ fun ProtoVerificationScreen(
                 onSubmit = { type, file ->
                     // Subject = the KYC session when present; otherwise the integration id (EDD-only
                     // products have no KYC session).
-                    val subject = vm.getSessionId().ifBlank { options.integrationId }
+                    val subject = options.subjectId?.takeIf { it.isNotBlank() } ?: options.vendorData
                     if (serverDriven) {
                         // SERVER-DRIVEN: build the step-complete payload the web sends for EDD
                         // ({ SecurityAssessmentJson, PlatformUsed, IpLocation, DocumentType }) from the
@@ -714,6 +838,7 @@ fun ProtoVerificationScreen(
                         livenessConfidence = null,
                         captureAttempts = retakeAttempts + 1,
                     )
+                    if (flowOk) completedModules = (listOf("DOCUMENT") + completedModules).distinct()
                     stage = ProtoStage.AllComplete
                 }
             } else {
@@ -744,7 +869,17 @@ fun ProtoVerificationScreen(
                 title = doneTitle,
                 subtitle = doneSubtitle,
                 onDone = {
-                    onResult(flowOk)
+                    val result = if (flowOk && serverDriven) requireNotNull(driver.terminalResult()) else if (flowOk) com.example.veritypro_sdk.utils.VerityResult.submitted(
+                        engineSessionId().takeIf { it.isNotBlank() }, completedModules,
+                        driver.serverSessionId(), (eddState as? Resource.Success)?.data?.caseId,
+                    ) else com.example.veritypro_sdk.utils.VerityResult(
+                        status = "FAILED", sessionId = engineSessionId().takeIf { it.isNotBlank() },
+                        completedSteps = completedModules, serverSessionId = driver.serverSessionId(),
+                        error = com.example.veritypro_sdk.utils.VerityVerificationError("UPLOAD_FAILED", "Verification could not be submitted."),
+                    )
+                    onTypedResult(result.copy(addressSessionId = vm.getAddressSessionId().takeIf { it.isNotBlank() }))
+                    // Legacy callbacks cannot distinguish submission from approval. Fail closed.
+                    onResult(result.isApproved)
                     onExit()
                 },
             )
@@ -771,7 +906,8 @@ fun ProtoVerificationScreen(
                     .align(Alignment.TopEnd)
                     .statusBarsPadding()
                     .padding(top = 8.dp, end = 16.dp)
-                    .size(34.dp)
+                    .size(48.dp)
+                    .semantics { contentDescription = "Exit verification" }
                     .clip(CircleShape)
                     .background(Color.White)
                     .border(2.dp, Proto.Ink, CircleShape)

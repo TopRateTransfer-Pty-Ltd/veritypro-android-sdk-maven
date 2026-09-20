@@ -7,6 +7,7 @@ import okhttp3.RequestBody
 import retrofit2.http.Body
 import retrofit2.http.GET
 import retrofit2.http.Header
+import retrofit2.http.Headers
 import retrofit2.http.Multipart
 import retrofit2.http.POST
 import retrofit2.http.Part
@@ -20,6 +21,18 @@ interface VerityApiService {
         @Body data: DataPayload, @Header("x-api-key") apiKey: String,
     ): ApiResponse<SessionData>
 
+    // 180 s, not the client-wide 60 s. This call uploads the document images and the
+    // liveness video, then blocks while the server runs the verification pipeline —
+    // and the integration service alone allows its call to the KYC engine 120 s
+    // ("F-18: Increased to 120s to accommodate large video uploads"). Waiting only
+    // 60 s aborted submissions the server was still completing: observed on device as
+    // SocketTimeoutException at readResponseHeaders 82 s in, discarding a liveness
+    // result that had already SUCCEEDED at 99.63 confidence.
+    //
+    // 180 s = the server's 120 s upstream budget plus headroom for its own work and a
+    // slow uplink. Do NOT convert this into a retry: the submit is not idempotent and
+    // retrying it has already caused duplicate uploads once (same F-18 note).
+    @Headers("${PerCallTimeoutInterceptor.TIMEOUT_HEADER}: 180")
     @POST("/kycintegration/kyc-verification/update-kyc-verification")
     @Multipart
     suspend fun updateKyc(
@@ -43,7 +56,14 @@ interface VerityApiService {
     @POST("/kycintegration/kyc-verification/begin-liveness")
     suspend fun beginLiveness(
         @Query("sessionId") sessionId: String,
-        @Header("x-api-key") apiKey: String
+        @Header("x-api-key") apiKey: String,
+    ): BeginLivenessResponse
+
+    @POST("/kycintegration/kyc-verification/begin-liveness")
+    suspend fun beginLivenessWithAssessment(
+        @Query("sessionId") sessionId: String,
+        @Header("x-api-key") apiKey: String,
+        @Body assessment: BeginLivenessAssessmentRequest,
     ): BeginLivenessResponse
 
     /** Step-up begin-liveness — authenticated by API key OR capability token bearer. Retrofit omits null headers. */
@@ -52,7 +72,7 @@ interface VerityApiService {
         @Path("challengeId") challengeId: String,
         @Header("x-api-key") apiKey: String? = null,
         @Header("Authorization") authorization: String? = null,
-    ): BeginLivenessResponse
+    ): StepUpBeginResponse
 
     @GET("/kycintegration/country/get-country-document")
     suspend fun getCountryDocuments(
@@ -73,6 +93,22 @@ interface VerityApiService {
     ): LivenessResultResponse
 
     // ── Address Verification ──
+
+    // Backend-proxied address autocomplete (Google Places server-side; SDK holds no Google key).
+    @GET("/addressverification/api/v1/address/autocomplete")
+    suspend fun addressAutocomplete(
+        @Query("q") query: String,
+        @Query("country") country: String?,
+        @Query("sessionToken") sessionToken: String?,
+        @Header("x-api-key") apiKey: String
+    ): ApiResponse<AddressAutocompleteResponse>
+
+    @GET("/addressverification/api/v1/address/details")
+    suspend fun addressDetails(
+        @Query("placeId") placeId: String,
+        @Query("sessionToken") sessionToken: String?,
+        @Header("x-api-key") apiKey: String
+    ): ApiResponse<AddressDetailsResponse>
 
     @POST("/addressverification/address-verification/add-verification")
     suspend fun createAddressVerification(
@@ -127,7 +163,10 @@ interface VerityApiService {
         @Part("City") city: RequestBody? = null,
         @Part("StateOrProvince") stateOrProvince: RequestBody? = null,
         @Part("PostalCode") postalCode: RequestBody? = null,
-        @Header("x-api-key") apiKey: String
+        @Part("Country") country: RequestBody? = null,
+        @Part("KycProfileJson") profile: RequestBody? = null,
+        @Header("Authorization") authorization: String? = null,
+        @Header("x-api-key") apiKey: String?
     ): EddApiResponse<EddCaseData>
 
     @GET("/edd/api/edd/cases/{caseId}/status")
@@ -180,12 +219,12 @@ interface VerityApiService {
         @Header("x-api-key") apiKey: String? = null,
         @Header("Authorization") authorization: String? = null,
         @Body request: StepUpCompleteRequest,
-    ): StepUpCompleteResponse
+    ): StepUpCompletionEnvelope
 
     @GET("/kycintegration/api/v1/step-up/challenges/{challengeId}")
     suspend fun getStepUpChallengeStatus(
         @Path("challengeId") challengeId: String,
         @Header("x-api-key") apiKey: String? = null,
         @Header("Authorization") authorization: String? = null,
-    ): StepUpStatusResponse
+    ): StepUpCompletionEnvelope
 }

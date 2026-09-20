@@ -50,6 +50,8 @@ interface FlowDriver {
      * identity is already established by the prior session. Default null so client callers are unaffected.
      */
     fun serverSessionId(): String? = null
+    fun completedModules(): List<String> = emptyList()
+    fun terminalResult(): com.example.veritypro_sdk.utils.VerityResult? = null
 }
 
 /** Canonical module order — matches the web Orchestrator's CANONICAL_ORDER. */
@@ -132,6 +134,7 @@ class ServerFlowDriver(
         // skip anything already marked completed (device handoff / refresh) so the user isn't asked
         // to redo finished checks.
         val requested = orderSteps(state.requestedSteps)
+        require(requested.isNotEmpty()) { "No recognized verification steps were configured." }
         val completed = state.completedSteps.map { it.uppercase() }.toSet()
         val pending = requested.filter { it !in completed }
         Log.d(
@@ -170,4 +173,8 @@ class ServerFlowDriver(
     // The v2 session id (VerificationSession.Id) — what the backend accepts as previousSessionId to
     // establish a returning-user session that runs EDD/BIOMETRIC standalone (no identity prepend).
     override fun serverSessionId(): String? = session?.id?.takeIf { it.isNotBlank() }
+    override fun completedModules(): List<String> = session?.completedSteps.orEmpty()
+    override fun terminalResult(): com.example.veritypro_sdk.utils.VerityResult? = session?.let {
+        com.example.veritypro_sdk.utils.VerityResult.fromServerStatus(it.status, it.kycEngineSessionId, it.completedSteps, it.id)
+    }
 }

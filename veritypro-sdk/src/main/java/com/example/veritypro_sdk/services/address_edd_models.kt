@@ -28,6 +28,37 @@ data class AddressVerificationResponse(
 /** Address document types: 1 = Utility Bill, 2 = Account Statement */
 data class AddressDocType(val id: Int, val name: String)
 
+// ── Address Autocomplete (backend-proxied Google Places; SDK holds no Google key) ──
+// The SDK calls /addressverification/api/v1/address/{autocomplete,details}; the backend
+// calls Google server-side. Field names match the backend's camelCase JSON (Gson exact-match).
+
+data class AddressAutocompleteResponse(
+    val predictions: List<AddressPrediction> = emptyList(),
+    val attribution: String = "Powered by Google",
+)
+
+data class AddressPrediction(
+    val description: String = "",
+    val placeId: String = "",
+    val mainText: String? = null,
+    val secondaryText: String? = null,
+)
+
+data class AddressDetailsResponse(
+    val formattedAddress: String? = null,
+    val streetNumber: String? = null,
+    val route: String? = null,
+    val streetAddress: String? = null,
+    val unit: String? = null,
+    val city: String? = null,
+    val state: String? = null,
+    val postalCode: String? = null,
+    val country: String? = null,
+    val countryCode: String? = null,
+    val latitude: Double? = null,
+    val longitude: Double? = null,
+)
+
 // ── EDD (Enhanced Due Diligence) ──
 
 data class EddCaseResponse(

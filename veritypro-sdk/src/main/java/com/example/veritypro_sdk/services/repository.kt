@@ -1,4 +1,5 @@
 package com.example.veritypro_sdk.services
+import com.example.veritypro_sdk.utils.withCurrentLocation
 
 import android.util.Log
 import com.example.veritypro_sdk.utils.DeviceUtils
@@ -18,6 +19,14 @@ import java.io.IOException
 import java.util.UUID
 
 class ApiRepository {
+    private var configuredApi: VerityApiService? = null
+    private var configuredBaseUrl: String? = null
+    private val api: VerityApiService get() = configuredApi ?: RetrofitInstance.api
+    fun configureBaseUrl(baseUrl: String) {
+        if (configuredBaseUrl == baseUrl) return
+        configuredApi = RetrofitInstance.createApi(baseUrl)
+        configuredBaseUrl = baseUrl
+    }
 
     /**
      * Parse HTTP error response into a user-friendly message.
@@ -34,8 +43,8 @@ class ApiRepository {
             }
         }
 
-        // Log the raw body so staging errors are always visible in logcat
-        Log.e("Verity", "HTTP $statusCode raw error body: $errorBody")
+        // Response bodies can contain identity data or credentials. Never log them.
+        Log.e("Verity", "HTTP error status=$statusCode")
 
         try {
             val json = JSONObject(errorBody)
@@ -114,7 +123,7 @@ class ApiRepository {
     suspend fun createKyc(data: VerityOption): Resource<SessionData> {
         return try {
             val response: ApiResponse<SessionData> =
-                RetrofitInstance.api.createKyc(data.toPayload(), data.apiKey)
+                api.createKyc(data.toPayload(), data.apiKey)
 
             if (response.statusCode == 201 && response.data != null) {
                 Log.d("Verity", "Kyc Successfully Initialized")
@@ -129,7 +138,7 @@ class ApiRepository {
         } catch (e: HttpException) {
             val errorBody = e.response()?.errorBody()?.string()
             val errorMessage = parseHttpError(e.code(), errorBody)
-            Log.e("Verity", "createKyc HTTP ${e.code()}: $errorMessage")
+            Log.e("Verity", "createKyc HTTP status=${e.code()}")
             Resource.Error(errorMessage)
         } catch (e: CancellationException) {
             throw e
@@ -154,7 +163,7 @@ class ApiRepository {
 
 
             val response: ApiResponse<String> =
-                RetrofitInstance.api.updateKyc(
+                api.updateKyc(
                     SessionId = data.SessionId.toRequestBody(),
                     DocumentType = data.DocumentType.toString().toRequestBody(),
                     PlatformUsed = data.PlatformUsed.toRequestBody(),
@@ -182,7 +191,7 @@ class ApiRepository {
                 Log.w("Verity", "updateKyc 409 upload_duplicate — session already submitted, advancing as success")
                 Resource.CompletedSuccess("KYC Verification already submitted")
             } else {
-                Log.e("Verity", "Error Submitting KYC data: $response")
+                Log.e("Verity", "updateKyc rejected status=${response.statusCode}")
                 Resource.Error(response.error?.message ?: "Unable to validate")
             }
         } catch (e: IOException) {
@@ -202,7 +211,7 @@ class ApiRepository {
                 return Resource.CompletedSuccess("KYC Verification already submitted")
             }
             val errorMessage = parseHttpError(e.code(), errorBody)
-            Log.e("Verity", "updateKyc HTTP ${e.code()}: $errorMessage")
+            Log.e("Verity", "updateKyc HTTP status=${e.code()}")
             Resource.Error(errorMessage)
         } catch (e: CancellationException) {
             throw e
@@ -213,9 +222,41 @@ class ApiRepository {
     }
 
 
+    /**
+     * Backend-proxied address autocomplete. Fail-soft: any error returns an empty list so the
+     * address form silently falls back to manual entry (never blocks the flow).
+     */
+    suspend fun addressAutocomplete(
+        query: String, country: String?, sessionToken: String?, apiKey: String
+    ): List<AddressPrediction> {
+        return try {
+            api.addressAutocomplete(query, country, sessionToken, apiKey)
+                .data?.predictions ?: emptyList()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w("Verity", "addressAutocomplete failed: ${e.message}")
+            emptyList()
+        }
+    }
+
+    /** Resolves a selected prediction's placeId to structured components. Null on any failure. */
+    suspend fun addressDetails(
+        placeId: String, sessionToken: String?, apiKey: String
+    ): AddressDetailsResponse? {
+        return try {
+            api.addressDetails(placeId, sessionToken, apiKey).data
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w("Verity", "addressDetails failed: ${e.message}")
+            null
+        }
+    }
+
     suspend fun getCountryDocuments(apiKey: String, integrationId: String, isO2Code: String): Resource<List<CountryDocumentItem>> {
         return try {
-            val response = RetrofitInstance.api.getCountryDocuments(apiKey, integrationId)
+            val response = api.getCountryDocuments(apiKey, integrationId)
             Log.d("Verity", "getCountryDocuments statusCode: ${response.statusCode}")
             Log.d("Verity", "getCountryDocuments data null? ${response.data == null}")
             if (response.data != null) {
@@ -262,7 +303,7 @@ class ApiRepository {
         } catch (e: HttpException) {
             val errorBody = e.response()?.errorBody()?.string()
             val errorMessage = parseHttpError(e.code(), errorBody)
-            Log.e("Verity", "getCountryDocuments HTTP ${e.code()}: $errorMessage")
+            Log.e("Verity", "getCountryDocuments HTTP status=${e.code()}")
             Resource.Error(errorMessage)
         } catch (e: CancellationException) {
             throw e
@@ -275,7 +316,7 @@ class ApiRepository {
     suspend fun getLivenessResult(livenessId: String, apiKey: String): Resource<LivenessResultResponse> {
         return try {
             val url = "/kycintegration/kyc-verification/liveness-result/$livenessId"
-            val resp = RetrofitInstance.api.getLivenessResult(url, apiKey)
+            val resp = api.getLivenessResult(url, apiKey)
             Log.d("Verity", "getLivenessResult status=${resp.status}, confidence=${resp.confidence}")
 
             when (resp.status.uppercase()) {
@@ -288,7 +329,7 @@ class ApiRepository {
             Resource.Error("Network error: ${e.message}")
         } catch (e: HttpException) {
             val body = e.response()?.errorBody()?.string()
-            Log.e("Verity", "getLivenessResult HTTP error: ${e.code()} - $body")
+            Log.e("Verity", "getLivenessResult HTTP status=${e.code()}")
             Resource.Error("HTTP ${e.code()}: ${body ?: e.message()}")
         } catch (e: CancellationException) {
             throw e
@@ -320,7 +361,7 @@ class ApiRepository {
         // Trigger backend to start processing the liveness result
         try {
             val pollUrl = "/kycintegration/kyc-verification/liveness-result/$livenessId/poll"
-            RetrofitInstance.api.triggerLivenessPoll(pollUrl, apiKey)
+            api.triggerLivenessPoll(pollUrl, apiKey)
             Log.d("Verity", "pollLivenessResult: triggered backend poll for $livenessId")
         } catch (e: Exception) {
             Log.w("Verity", "pollLivenessResult: trigger poll failed (non-fatal): ${e.message}")
@@ -342,7 +383,7 @@ class ApiRepository {
                 }
                 is Resource.Error -> {
                     // Terminal failure — don't keep polling
-                    Log.e("Verity", "pollLivenessResult: terminal error on attempt $attempt: ${result.message}")
+                    Log.e("Verity", "pollLivenessResult: terminal error on attempt $attempt")
                     return result
                 }
                 is Resource.Loading -> {
@@ -365,9 +406,10 @@ class ApiRepository {
         return Resource.Error("Liveness verification timed out after $maxAttempts attempts. Please try again.")
     }
 
-    suspend fun beginLiveness(sessionId: String, apiKey: String): Resource<BeginLivenessData> {
+    suspend fun beginLiveness(sessionId: String, apiKey: String, securityAssessmentJson: String? = null): Resource<BeginLivenessData> {
         return try {
-            val resp = RetrofitInstance.api.beginLiveness(sessionId, apiKey)
+            val resp = if (securityAssessmentJson == null) api.beginLiveness(sessionId, apiKey)
+                else api.beginLivenessWithAssessment(sessionId, apiKey, BeginLivenessAssessmentRequest(securityAssessmentJson))
             Log.d("Verity", "beginLiveness response for session $sessionId")
 
             if ((resp.statusCode in 200..299) || resp.statusCode == 100) {
@@ -387,7 +429,7 @@ class ApiRepository {
             Resource.Error("Network error: ${e.message}")
         } catch (e: HttpException) {
             val body = e.response()?.errorBody()?.string()
-            Log.e("Verity", "beginLiveness HTTP error: ${e.code()} - $body")
+            Log.e("Verity", "beginLiveness HTTP status=${e.code()}")
             Resource.Error("HTTP ${e.code()}: ${body ?: e.message()}")
         } catch (e: CancellationException) {
             throw e
@@ -424,14 +466,14 @@ class ApiRepository {
                     // (the ISO2 code satisfies the "at least one other component" rule).
                     country = options.isO2Code,
                 )
-                val response = RetrofitInstance.api.createAddressVerification(request, options.apiKey)
+                val response = api.createAddressVerification(request, options.apiKey)
 
                 if (response.statusCode in 100..299 && response.data != null) {
                     Log.d("Verity", "Address verification session created")
                     return Resource.Success(response.data)
                 } else {
                     lastError = response.error?.message ?: "Unable to create address verification"
-                    Log.e("Verity", "Error creating address verification (attempt ${attempt + 1}): $lastError")
+                    Log.e("Verity", "createAddressVerification rejected attempt=${attempt + 1} status=${response.statusCode}")
                 }
             } catch (e: CancellationException) {
                 throw e
@@ -451,7 +493,7 @@ class ApiRepository {
                         }
                     } catch (_: Exception) {}
                 }
-                Log.e("Verity", "HTTP $code Error (attempt ${attempt + 1}): $errorBody")
+                Log.e("Verity", "createAddressVerification HTTP status=$code attempt=${attempt + 1}")
                 // Don't retry on 4xx client errors (except 429)
                 if (code in 400..499 && code != 429) return Resource.Error(lastError!!)
             } catch (e: Exception) {
@@ -502,13 +544,14 @@ class ApiRepository {
 
             // Collect security assessment JSON
             val securityJson = context?.let {
-                com.example.veritypro_sdk.utils.SecurityAssessmentCollector.collectJson(it)
+                com.example.veritypro_sdk.utils.SecurityAssessmentCollector.collectJson(it,
+                    com.example.veritypro_sdk.utils.CaptureRuntimeData().withCurrentLocation(it))
             } ?: ""
 
             // Generate idempotency key to prevent duplicate submissions on retries
             val idempotencyKey = UUID.randomUUID().toString()
 
-            val response = RetrofitInstance.api.updateAddressVerification(
+            val response = api.updateAddressVerification(
                 sessionId = sessionId.toRequestBody(),
                 documentType = documentType.toString().toRequestBody(),
                 addressDocument = filePart,
@@ -523,11 +566,11 @@ class ApiRepository {
 
             // Success = 2xx envelope. Data is just a status string (201/202 Accepted), so do NOT
             // require it to be non-null (the previous check failed here even on backend success).
-            if (response.statusCode in 100..299) {
+            if (response.statusCode in 200..299) {
                 Log.d("Verity", "Address document submitted (status=${response.statusCode})")
                 Resource.Success(response.data ?: response.statusMessage ?: "Submitted")
             } else {
-                Log.e("Verity", "Error submitting address document: status=${response.statusCode} msg=${response.statusMessage} err=${response.error?.message}")
+                Log.e("Verity", "submitAddressDocument rejected status=${response.statusCode}")
                 Resource.Error(response.error?.message ?: response.statusMessage ?: "Unable to submit address document")
             }
         } catch (e: IOException) {
@@ -536,7 +579,7 @@ class ApiRepository {
         } catch (e: HttpException) {
             val errorBody = e.response()?.errorBody()?.string()
             // Log the raw body so the real backend reason is visible (previously discarded).
-            Log.e("Verity", "submitAddressDocument HTTP ${e.code()} body: $errorBody")
+            Log.e("Verity", "submitAddressDocument HTTP status=${e.code()}")
             var errorMessage = "HTTP ${e.code()} Error"
             if (errorBody != null) {
                 try {
@@ -572,7 +615,10 @@ class ApiRepository {
         integrationId: String? = null,
         city: String? = null,
         stateOrProvince: String? = null,
-        postalCode: String? = null
+        postalCode: String? = null,
+        authToken: String? = null,
+        country: String? = null,
+        profile: Map<String, String>? = null,
     ): Resource<EddCaseResponse> {
         return try {
             // Detect MIME type based on file extension — support PDFs alongside images
@@ -598,7 +644,8 @@ class ApiRepository {
             val platform = com.example.veritypro_sdk.utils.SecurityAssessmentCollector.platformUsed()
             val deviceBrowser = com.example.veritypro_sdk.utils.SecurityAssessmentCollector.deviceAndBrowser()
             val securityJson = context?.let {
-                com.example.veritypro_sdk.utils.SecurityAssessmentCollector.collectJson(it)
+                com.example.veritypro_sdk.utils.SecurityAssessmentCollector.collectJson(it,
+                    com.example.veritypro_sdk.utils.CaptureRuntimeData().withCurrentLocation(it))
             } ?: ""
 
             // Collect IP address (use LocationHelper if context available)
@@ -609,7 +656,7 @@ class ApiRepository {
             // Generate IdempotencyKey to prevent duplicate case creation on network retries
             val idempotencyKey = java.util.UUID.randomUUID().toString()
 
-            val response = RetrofitInstance.api.createEddCase(
+            val response = api.createEddCase(
                 subjectId = subjectId.toRequestBody(),
                 subjectName = subjectName.toRequestBody(),
                 documentType = documentType.toString().toRequestBody(),
@@ -624,7 +671,10 @@ class ApiRepository {
                 city = city?.takeIf { it.isNotBlank() }?.toRequestBody(),
                 stateOrProvince = stateOrProvince?.takeIf { it.isNotBlank() }?.toRequestBody(),
                 postalCode = postalCode?.takeIf { it.isNotBlank() }?.toRequestBody(),
-                apiKey = apiKey
+                country = country?.takeIf { it.isNotBlank() }?.toRequestBody(),
+                profile = profile?.takeIf { it.isNotEmpty() }?.let { Gson().toJson(it).toRequestBody() },
+                authorization = authToken?.takeIf { it.isNotBlank() }?.let { "Bearer $it" },
+                apiKey = if (authToken.isNullOrBlank()) apiKey else null
             )
 
             // EDD-Intelligence envelope: statusCode is a HttpStatusCode NAME ("OK"), data = {id, status}.
@@ -636,7 +686,7 @@ class ApiRepository {
                 Log.d("Verity", "EDD case created: $caseId (status=${response.data?.status})")
                 Resource.Success(EddCaseResponse(caseId = caseId, status = response.data?.status))
             } else {
-                Log.e("Verity", "EDD create failed: statusCode=${response.statusCode} msg=${response.statusMessage} err=${response.error?.message}")
+                Log.e("Verity", "EDD createCase rejected status=${response.statusCode}")
                 Resource.Error(response.error?.message ?: response.statusMessage ?: "Couldn't create the EDD case. Please try again.")
             }
         } catch (e: CancellationException) {
@@ -647,13 +697,13 @@ class ApiRepository {
         } catch (e: HttpException) {
             val code = e.code()
             val errorBody = e.response()?.errorBody()?.string()
-            Log.e("Verity", "EDD createCase HTTP $code: $errorBody")
+            Log.e("Verity", "EDD createCase HTTP status=$code")
 
             when (code) {
                 401, 403 -> {
                     // Parse structured error from EDD backend: {"error_code": "...", "message": "..."}
                     val userMessage = parseEddAuthError(code, errorBody)
-                    Log.e("Verity", "EDD $code: $userMessage")
+                    Log.e("Verity", "EDD createCase authorization error status=$code")
                     Resource.Error(userMessage)
                 }
                 413 -> Resource.Error("File is too large for the server. Please use a smaller file.")
@@ -679,7 +729,7 @@ class ApiRepository {
 
     suspend fun getEddCaseStatus(caseId: String, apiKey: String): Resource<EddCaseStatusResponse> {
         return try {
-            val response = RetrofitInstance.api.getEddCaseStatus(caseId, apiKey)
+            val response = api.getEddCaseStatus(caseId, apiKey)
 
             if (response.statusCode in 100..299 && response.data != null) {
                 Log.d("Verity", "EDD case status: ${response.data.status}")
@@ -695,12 +745,12 @@ class ApiRepository {
         } catch (e: HttpException) {
             val code = e.code()
             val errorBody = e.response()?.errorBody()?.string()
-            Log.e("Verity", "EDD getStatus HTTP $code: $errorBody")
+            Log.e("Verity", "EDD getStatus HTTP status=$code")
 
             when (code) {
                 401, 403 -> {
                     val userMessage = parseEddAuthError(code, errorBody)
-                    Log.e("Verity", "EDD status $code: $userMessage")
+                    Log.e("Verity", "EDD getStatus authorization error status=$code")
                     Resource.Error(userMessage)
                 }
                 404 -> {
@@ -736,7 +786,7 @@ class ApiRepository {
         apiKey: String
     ): Resource<List<AddressDocumentFileResponse>> {
         return try {
-            val response = RetrofitInstance.api.getAddressVerificationDocuments(verificationId, apiKey)
+            val response = api.getAddressVerificationDocuments(verificationId, apiKey)
 
             if (response.statusCode in 100..299 && response.data != null) {
                 Log.d("Verity", "Fetched ${response.data.size} address documents for $verificationId")
@@ -774,7 +824,7 @@ class ApiRepository {
         apiKey: String
     ): Resource<DocumentUrlResponse> {
         return try {
-            val response = RetrofitInstance.api.getAddressDocumentUrl(verificationId, documentId, apiKey)
+            val response = api.getAddressDocumentUrl(verificationId, documentId, apiKey)
 
             if (response.statusCode in 100..299 && response.data != null) {
                 Resource.Success(response.data)
@@ -808,7 +858,7 @@ class ApiRepository {
         apiKey: String
     ): Resource<List<EddDocumentResponse>> {
         return try {
-            val response = RetrofitInstance.api.getEddCaseDocuments(caseId, apiKey)
+            val response = api.getEddCaseDocuments(caseId, apiKey)
 
             if (response.statusCode in 100..299 && response.data != null) {
                 Log.d("Verity", "Fetched ${response.data.size} EDD documents for case $caseId")
@@ -824,7 +874,7 @@ class ApiRepository {
         } catch (e: HttpException) {
             val code = e.code()
             val errorBody = e.response()?.errorBody()?.string()
-            Log.e("Verity", "EDD getDocs HTTP $code: $errorBody")
+            Log.e("Verity", "EDD getDocs HTTP status=$code")
 
             when (code) {
                 401 -> Resource.Error("Session expired. Please restart the verification process.")
@@ -855,7 +905,7 @@ class ApiRepository {
         apiKey: String
     ): Resource<DocumentUrlResponse> {
         return try {
-            val response = RetrofitInstance.api.getEddDocumentUrl(caseId, documentId, apiKey)
+            val response = api.getEddDocumentUrl(caseId, documentId, apiKey)
 
             if (response.statusCode in 100..299 && response.data != null) {
                 Resource.Success(response.data)
@@ -904,7 +954,7 @@ class ApiRepository {
                 steps = options.requiredModules ?: listOf("DOCUMENT", "BIOMETRIC"),
                 previousSessionId = options.previousEngineSessionId
             )
-            val response = RetrofitInstance.api.createV2Session(request, options.apiKey)
+            val response = api.createV2Session(request, options.apiKey)
             if (response.data != null) {
                 Resource.Success(response.data)
             } else {
@@ -923,7 +973,7 @@ class ApiRepository {
 
     suspend fun getV2SessionState(sessionId: String, apiKey: String): Resource<SessionStateResponse> {
         return try {
-            val response = RetrofitInstance.api.getV2SessionState(sessionId, apiKey)
+            val response = api.getV2SessionState(sessionId, apiKey)
             if (response.data != null) {
                 Resource.Success(response.data)
             } else {
@@ -948,7 +998,7 @@ class ApiRepository {
     ): Resource<SessionStateResponse> {
         return try {
             val body = StepCompletionRequest(data = stepData)
-            val response = RetrofitInstance.api.completeV2Step(sessionId, stepName, apiKey, body)
+            val response = api.completeV2Step(sessionId, stepName, apiKey, body)
             if (response.data != null) {
                 Resource.Success(response.data)
             } else {

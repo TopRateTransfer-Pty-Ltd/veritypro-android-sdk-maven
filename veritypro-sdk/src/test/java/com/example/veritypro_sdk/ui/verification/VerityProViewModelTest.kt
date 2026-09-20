@@ -36,6 +36,7 @@ import com.example.veritypro_sdk.services.BeginLivenessData
 import com.example.veritypro_sdk.services.LivenessResultResponse
 import com.example.veritypro_sdk.services.Resource
 import io.mockk.coEvery
+import io.mockk.coVerify
 import io.mockk.mockk
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -58,6 +59,76 @@ import org.junit.runners.JUnit4
 @OptIn(ExperimentalCoroutinesApi::class)
 @RunWith(JUnit4::class)
 class VerityProViewModelTest {
+    @Test fun `duplicate proof taps create and upload only once while in flight`() = runTest(testDispatcher) {
+        val options = com.example.veritypro_sdk.utils.VerityOption("test-key", "integration", "Test", "Subject", "2000-01-01", "subject", "AU", mode="ADDRESS")
+        coEvery { mockRepository.createAddressVerification(any()) } coAnswers {
+            kotlinx.coroutines.delay(100)
+            Resource.Success(com.example.veritypro_sdk.services.AddressVerificationResponse("address-1", "", ""))
+        }
+        coEvery { mockRepository.submitAddressDocument(any(), any(), any(), any(), any(), any(), any()) } returns Resource.Success("Submitted")
+        repeat(2) { viewModel.submitAddressProof(options, "Synthetic street", java.io.File("synthetic-proof.pdf"), 1) }
+        advanceUntilIdle()
+        coVerify(exactly=1) { mockRepository.createAddressVerification(any()) }
+        coVerify(exactly=1) { mockRepository.submitAddressDocument(any(), any(), any(), any(), any(), any(), any()) }
+    }
+    @Test fun `changed address does not reuse a previous address service session`() = runTest(testDispatcher) {
+        val options = com.example.veritypro_sdk.utils.VerityOption("test-key", "integration", "Test", "Subject", "2000-01-01", "subject", "AU", mode="ADDRESS")
+        coEvery { mockRepository.createAddressVerification(any()) } returnsMany listOf(
+            Resource.Success(com.example.veritypro_sdk.services.AddressVerificationResponse("address-1", "", "")),
+            Resource.Success(com.example.veritypro_sdk.services.AddressVerificationResponse("address-2", "", "")))
+        coEvery { mockRepository.submitAddressDocument(any(), any(), any(), any(), any(), any(), any()) } returns Resource.Error("Retry")
+        viewModel.submitAddressProof(options, "First synthetic street", java.io.File("synthetic-proof.pdf"), 1)
+        advanceUntilIdle()
+        viewModel.submitAddressProof(options, "Second synthetic street", java.io.File("synthetic-proof.pdf"), 1)
+        advanceUntilIdle()
+        coVerify(exactly=2) { mockRepository.createAddressVerification(any()) }
+        assertEquals("address-2", viewModel.getAddressSessionId())
+    }
+    @Test fun `readiness assessment reaches repository without changing session binding`() = runTest(testDispatcher) {
+        val evidence = "{\"SchemaVersion\":1}"
+        coEvery { mockRepository.beginLiveness("engine", any(), evidence) } returns Resource.Success(makeBeginLivenessData())
+        viewModel.startBeginLiveness("engine", securityAssessmentJson = evidence)
+        advanceUntilIdle()
+        coVerify(exactly = 1) { mockRepository.beginLiveness("engine", any(), evidence) }
+    }
+    @Test fun `proof upload failure retains created address session for retry`() = runTest(testDispatcher) {
+        val options = com.example.veritypro_sdk.utils.VerityOption("test-key", "integration", "Test", "Subject", "2000-01-01", "subject", "AU", mode="ADDRESS")
+        coEvery { mockRepository.createAddressVerification(any()) } returns Resource.Success(com.example.veritypro_sdk.services.AddressVerificationResponse("address-1", "", ""))
+        coEvery { mockRepository.submitAddressDocument(any(), any(), any(), any(), any(), any(), any()) } returns Resource.Error("Retry upload")
+        val file = java.io.File("synthetic-proof.pdf")
+        viewModel.submitAddressProof(options, "Synthetic street", file, 1)
+        advanceUntilIdle()
+        viewModel.submitAddressProof(options, "Synthetic street", file, 1)
+        advanceUntilIdle()
+        coVerify(exactly=1) { mockRepository.createAddressVerification(any()) }
+        coVerify(exactly=2) { mockRepository.submitAddressDocument("address-1", file, 1, "", "", "test-key", null) }
+        assertEquals("address-1", viewModel.getAddressSessionId())
+    }
+    @Test fun `failed address creation never uploads proof`() = runTest(testDispatcher) {
+        val options = com.example.veritypro_sdk.utils.VerityOption("test-key", "integration", "Test", "Subject", "2000-01-01", "subject", "AU", mode="ADDRESS")
+        coEvery { mockRepository.createAddressVerification(any()) } returns Resource.Error("Creation unavailable")
+        viewModel.submitAddressProof(options, "Synthetic street", java.io.File("synthetic-proof.pdf"), 1)
+        advanceUntilIdle()
+        coVerify(exactly=0) { mockRepository.submitAddressDocument(any(), any(), any(), any(), any(), any(), any()) }
+        assertTrue(viewModel.addressState.value is Resource.Error)
+    }
+    @Test fun `completed AWS processing with failed liveness remains failed`() = runTest(testDispatcher) {
+        coEvery { mockRepository.pollLivenessResult(any(), any()) } returns Resource.Success(
+            makeSuccessLivenessResponse().copy(livenessPassed=false))
+        var accepted: Boolean? = null
+        viewModel.verifyLivenessResult("liveness") { accepted = it }
+        advanceUntilIdle()
+        assertEquals(false, accepted)
+    }
+    @Test fun `server session initialization supplies credentials without creating KYC`() = runTest(testDispatcher) {
+        val options = com.example.veritypro_sdk.utils.VerityOption("session-key", "integration", "Test", "Subject", "2000-01-01", "subject", "AU", mode="SERVER_DRIVEN")
+        viewModel.initializeSession(options, "engine-1")
+        coEvery { mockRepository.beginLiveness("engine-1", "session-key") } returns Resource.Success(makeBeginLivenessData())
+        viewModel.startBeginLiveness("engine-1")
+        advanceUntilIdle()
+        coVerify(exactly=1) { mockRepository.beginLiveness("engine-1", "session-key") }
+        assertEquals("engine-1", viewModel.getSessionId())
+    }
 
     @get:Rule
     val instantExecutorRule = InstantTaskExecutorRule()

@@ -48,6 +48,7 @@ data class CaptureRuntimeData(
     val locationString: String? = null,
     val locationTimestamp: String? = null,
     val locationSource: String? = null,
+    val locationAvailability: String? = null,
     val countryCode: String? = null,
     // motionAnalysis
     val motionDurationMs: Long? = null,
@@ -55,6 +56,7 @@ data class CaptureRuntimeData(
     val accelStdDev: FloatArray? = null,
     val gyroStdDev: FloatArray? = null,
     val motionScore: Float? = null,
+    val motionAvailability: String? = null,
     // auditLog events collected during session
     val auditEvents: List<AuditEvent>? = null,
 )
@@ -75,21 +77,19 @@ object SecurityAssessmentCollector {
 
     private var cachedIsEmulator: Boolean? = null
 
-    /** Runtime data stored from last document capture session. */
-    @Volatile private var lastRuntimeData: CaptureRuntimeData? = null
+    /** Kept for source compatibility; process-global capture data could cross verification sessions. */
+    @Deprecated("Pass session-local runtime data to collectJson(context, runtimeData)")
+    fun storeRuntimeData(@Suppress("UNUSED_PARAMETER") data: CaptureRuntimeData) = Unit
 
-    /** Called by DocumentCaptureScreen before onDocumentCaptured to store forensic data. */
-    fun storeRuntimeData(data: CaptureRuntimeData) {
-        lastRuntimeData = data
-    }
-
-    /** Backward-compatible overload — uses last stored runtime capture data. */
-    fun collectJson(context: Context): String = collectJson(context, lastRuntimeData)
+    /** Legacy callers have no session context: never borrow another verification's measurements. */
+    fun collectJson(context: Context): String = collectJson(context, null)
 
     /** Full collection with optional runtime capture/geolocation/motion data. */
     fun collectJson(context: Context, runtimeData: CaptureRuntimeData?): String {
         return try {
             val assessment = JSONObject()
+            assessment.put("SchemaVersion", 1)
+            assessment.put("CollectedAt", java.time.Instant.now().toString())
 
             val emulator = isEmulator()
             val rooted = checkRooted(context)
@@ -180,8 +180,8 @@ object SecurityAssessmentCollector {
                 put("sdkVersion", "android-2.0.0")
                 put("isPhysicalCamera", hasPhysicalCamera)
                 put("networkType", networkType)
-                put("captureAttempts", runtimeData?.captureAttempts ?: 0)
-                put("captureDurationSeconds", runtimeData?.captureDurationSeconds ?: 0.0)
+                putOpt("captureAttempts", runtimeData?.captureAttempts)
+                putOpt("captureDurationSeconds", runtimeData?.captureDurationSeconds)
                 putOpt("antiSpoofBurstScore", runtimeData?.antiSpoofBurstScore)
                 putOpt("livenessConfidence", runtimeData?.livenessConfidence)
                 putOpt("facesDetected", runtimeData?.facesDetected)
@@ -201,24 +201,22 @@ object SecurityAssessmentCollector {
                 putOpt("locationString", runtimeData?.locationString)
                 putOpt("countryCode", runtimeData?.countryCode)
                 putOpt("timestamp", runtimeData?.locationTimestamp)
-                put("source", runtimeData?.locationSource ?: "none")
+                putOpt("source", runtimeData?.locationSource)
             })
 
             // ─── 8. motionAnalysis ───
             assessment.put("motionAnalysis", JSONObject().apply {
-                put("durationMs", runtimeData?.motionDurationMs ?: 0L)
-                put("sampleCount", runtimeData?.motionSampleCount ?: 0)
-                put("accelStdDev", JSONArray().apply {
-                    runtimeData?.accelStdDev?.forEach { put(it.toDouble()) } ?: run {
-                        put(0.0); put(0.0); put(0.0)
-                    }
-                })
-                put("gyroStdDev", JSONArray().apply {
-                    runtimeData?.gyroStdDev?.forEach { put(it.toDouble()) } ?: run {
-                        put(0.0); put(0.0); put(0.0)
-                    }
-                })
-                put("motionScore", runtimeData?.motionScore?.toDouble() ?: 0.0)
+                putOpt("durationMs", runtimeData?.motionDurationMs)
+                putOpt("sampleCount", runtimeData?.motionSampleCount)
+                runtimeData?.accelStdDev?.let { put("accelStdDev", JSONArray(it.toList())) }
+                runtimeData?.gyroStdDev?.let { put("gyroStdDev", JSONArray(it.toList())) }
+                putOpt("motionScore", runtimeData?.motionScore?.toDouble())
+            })
+            assessment.put("SignalAvailability", JSONObject().apply {
+                put("device", "collected")
+                put("network", if (networkType == "unknown") "unavailable" else "collected")
+                put("behavior", runtimeData?.motionAvailability ?: if (runtimeData?.captureAttempts != null) "collected" else "unavailable")
+                put("location", runtimeData?.locationAvailability ?: if (runtimeData?.latitude != null && runtimeData.longitude != null) "collected" else "unavailable")
             })
 
             // ─── 8b. forensics — environment signals for geo-consistency and network-anonymisation checks ───
@@ -256,6 +254,11 @@ object SecurityAssessmentCollector {
         } catch (e: Exception) {
             Log.w("Verity", "SecurityAssessmentCollector: collection failed")
             JSONObject().apply {
+                put("SchemaVersion", 1)
+                put("CollectedAt", java.time.Instant.now().toString())
+                put("SignalAvailability", JSONObject().apply {
+                    listOf("device", "network", "behavior", "location").forEach { put(it, "error") }
+                })
                 put("collectionError", true)
                 put("overallRiskLevel", "unknown")
             }.toString()

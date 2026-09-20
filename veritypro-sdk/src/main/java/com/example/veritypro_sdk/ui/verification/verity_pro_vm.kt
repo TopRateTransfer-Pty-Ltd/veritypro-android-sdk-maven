@@ -29,6 +29,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import java.io.File
+import com.example.veritypro_sdk.utils.CaptureRuntimeData
+import com.example.veritypro_sdk.utils.SecurityAssessmentCollector
+import com.example.veritypro_sdk.utils.withCurrentLocation
 
 class VerityProViewModel(
     repository: ApiRepository? = null,
@@ -37,11 +40,30 @@ class VerityProViewModel(
     private val repository: ApiRepository = repository ?: ApiRepository()
     private val mlRepository: MLRepository = mlRepository ?: MLRepository()
     private var apiKey: String = ""
+    private var captureRuntime = CaptureRuntimeData()
+    fun captureRuntimeData(): CaptureRuntimeData = captureRuntime
+    fun recordCaptureMotion(data: CaptureRuntimeData) { captureRuntime = data }
+
+    fun startBeginLivenessWithAssessment(sessionId: String, context: android.content.Context) {
+        viewModelScope.launch {
+            _beginLivenessState.value = Resource.Loading("Starting liveness")
+            captureRuntime = captureRuntime.withCurrentLocation(context)
+            val assessment = SecurityAssessmentCollector.collectJson(context, captureRuntime)
+            startBeginLiveness(sessionId, forceRetry = true, securityAssessmentJson = assessment)
+        }
+    }
     // DEPRECATED: storedOptions was used for client-side session refresh when
     // liveness returned HTTP 400.  Backend Phases 1-2 now handle session refresh
     // server-side (new session + document migration).  Kept as null for safety
     // until backend deployment is confirmed.
     private var storedOptions: VerityOption? = null
+    /** Configure the native session independently from its creation mechanism. */
+    fun initializeSession(options: VerityOption, engineSessionId: String? = null) {
+        apiKey = options.apiKey
+        storedOptions = options
+        engineSessionId?.takeIf { it.isNotBlank() }?.let { currentSessionId = it }
+        options.apiBaseUrl?.let { repository.configureBaseUrl(it) }
+    }
 
     private val _kycState = MutableStateFlow<Resource<Any>>(Resource.Loading("Initializing KYC Verification"))
     val kycState: StateFlow<Resource<Any>> = _kycState
@@ -160,6 +182,42 @@ class VerityProViewModel(
     private var addressSessionId: String = ""
     fun getAddressSessionId(): String = addressSessionId
 
+    private var addressSubmissionActive = false
+    private var addressSessionOptions: VerityOption? = null
+
+    /** Create only once proof is ready; keep that session when an upload must be retried. */
+    fun submitAddressProof(options: VerityOption, street: String, file: File, documentType: Int, context: android.content.Context? = null) {
+        if (addressSubmissionActive) return
+        addressSubmissionActive = true
+        viewModelScope.launch {
+            try {
+                _addressState.value = Resource.Loading("Submitting address document...")
+                val sessionOptions = options.copy(streetAddress = street)
+                if (addressSessionOptions != sessionOptions || addressSessionId.isBlank()) {
+                    val created = repository.createAddressVerification(sessionOptions)
+                    _addressCreateState.value = created
+                    if (created !is Resource.Success || created.data.sessionId.isBlank()) {
+                        _addressState.value = Resource.Error((created as? Resource.Error)?.message ?: "Couldn't start address verification. Please try again.")
+                        return@launch
+                    }
+                    addressSessionId = created.data.sessionId
+                    addressSessionOptions = sessionOptions
+                }
+                val helper = context?.let { com.example.veritypro_sdk.utils.LocationHelper(it) }
+                val ip = helper?.getLocalIpAddress().orEmpty()
+                val location = context?.let { CaptureRuntimeData().withCurrentLocation(it) }
+                val coordinates = if (location?.latitude != null && location.longitude != null) "${location.latitude},${location.longitude}" else ""
+                _addressState.value = repository.submitAddressDocument(addressSessionId, file, documentType, ip, coordinates, options.apiKey, context)
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                _addressState.value = Resource.Error("Couldn't submit your proof of address. Please try again.")
+            } finally {
+                addressSubmissionActive = false
+            }
+        }
+    }
+
     /** Register an address-verification session for [street]; captures the returned sessionId. */
     fun createAddressVerification(options: VerityOption, street: String) {
         viewModelScope.launch {
@@ -183,17 +241,17 @@ class VerityProViewModel(
     ) {
         viewModelScope.launch {
             _addressState.value = Resource.Loading("Submitting address document...")
-            // The backend REQUIRES non-empty IpAddress + IpLocation (model validation → 400 otherwise).
-            // Collect them from the device when not supplied, with safe non-empty fallbacks.
+            // Missing location/IP must remain empty, never synthetic coordinates or an address.
+            // Requires the backend's optional Address telemetry contract.
             val helper = context?.let { com.example.veritypro_sdk.utils.LocationHelper(it) }
             val ip = ipAddress.ifBlank {
                 runCatching { helper?.getLocalIpAddress() }.getOrNull().orEmpty()
-            }.ifBlank { "0.0.0.0" }
+            }
             val loc = ipLocation.ifBlank {
                 runCatching {
                     helper?.getCurrentLocation()?.let { "${it.latitude},${it.longitude}" }
                 }.getOrNull().orEmpty()
-            }.ifBlank { "0,0" }
+            }
             val result = repository.submitAddressDocument(sessionId, file, documentType, ip, loc, apiKey, context)
             _addressState.value = result
         }
@@ -216,7 +274,15 @@ class VerityProViewModel(
     ) {
         viewModelScope.launch {
             _eddState.value = Resource.Loading("Submitting EDD document...")
-            val result = repository.createEddCase(subjectId, subjectName, file, documentType, apiKey, context)
+            val config = storedOptions
+            if (subjectId.isBlank()) {
+                _eddState.value = Resource.Error("A customer subject reference is required for EDD.")
+                return@launch
+            }
+            val result = repository.createEddCase(subjectId, subjectName, file, documentType, apiKey, context,
+                integrationId = config?.integrationId, city = config?.city, stateOrProvince = config?.stateOrProvince,
+                postalCode = config?.postalCode, authToken = config?.authToken, country = config?.country,
+                profile = config?.eddProfile)
             _eddState.value = result
         }
     }
@@ -361,8 +427,9 @@ class VerityProViewModel(
             when (result) {
                 is Resource.Success -> {
                     Log.d("Verity", "Liveness verified: status=${result.data.status}, confidence=${result.data.confidence}")
-                    _livenessVerificationState.value = LivenessVerificationState.Succeeded
-                    onResult(true)
+                    val passed = result.data.status.equals("SUCCEEDED", true) && result.data.livenessPassed == true
+                    _livenessVerificationState.value = if (passed) LivenessVerificationState.Succeeded else LivenessVerificationState.Failed
+                    onResult(passed)
                 }
                 is Resource.Error -> {
                     Log.e("Verity", "Liveness verification failed: ${result.message}")
@@ -384,7 +451,7 @@ class VerityProViewModel(
      * @param forceRetry If true, clears any existing awsSessionId and forces a fresh request
      * @param maxRetries Maximum number of retry attempts (default 3)
      */
-    fun startBeginLiveness(sessionId: String, forceRetry: Boolean = false, maxRetries: Int = 3) {
+    fun startBeginLiveness(sessionId: String, forceRetry: Boolean = false, maxRetries: Int = 3, securityAssessmentJson: String? = null) {
         if (!forceRetry && _awsSessionId.value != null && _awsSessionId.value!!.isNotBlank()) return
 
         viewModelScope.launch {
@@ -399,7 +466,7 @@ class VerityProViewModel(
                 try {
                     Log.d("BeginLiveness", "Attempt ${attempt + 1}/$maxRetries for session $activeSessionId")
 
-                    val resp = repository.beginLiveness(activeSessionId, apiKey)
+                    val resp = repository.beginLiveness(activeSessionId, apiKey, securityAssessmentJson)
                     when (resp) {
                         is Resource.Success -> {
                             _beginLivenessState.value = Resource.Success(resp.data)

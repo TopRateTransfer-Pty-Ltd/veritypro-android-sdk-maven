@@ -14,9 +14,35 @@ import com.example.veritypro_sdk.utils.VerityOption
 import com.amplifyframework.core.Amplify
 import com.amplifyframework.auth.cognito.AWSCognitoAuthPlugin
 import com.example.veritypro_sdk.services.VeritySigningConfig
+import com.example.veritypro_sdk.utils.NativeOperations
+import com.example.veritypro_sdk.utils.VerityVerificationError
+import com.example.veritypro_sdk.ui.theme.VerityProTheme
+import com.example.veritypro_sdk.ui.theme.ThemeMode
+import androidx.activity.OnBackPressedCallback
 
 class VerityProSdkActivity : AppCompatActivity() {
     private var options: VerityOption? = null
+    private var resultSent = false
+    private lateinit var operationId: String
+    private var engineSessionId: String? = null
+    private var serverSessionId: String? = null
+    private var addressSessionId: String? = null
+
+    private fun finishWithResult(result: VerityResult) {
+        if (resultSent) return
+        resultSent = true
+        val typed = result.withSessionContext(operationId, engineSessionId, serverSessionId, addressSessionId)
+        setResult(RESULT_OK, Intent().putExtra("verity_result", typed)
+            .putExtra("verification_result", LivenessResult(success = typed.isApproved, sessionId = typed.sessionId,
+                error = typed.error?.message)))
+        NativeOperations.unregister(operationId)
+        finish()
+    }
+
+    override fun onDestroy() {
+        if (::operationId.isInitialized && !isChangingConfigurations) NativeOperations.unregister(operationId)
+        super.onDestroy()
+    }
 
     companion object {
         @Volatile
@@ -25,6 +51,12 @@ class VerityProSdkActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        operationId = intent.getStringExtra(VerityPro.EXTRA_OPERATION_ID) ?: java.util.UUID.randomUUID().toString()
+        val cancel = { finishWithResult(VerityResult("CANCELLED")) }
+        NativeOperations.register(operationId, cancel)
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() = cancel()
+        })
 
         // Prevent screen recording/screenshots during verification to protect PII
         // (identity documents, selfie images). Cleared automatically when activity finishes.
@@ -51,11 +83,7 @@ class VerityProSdkActivity : AppCompatActivity() {
 
         if (options == null) {
             Log.e("VerityProSdkActivity", "Missing VerityOption - finishing")
-            val errLegacy = LivenessResult(success = false, error = "missing_options")
-            setResult(RESULT_CANCELED, Intent()
-                .putExtra("verification_result", errLegacy)
-                .putExtra("verity_result", VerityResult.from(errLegacy)))
-            finish()
+            finishWithResult(VerityResult("FAILED", error = VerityVerificationError("CONFIG_INVALID", "Missing verification options.")))
             return
         }
 
@@ -76,28 +104,23 @@ class VerityProSdkActivity : AppCompatActivity() {
 
         try {
             setContent {
+                val mode = runCatching { ThemeMode.valueOf(intent.getStringExtra("theme_mode") ?: "LIGHT") }.getOrDefault(ThemeMode.LIGHT)
+                VerityProTheme(mode = mode, brandConfig = options!!.brandConfig) {
                 ProtoVerificationScreen(
                     options = options!!,
-                    onResult = { approved ->
-                        val legacy = if (approved) {
-                            LivenessResult(success = true)
-                        } else {
-                            LivenessResult(success = false, error = "Verification unsuccessful")
-                        }
-                        setResult(RESULT_OK, Intent()
-                            .putExtra("verification_result", legacy)          // deprecated key — backward compat
-                            .putExtra("verity_result", VerityResult.from(legacy)))  // new typed key
+                    onIdentifiers = { engine, server, address ->
+                        engineSessionId = engine
+                        serverSessionId = server
+                        addressSessionId = address
                     },
-                    onExit = { finish() },
+                    onTypedResult = { finishWithResult(it) },
+                    onExit = { if (!resultSent) cancel() },
                 )
+                }
             }
         } catch (t: Throwable) {
             Log.e("VerityProSdkActivity", "UI init failed", t)
-            val errLegacy = LivenessResult(success = false, error = "ui_init_failed: ${t.message}")
-            setResult(RESULT_CANCELED, Intent()
-                .putExtra("verification_result", errLegacy)
-                .putExtra("verity_result", VerityResult.from(errLegacy)))
-            finish()
+            finishWithResult(VerityResult("FAILED", error = VerityVerificationError("UNKNOWN", "Verification interface could not be initialized.")))
         }
     }
 }

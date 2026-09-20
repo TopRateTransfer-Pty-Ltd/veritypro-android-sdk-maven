@@ -20,73 +20,63 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.google.android.libraries.places.api.Places
-import com.google.android.libraries.places.api.model.AutocompletePrediction
-import com.google.android.libraries.places.api.model.AutocompleteSessionToken
-import com.google.android.libraries.places.api.net.FindAutocompletePredictionsRequest
-import com.google.android.libraries.places.api.net.PlacesClient
+import com.example.veritypro_sdk.services.AddressPrediction
+import com.example.veritypro_sdk.services.AddressDetailsResponse
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import java.util.UUID
 
 /**
  * Address module — step 1: the customer enters/confirms the address being verified. This registers
  * the address-verification session (createAddressVerification needs the street) before the proof
  * document is uploaded.
  *
- * When [placesApiKey] is non-blank, Google Places predictions appear INLINE in a dropdown below the
- * field as the user types (no full-screen overlay); tapping a suggestion fills the field. The field
- * is always manually editable, and when no key is configured it is a plain manual field.
+ * Autocomplete is BACKEND-PROXIED: the SDK never holds a Google API key. When [onAutocomplete] is
+ * supplied, predictions from our address service (which calls Google Places server-side) appear
+ * INLINE in a dropdown below the field as the user types; tapping a suggestion resolves the full
+ * address via [onResolveDetails] and fills the field. The field is always manually editable, and
+ * when no callback is supplied it is a plain manual field.
+ *
+ * A per-search session token groups the keystroke queries + the final details lookup so Google
+ * bills them as one autocomplete session; it is rotated after each resolved selection.
  */
 @Composable
 fun ProtoAddressEntryScreen(
     initial: String = "",
     submitting: Boolean,
     errorMsg: String?,
-    placesApiKey: String? = null,
-    countryIso2: String? = null,
+    onAutocomplete: (suspend (query: String, sessionToken: String) -> List<AddressPrediction>)? = null,
+    onResolveDetails: (suspend (placeId: String, sessionToken: String) -> AddressDetailsResponse?)? = null,
     onSubmit: (street: String) -> Unit,
     onBack: () -> Unit,
 ) {
-    val context = LocalContext.current
-    val placesEnabled = !placesApiKey.isNullOrBlank()
+    val scope = rememberCoroutineScope()
+    val autocompleteEnabled = onAutocomplete != null
 
-    // Initialise Places + build the client synchronously so it's ready before the first query.
-    val placesClient: PlacesClient? = remember(placesEnabled) {
-        if (!placesEnabled) null
-        else {
-            if (!Places.isInitialized()) runCatching { Places.initialize(context.applicationContext, placesApiKey!!) }
-            runCatching { Places.createClient(context) }.getOrNull()
-        }
-    }
-    val sessionToken = remember { runCatching { AutocompleteSessionToken.newInstance() }.getOrNull() }
-
+    var sessionToken by remember { mutableStateOf(UUID.randomUUID().toString()) }
     var street by remember { mutableStateOf(initial) }
-    var predictions by remember { mutableStateOf<List<AutocompletePrediction>>(emptyList()) }
+    var predictions by remember { mutableStateOf<List<AddressPrediction>>(emptyList()) }
     // Set true right after a suggestion is picked so the resulting text change doesn't re-query.
     var justPicked by remember { mutableStateOf(false) }
 
     // Debounced inline autocomplete: re-runs (and cancels the prior debounce) on every keystroke.
     LaunchedEffect(street) {
-        if (placesClient == null) return@LaunchedEffect
+        if (onAutocomplete == null) return@LaunchedEffect
         if (justPicked) { justPicked = false; return@LaunchedEffect }
         val q = street.trim()
         if (q.length < 3) { predictions = emptyList(); return@LaunchedEffect }
         delay(300)  // debounce
-        val builder = FindAutocompletePredictionsRequest.builder().setQuery(q)
-        if (sessionToken != null) builder.setSessionToken(sessionToken)
-        if (!countryIso2.isNullOrBlank()) builder.setCountries(listOf(countryIso2))
-        placesClient.findAutocompletePredictions(builder.build())
-            .addOnSuccessListener { resp -> predictions = resp.autocompletePredictions.take(5) }
-            .addOnFailureListener { predictions = emptyList() }
+        predictions = runCatching { onAutocomplete(q, sessionToken) }.getOrDefault(emptyList())
     }
 
     Column(Modifier.fillMaxSize().background(Proto.Canvas).verticalScroll(rememberScrollState())) {
@@ -111,7 +101,7 @@ fun ProtoAddressEntryScreen(
                 Box(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 16.dp)) {
                     if (street.isEmpty()) {
                         Text(
-                            if (placesEnabled) "Start typing your address" else "12 Example St, Suburb, 2000",
+                            if (autocompleteEnabled) "Start typing your address" else "12 Example St, Suburb, 2000",
                             color = Proto.Sub, fontFamily = ProtoDisplay, fontSize = 16.sp,
                         )
                     }
@@ -132,14 +122,28 @@ fun ProtoAddressEntryScreen(
                 Spacer(Modifier.height(8.dp))
                 Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     predictions.forEach { p ->
-                        val primary = p.getPrimaryText(null).toString()
-                        val secondary = p.getSecondaryText(null).toString()
+                        val primary = p.mainText ?: p.description
+                        val secondary = p.secondaryText ?: ""
                         BrutalBox(background = Color.White, shadow = false) {
                             Row(
                                 Modifier.fillMaxWidth().protoClick {
-                                    street = p.getFullText(null).toString()
+                                    // Fill immediately with the description, then resolve full
+                                    // components in the background and finalise the street text.
                                     justPicked = true
                                     predictions = emptyList()
+                                    street = p.description
+                                    val token = sessionToken
+                                    if (onResolveDetails != null) {
+                                        scope.launch {
+                                            val details = runCatching { onResolveDetails(p.placeId, token) }.getOrNull()
+                                            val formatted = details?.formattedAddress
+                                            if (!formatted.isNullOrBlank()) street = formatted
+                                            // Session ends after details — rotate token for the next search.
+                                            sessionToken = UUID.randomUUID().toString()
+                                        }
+                                    } else {
+                                        sessionToken = UUID.randomUUID().toString()
+                                    }
                                 }.padding(horizontal = 14.dp, vertical = 12.dp),
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
@@ -157,6 +161,7 @@ fun ProtoAddressEntryScreen(
                     }
                 }
                 Spacer(Modifier.height(4.dp))
+                // Google requires visible attribution when predictions are shown without a map.
                 MonoLabel("POWERED BY GOOGLE", Proto.Sub, size = 9)
             }
 

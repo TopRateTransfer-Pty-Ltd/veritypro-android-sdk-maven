@@ -27,10 +27,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import coil.compose.AsyncImage
+import com.example.veritypro_sdk.ui.theme.LocalVerityBrandConfig
 
 /** One requirement row on the welcome screen — the set is dynamic per verification product. */
 data class ProtoModuleItem(val title: String, val subtitle: String, val color: Color, val circle: Boolean)
@@ -47,6 +50,8 @@ fun ProtoWelcomeScreen(
     onPrivacy: () -> Unit = {},
 ) {
     var agreed by remember { mutableStateOf(false) }
+    val brand = LocalVerityBrandConfig.current
+    val logoUrl = brand?.resolvedLogoUrl()
     Column(
         Modifier
             .fillMaxSize()
@@ -58,8 +63,21 @@ fun ProtoWelcomeScreen(
             Modifier.fillMaxWidth().background(Proto.Nav)
                 .padding(start = 26.dp, end = 26.dp, top = 30.dp, bottom = 30.dp)
         ) {
-            MonoLabel("VERITYPRO  •  SECURE", Color.White.copy(alpha = 0.6f))
-            Spacer(Modifier.height(18.dp))
+            // Brand logo: render integrator logo when provided, otherwise fall back to the
+            // "VERITYPRO  •  SECURE" mono label. The logo sits in the dark hero so it is
+            // visible on both light and dark backgrounds.
+            if (logoUrl != null) {
+                AsyncImage(
+                    model = logoUrl,
+                    contentDescription = "Brand logo",
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier.height(36.dp),
+                )
+                Spacer(Modifier.height(18.dp))
+            } else {
+                MonoLabel("VERITYPRO  •  SECURE", Color.White.copy(alpha = 0.6f))
+                Spacer(Modifier.height(18.dp))
+            }
             Text(
                 "Let's verify\nyour identity",
                 color = Color.White,
