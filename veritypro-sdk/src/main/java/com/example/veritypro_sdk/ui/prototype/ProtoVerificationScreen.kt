@@ -101,6 +101,28 @@ private fun protoDocTypeInt(name: String?): Int {
 private fun protoSides(name: String?): List<Boolean> =
     if (protoDocTypeInt(name) == 2) listOf(false) else listOf(false, true)
 
+/**
+ * Bounded poll of the Basic EDD assessment verdict (parity with the web Orchestrator's
+ * pollEddVerdict). Returns the terminal verdict when the submitted assessment leaves Processing
+ * within the window; else null. The integator polls GET /edd/.../assessments/{eddAssessmentId}
+ * for the final outcome when null (the async assessment is still running).
+ */
+private suspend fun pollEddVerdictIfAny(vm: VerityProViewModel, options: VerityOption): String? {
+    val state = vm.basicEddState.value
+    val created = (state as? com.example.veritypro_sdk.services.Resource.Success)
+        ?.data as? com.example.veritypro_sdk.services.BasicEddAssessmentCreated
+    val id = created?.assessmentId?.takeIf { it.isNotBlank() } ?: return null
+    val repo = vm.repository()
+    val terminal = setOf("COMPLETED", "REVIEW_REQUIRED", "UNABLE_TO_ASSESS", "FAILED", "INCONSISTENT")
+    for (attempt in 0 until 12) {
+        if (attempt > 0) kotlinx.coroutines.delay(1_000)
+        val r = repo.getBasicEddAssessment(id, options.apiKey, options.integrationId.takeIf { it.isNotBlank() })
+        val data = (r as? com.example.veritypro_sdk.services.Resource.Success)?.data ?: continue
+        if (terminal.contains(data.status?.uppercase())) return data.verdict ?: data.status
+    }
+    return null
+}
+
 // Capture-frame aspect ratio: passport data page (ID-3, ~125×88mm → 1.42) is chunkier and gets a
 // taller/bigger box; licence & ID card (ID-1, ~85.6×54mm → 1.586) are wider.
 private fun protoFrameAspect(name: String?): Float =
@@ -209,6 +231,9 @@ fun ProtoVerificationScreen(
     var livenessApproved by remember { mutableStateOf(false) }
     // Overall terminal outcome shown on the completion screen (submission accepted end-to-end).
     var flowOk by remember { mutableStateOf(false) }
+    // EDD "required verify": resolved Basic EDD verdict from the bounded post-submit poll (mirrors web's
+    // pollEddVerdict). null when the async assessment is still running — the integrator polls via the id.
+    var terminalEddVerdict by remember { mutableStateOf<String?>(null) }
     // SERVER-DRIVEN only: whether the document multipart already posted at the DOCUMENT module (so the
     // final Submitting stage does not re-post it). Unused in client mode.
     var docUploaded by remember { mutableStateOf(false) }
@@ -879,6 +904,7 @@ fun ProtoVerificationScreen(
                         captureAttempts = retakeAttempts + 1,
                     )
                     if (flowOk) completedModules = (listOf("DOCUMENT") + completedModules).distinct()
+                    terminalEddVerdict = pollEddVerdictIfAny(vm, options)
                     stage = ProtoStage.AllComplete
                 }
             } else {
@@ -890,6 +916,7 @@ fun ProtoVerificationScreen(
                         protoWants(options).biometric -> livenessApproved
                         else -> true
                     }
+                    terminalEddVerdict = pollEddVerdictIfAny(vm, options)
                     stage = ProtoStage.AllComplete
                 }
             }
@@ -928,6 +955,7 @@ fun ProtoVerificationScreen(
                             )
                     val result = baseResult.copy(
                         eddAssessmentId = (basicEddState as? Resource.Success)?.data?.assessmentId,
+                        eddVerdict = terminalEddVerdict,
                     )
                     onTypedResult(result.copy(addressSessionId = vm.getAddressSessionId().takeIf { it.isNotBlank() }))
                     // Legacy callbacks cannot distinguish submission from approval. Fail closed.
