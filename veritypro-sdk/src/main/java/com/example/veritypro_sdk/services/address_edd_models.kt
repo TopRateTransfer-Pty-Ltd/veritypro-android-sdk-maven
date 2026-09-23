@@ -148,6 +148,7 @@ data class DocumentUrlResponse(
 data class BasicEddAssessmentRequest(
     @SerializedName("subjectId") val subjectId: String,
     @SerializedName("subjectName") val subjectName: String,
+    @SerializedName("employerName") val employerName: String? = null,
     @SerializedName("idempotencyKey") val idempotencyKey: String? = null,
     @SerializedName("clientReference") val clientReference: String? = null,
     @SerializedName("transactionSummary") val transactionSummary: BasicEddTransactionSummary? = null,

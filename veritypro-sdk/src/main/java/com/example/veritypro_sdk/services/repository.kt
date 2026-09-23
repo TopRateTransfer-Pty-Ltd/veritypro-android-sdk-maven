@@ -1031,6 +1031,7 @@ class ApiRepository {
         subjectName: String,
         apiKey: String,
         integrationId: String? = null,
+        employerName: String? = null,
         idempotencyKey: String? = null,
         clientReference: String? = null,
         transactionSummary: BasicEddTransactionSummary? = null,
@@ -1041,6 +1042,7 @@ class ApiRepository {
             val request = BasicEddAssessmentRequest(
                 subjectId = subjectId,
                 subjectName = subjectName,
+                employerName = employerName?.takeIf { it.isNotBlank() },
                 idempotencyKey = idempotencyKey,
                 clientReference = clientReference,
                 transactionSummary = transactionSummary,

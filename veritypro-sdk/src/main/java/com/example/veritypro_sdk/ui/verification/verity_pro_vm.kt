@@ -6,6 +6,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.veritypro_sdk.services.AddressVerificationResponse
 import com.example.veritypro_sdk.services.ApiRepository
+import com.example.veritypro_sdk.services.BasicEddAssessmentCreated
+import com.example.veritypro_sdk.services.BasicEddTransactionSummary
 import com.example.veritypro_sdk.services.BeginLivenessCredentials
 import com.example.veritypro_sdk.services.BeginLivenessData
 import com.example.veritypro_sdk.services.EddCaseResponse
@@ -284,6 +286,38 @@ class VerityProViewModel(
                 postalCode = config?.postalCode, authToken = config?.authToken, country = config?.country,
                 profile = config?.eddProfile)
             _eddState.value = result
+        }
+    }
+
+    /**
+     * CREATE a Basic EDD assessment (POST /edd/api/v1/edd/basic/assessments) carrying the
+     * income/employer details collected in the EDD flow. Additive to the legacy
+     * [submitEddDocument] path (POST /edd/api/edd/cases) — both may run for a single EDD step.
+     */
+    private val _basicEddState = MutableStateFlow<Resource<BasicEddAssessmentCreated>?>(null)
+    val basicEddState: StateFlow<Resource<BasicEddAssessmentCreated>?> = _basicEddState
+
+    fun submitBasicEddAssessment(
+        subjectId: String,
+        subjectName: String,
+        employerName: String?,
+        declaredMonthlyIncome: Double?,
+        apiKey: String,
+    ) {
+        viewModelScope.launch {
+            _basicEddState.value = Resource.Loading("Creating EDD assessment...")
+            val config = storedOptions
+            val result = repository.createBasicEddAssessment(
+                subjectId = subjectId,
+                subjectName = subjectName,
+                apiKey = apiKey,
+                integrationId = config?.integrationId,
+                employerName = employerName?.takeIf { it.isNotBlank() },
+                transactionSummary = BasicEddTransactionSummary(
+                    declaredMonthlyIncome = declaredMonthlyIncome,
+                ),
+            )
+            _basicEddState.value = result
         }
     }
 

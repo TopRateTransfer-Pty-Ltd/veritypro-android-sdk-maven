@@ -767,6 +767,8 @@ fun ProtoVerificationScreen(
             // EDD: upload an income document that carries the source-of-funds information.
             // EDD doc types (backend enum): 0 = Bank Statement, 1 = Pay Slip, 2 = Tax Return.
             var phase by remember { mutableStateOf("idle") }
+            var employerName by remember { mutableStateOf("") }
+            var declaredMonthlyIncome by remember { mutableStateOf("") }
             LaunchedEffect(eddState) {
                 when (eddState) {
                     is Resource.Loading -> phase = "submitting"
@@ -778,6 +780,12 @@ fun ProtoVerificationScreen(
                 kicker = "ENHANCED DUE DILIGENCE",
                 title = "Source of funds",
                 subtitle = "Upload an income document showing your source of funds.",
+                incomeForm = ProtoIncomeFormState(
+                    employerName = employerName,
+                    onEmployerNameChange = { employerName = it },
+                    declaredMonthlyIncome = declaredMonthlyIncome,
+                    onDeclaredMonthlyIncomeChange = { declaredMonthlyIncome = it },
+                ),
                 docTypes = listOf("Pay slip" to 1, "Bank statement" to 0, "Tax return" to 2),
                 accent = Proto.Indigo,
                 step = null,
@@ -787,6 +795,15 @@ fun ProtoVerificationScreen(
                     // Subject = the KYC session when present; otherwise the integration id (EDD-only
                     // products have no KYC session).
                     val subject = options.subjectId?.takeIf { it.isNotBlank() } ?: options.vendorData
+                    // Create the Basic EDD assessment with the collected income/employer details
+                    // (additive to the legacy document-upload path below).
+                    vm.submitBasicEddAssessment(
+                        subjectId = subject,
+                        subjectName = "${options.firstName} ${options.lastName}",
+                        employerName = employerName,
+                        declaredMonthlyIncome = declaredMonthlyIncome.toDoubleOrNull(),
+                        apiKey = options.apiKey,
+                    )
                     if (serverDriven) {
                         // SERVER-DRIVEN: build the step-complete payload the web sends for EDD
                         // ({ SecurityAssessmentJson, PlatformUsed, IpLocation, DocumentType }) from the

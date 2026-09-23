@@ -17,6 +17,11 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -38,6 +43,18 @@ import java.io.File
  * then upload or photograph a file (PDF/JPG/PNG). The file is copied to cache and handed to
  * [onSubmit] for the real backend call. Submitting/error states are driven by the caller.
  */
+/**
+ * Optional income/employer collection for the EDD module. When supplied, [ProtoUploadScreen]
+ * renders an employer-name + declared-monthly-income form above the document picker. The
+ * collected values are hoisted by the caller and threaded into the Basic EDD create call.
+ */
+data class ProtoIncomeFormState(
+    val employerName: String,
+    val onEmployerNameChange: (String) -> Unit,
+    val declaredMonthlyIncome: String,
+    val onDeclaredMonthlyIncomeChange: (String) -> Unit,
+)
+
 @Composable
 fun ProtoUploadScreen(
     kicker: String,
@@ -52,6 +69,7 @@ fun ProtoUploadScreen(
     // backend does not expose this via API, so it is mirrored here to fail early with a clear
     // message instead of a generic server rejection on an oversized upload.
     maxSizeMb: Int = 15,
+    incomeForm: ProtoIncomeFormState? = null,
     onSubmit: (docTypeInt: Int, file: File) -> Unit,
     onBack: () -> Unit,
 ) {
@@ -118,6 +136,44 @@ fun ProtoUploadScreen(
             )
             Spacer(Modifier.height(8.dp))
             Text(subtitle, color = Proto.Sub, fontFamily = ProtoDisplay, fontSize = 15.sp)
+            if (incomeForm != null) {
+                Spacer(Modifier.height(20.dp))
+                MonoLabel("EMPLOYER & INCOME", Proto.Sub, size = 11)
+                Spacer(Modifier.height(10.dp))
+                BrutalBox(background = Color.White, shadow = false) {
+                    Box(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 16.dp)) {
+                        if (incomeForm.employerName.isEmpty()) {
+                            Text("Employer name", color = Proto.Sub, fontFamily = ProtoDisplay, fontSize = 16.sp)
+                        }
+                        BasicTextField(
+                            value = incomeForm.employerName,
+                            onValueChange = incomeForm.onEmployerNameChange,
+                            singleLine = true,
+                            textStyle = TextStyle(color = Proto.Ink, fontFamily = ProtoDisplay, fontSize = 16.sp, fontWeight = FontWeight.Medium),
+                            cursorBrush = SolidColor(Proto.Brand),
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+                }
+                Spacer(Modifier.height(10.dp))
+                BrutalBox(background = Color.White, shadow = false) {
+                    Box(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 16.dp)) {
+                        if (incomeForm.declaredMonthlyIncome.isEmpty()) {
+                            Text("Declared monthly income (AUD)", color = Proto.Sub, fontFamily = ProtoDisplay, fontSize = 16.sp)
+                        }
+                        BasicTextField(
+                            value = incomeForm.declaredMonthlyIncome,
+                            onValueChange = incomeForm.onDeclaredMonthlyIncomeChange,
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                            textStyle = TextStyle(color = Proto.Ink, fontFamily = ProtoDisplay, fontSize = 16.sp, fontWeight = FontWeight.Medium),
+                            cursorBrush = SolidColor(Proto.Brand),
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+                }
+            }
+
             Spacer(Modifier.height(20.dp))
 
             MonoLabel("DOCUMENT TYPE", Proto.Sub, size = 11)
