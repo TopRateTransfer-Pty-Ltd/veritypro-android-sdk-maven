@@ -203,6 +203,7 @@ fun ProtoVerificationScreen(
     val livenessCredentials by vm.livenessCredentials.collectAsState()
     val addressState by vm.addressState.collectAsState()
     val eddState by vm.eddState.collectAsState()
+    val basicEddState by vm.basicEddState.collectAsState()
     var addressStreet by remember { mutableStateOf(options.streetAddress ?: "") }
     var livenessApproved by remember { mutableStateOf(false) }
     // Overall terminal outcome shown on the completion screen (submission accepted end-to-end).
@@ -889,9 +890,9 @@ fun ProtoVerificationScreen(
                 subtitle = doneSubtitle,
                 onDone = {
                     val result = if (flowOk && serverDriven) requireNotNull(driver.terminalResult()) else if (flowOk) com.example.veritypro_sdk.utils.VerityResult.submitted(
-                        engineSessionId().takeIf { it.isNotBlank() }, completedModules,
-                        driver.serverSessionId(), (eddState as? Resource.Success)?.data?.caseId,
-                    ) else com.example.veritypro_sdk.utils.VerityResult(
+                                            engineSessionId().takeIf { it.isNotBlank() }, completedModules,
+                                            driver.serverSessionId(), (eddState as? Resource.Success)?.data?.caseId,
+                                        ).copy(eddAssessmentId = (basicEddState as? Resource.Success)?.data?.assessmentId) else com.example.veritypro_sdk.utils.VerityResult(
                         status = "FAILED", sessionId = engineSessionId().takeIf { it.isNotBlank() },
                         completedSteps = completedModules, serverSessionId = driver.serverSessionId(),
                         error = com.example.veritypro_sdk.utils.VerityVerificationError("UPLOAD_FAILED", "Verification could not be submitted."),

@@ -83,8 +83,14 @@ data class VerityResult(
     val completedSteps: List<String> = emptyList(),
     /** Face similarity confidence score (biometric flows only). */
     val confidence: Float? = null,
-    /** EDD case ID when an EDD module was triggered. */
+    /** EDD case ID when an EDD module was triggered (legacy case path). */
     val eddCaseId: String? = null,
+    /** Basic EDD assessment ID (approved §2.5 lifecycle) — the async assessment, not a case. */
+    val eddAssessmentId: String? = null,
+    /** Basic EDD terminal verdict: CONSISTENT | INCONSISTENT | REVIEW_REQUIRED | UNABLE_TO_ASSESS.
+     *  Present when the flow already resolved the verdict; otherwise poll GET /…/{id} with
+     *  [eddAssessmentId] for the final outcome. */
+    val eddVerdict: String? = null,
     /** Present for all non-approved outcomes that carry error detail. */
     val error: VerityVerificationError? = null,
     val serverSessionId: String? = null,
