@@ -238,3 +238,103 @@ fun ProtoUploadScreen(
         }
     }
 }
+
+/**
+ * EDD module — step 1 (parity with iOS ProtoEddIncomeScreen + web EddIncomeScreen): collect the
+ * subject's employer + declared monthly income BEFORE the income-evidence document is uploaded.
+ * These are threaded into the Basic EDD assessment create call as `employerName` (top-level) and
+ * `transactionSummary.declaredMonthlyIncome`. The legacy EddCase upload path is untouched.
+ */
+@Composable
+fun ProtoEddIncomeScreen(
+    submitting: Boolean,
+    errorMsg: String?,
+    onSubmit: (employerName: String, declaredMonthlyIncome: String) -> Unit,
+    onBack: () -> Unit,
+) {
+    var employer by remember { mutableStateOf("") }
+    var income by remember { mutableStateOf("") }
+    val incomeValid = (income.replace(",", "").toDoubleOrNull() ?: 0.0) > 0.0
+
+    Column(Modifier.fillMaxSize().background(Proto.Canvas).verticalScroll(rememberScrollState())) {
+        ProtoTopBar(step = null, onBack = onBack)
+        Column(Modifier.fillMaxWidth().padding(horizontal = 24.dp)) {
+            MonoLabel("ENHANCED DUE DILIGENCE", Proto.Indigo, size = 12)
+            Spacer(Modifier.height(12.dp))
+            Text(
+                "Your income", color = Proto.Ink, fontFamily = ProtoDisplay,
+                fontSize = 34.sp, fontWeight = FontWeight.Black, letterSpacing = (-1).sp, lineHeight = 36.sp,
+            )
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "Tell us where your funds come from. This helps us confirm your source of funds.",
+                color = Proto.Sub, fontFamily = ProtoDisplay, fontSize = 15.sp,
+            )
+            Spacer(Modifier.height(20.dp))
+
+            MonoLabel("EMPLOYER NAME (OPTIONAL)", Proto.Sub, size = 11)
+            Spacer(Modifier.height(10.dp))
+            BrutalBox(background = Color.White, shadow = false) {
+                Box(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 16.dp)) {
+                    if (employer.isEmpty()) {
+                        Text(
+                            "e.g. Acme Pty Ltd", color = Proto.Sub, fontFamily = ProtoDisplay, fontSize = 16.sp,
+                        )
+                    }
+                    BasicTextField(
+                        value = employer,
+                        onValueChange = { employer = it },
+                        singleLine = true,
+                        textStyle = TextStyle(color = Proto.Ink, fontFamily = ProtoDisplay,
+                            fontSize = 16.sp, fontWeight = FontWeight.Medium),
+                        cursorBrush = SolidColor(Proto.Indigo),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+            }
+
+            Spacer(Modifier.height(18.dp))
+            MonoLabel("DECLARED MONTHLY INCOME", Proto.Sub, size = 11)
+            Spacer(Modifier.height(10.dp))
+            BrutalBox(background = Color.White, shadow = false) {
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text("\$", color = Proto.Ink, fontFamily = ProtoDisplay, fontSize = 18.sp, fontWeight = FontWeight.Black)
+                    Spacer(Modifier.width(8.dp))
+                    if (income.isEmpty()) {
+                        Text("0", color = Proto.Sub, fontFamily = ProtoDisplay, fontSize = 16.sp)
+                    }
+                    Box(Modifier.weight(1f)) {
+                        BasicTextField(
+                            value = income,
+                            onValueChange = { income = it },
+                            singleLine = true,
+                            textStyle = TextStyle(color = Proto.Ink, fontFamily = ProtoDisplay,
+                                fontSize = 16.sp, fontWeight = FontWeight.Medium),
+                            cursorBrush = SolidColor(Proto.Indigo),
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(14.dp))
+            when {
+                submitting -> MonoLabel("CREATING ASSESSMENT…", Proto.Amber, size = 11)
+                errorMsg != null -> Text(errorMsg, color = Proto.Danger, fontFamily = ProtoDisplay, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+            }
+
+            Spacer(Modifier.height(16.dp))
+            ProtoPrimaryButton(
+                label = "Continue",
+                enabled = incomeValid && !submitting,
+                background = Proto.Indigo,
+                onClick = { onSubmit(employer.trim(), income.replace(",", "")) },
+            )
+            Spacer(Modifier.height(24.dp))
+        }
+    }
+}

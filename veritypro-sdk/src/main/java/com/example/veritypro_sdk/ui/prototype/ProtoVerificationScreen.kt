@@ -53,13 +53,14 @@ import com.amplifyframework.auth.cognito.AWSCognitoAuthPlugin
 import com.amplifyframework.core.Amplify
 import com.example.veritypro_sdk.services.CountryDocumentItem
 import com.example.veritypro_sdk.services.Resource
+import com.example.veritypro_sdk.services.BasicEddAssessmentCreated
 import com.example.veritypro_sdk.ui.verification.VerityProViewModel
 import com.example.veritypro_sdk.utils.LightingCheck
 import com.example.veritypro_sdk.utils.VerityMode
 import com.example.veritypro_sdk.utils.VerityOption
 import kotlinx.coroutines.launch
 
-private enum class ProtoStage { Welcome, Connecting, ChooseId, CameraAccess, BeforeShoot, Capture, DocPreview, PairChecking, AddressEntry, SelfieIntro, LightingWarning, Liveness, AddressUpload, EddUpload, Submitting, AllComplete, Error }
+private enum class ProtoStage { Welcome, Connecting, ChooseId, CameraAccess, BeforeShoot, Capture, DocPreview, PairChecking, AddressEntry, SelfieIntro, LightingWarning, Liveness, AddressUpload, EddIncome, EddUpload, Submitting, AllComplete, Error }
 
 // Ordered active modules for this product (document → biometric → address → edd).
 // internal (not private) so the co-located [ClientFlowDriver] can reuse it as its start() computation.
@@ -82,7 +83,7 @@ internal fun protoModuleOrder(options: VerityOption): List<String> {
 private fun stageForModule(module: String): ProtoStage = when (module) {
     "BIOMETRIC" -> ProtoStage.SelfieIntro
     "ADDRESS" -> ProtoStage.AddressEntry   // enter address → create session → upload proof
-    "EDD" -> ProtoStage.EddUpload
+    "EDD" -> ProtoStage.EddIncome           // income/employer → then upload income-evidence doc
     else -> ProtoStage.ChooseId // DOCUMENT
 }
 
@@ -764,12 +765,45 @@ fun ProtoVerificationScreen(
             )
         }
 
+        ProtoStage.EddIncome -> {
+            // EDD step 1 (parity with iOS .eddIncome + web eddIncome): collect employer + declared
+            // monthly income, then create the Basic EDD assessment (POST /edd/api/v1/edd/basic/
+            // assessments) with employerName (top-level) + transactionSummary.declaredMonthlyIncome.
+            // On success advance to EddUpload for the income-evidence document. Legacy EddCase upload
+            // path below is untouched.
+            val latestEddAssessment = basicEddState
+            var submittedIncome by remember { mutableStateOf(false) }
+            LaunchedEffect(latestEddAssessment) {
+                val s = latestEddAssessment
+                when (s) {
+                    is Resource.Success<*> -> if (submittedIncome && (s.data as? BasicEddAssessmentCreated)?.assessmentId != null) {
+                        stage = ProtoStage.EddUpload
+                    }
+                    else -> {}
+                }
+            }
+            ProtoEddIncomeScreen(
+                submitting = latestEddAssessment is Resource.Loading,
+                errorMsg = (latestEddAssessment as? Resource.Error)?.message?.ifBlank { "Couldn't create the assessment. Please try again." },
+                onSubmit = { employer, income ->
+                    submittedIncome = true
+                    val subject = options.subjectId?.takeIf { it.isNotBlank() } ?: options.vendorData
+                    vm.submitBasicEddAssessment(
+                        subjectId = subject,
+                        subjectName = "${options.firstName} ${options.lastName}",
+                        employerName = employer,
+                        declaredMonthlyIncome = income.toDoubleOrNull(),
+                        apiKey = options.apiKey,
+                    )
+                },
+                onBack = onExit,
+            )
+        }
+
         ProtoStage.EddUpload -> {
             // EDD: upload an income document that carries the source-of-funds information.
             // EDD doc types (backend enum): 0 = Bank Statement, 1 = Pay Slip, 2 = Tax Return.
             var phase by remember { mutableStateOf("idle") }
-            var employerName by remember { mutableStateOf("") }
-            var declaredMonthlyIncome by remember { mutableStateOf("") }
             LaunchedEffect(eddState) {
                 when (eddState) {
                     is Resource.Loading -> phase = "submitting"
@@ -781,12 +815,6 @@ fun ProtoVerificationScreen(
                 kicker = "ENHANCED DUE DILIGENCE",
                 title = "Source of funds",
                 subtitle = "Upload an income document showing your source of funds.",
-                incomeForm = ProtoIncomeFormState(
-                    employerName = employerName,
-                    onEmployerNameChange = { employerName = it },
-                    declaredMonthlyIncome = declaredMonthlyIncome,
-                    onDeclaredMonthlyIncomeChange = { declaredMonthlyIncome = it },
-                ),
                 docTypes = listOf("Pay slip" to 1, "Bank statement" to 0, "Tax return" to 2),
                 accent = Proto.Indigo,
                 step = null,
@@ -796,15 +824,6 @@ fun ProtoVerificationScreen(
                     // Subject = the KYC session when present; otherwise the integration id (EDD-only
                     // products have no KYC session).
                     val subject = options.subjectId?.takeIf { it.isNotBlank() } ?: options.vendorData
-                    // Create the Basic EDD assessment with the collected income/employer details
-                    // (additive to the legacy document-upload path below).
-                    vm.submitBasicEddAssessment(
-                        subjectId = subject,
-                        subjectName = "${options.firstName} ${options.lastName}",
-                        employerName = employerName,
-                        declaredMonthlyIncome = declaredMonthlyIncome.toDoubleOrNull(),
-                        apiKey = options.apiKey,
-                    )
                     if (serverDriven) {
                         // SERVER-DRIVEN: build the step-complete payload the web sends for EDD
                         // ({ SecurityAssessmentJson, PlatformUsed, IpLocation, DocumentType }) from the
