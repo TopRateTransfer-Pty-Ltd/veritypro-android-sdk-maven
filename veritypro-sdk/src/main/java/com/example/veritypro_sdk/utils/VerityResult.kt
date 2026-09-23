@@ -102,7 +102,12 @@ data class VerityResult(
     val attemptCount: Int? = null,
     val maxAttempts: Int? = null,
     val addressSessionId: String? = null,
-) : Parcelable {
+        /** Address verification terminal verdict (merchant data): VERIFIED | REVIEW_REQUIRED |
+         *  UNVERIFIED | RESUBMISSION_REQUIRED | UNABLE_TO_ASSESS. Present when the flow already
+         *  resolved it; otherwise poll the address verification by [addressSessionId] for the
+         *  final outcome. Never surfaced in the end-user UI. */
+        val addressVerdict: String? = null,
+    ) : Parcelable {
     val outcome: VerityOutcome get() = VerityOutcome.entries.find { it.name == status } ?: VerityOutcome.FAILED
     val isApproved: Boolean get() = outcome == VerityOutcome.APPROVED
 
