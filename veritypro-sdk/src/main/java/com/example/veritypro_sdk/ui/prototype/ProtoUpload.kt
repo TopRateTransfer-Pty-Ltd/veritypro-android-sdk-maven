@@ -39,22 +39,35 @@ import androidx.compose.ui.unit.sp
 import java.io.File
 
 /**
+ * Locale-aware declared-income parser. A comma is treated as a thousands separator when a dot is
+ * present as the decimal point; otherwise a lone comma is the decimal separator. Returns null for
+ * anything non-numeric. Prevents silent corruption of AML source-of-funds data from `1,5`->15 style
+ * naive comma stripping.
+ */
+fun parseDeclaredIncome(raw: String): Double? {
+    var t = raw.trim()
+    if (t.isEmpty()) return null
+    val hasDot = t.contains('.')
+    val hasComma = t.contains(',')
+    if (hasComma && !hasDot) {
+        // "1,5" -> 1.5 ; "1,000" -> 1000 (final group of 3 => thousands)
+        if (Regex("""^-?\d{1,3}(,\d{3})+$""").matches(t)) {
+            t = t.replace(",", "")
+        } else {
+            t = t.replace(",", ".")
+        }
+    } else if (hasComma && hasDot) {
+        // "1,000.50" -> drop commas (thousands), keep dot decimal
+        t = t.replace(",", "")
+    }
+    return t.toDoubleOrNull()
+}
+
+/**
  * Reusable neo-brutalist upload screen for the Address and EDD modules: pick an evidence type,
  * then upload or photograph a file (PDF/JPG/PNG). The file is copied to cache and handed to
  * [onSubmit] for the real backend call. Submitting/error states are driven by the caller.
  */
-/**
- * Optional income/employer collection for the EDD module. When supplied, [ProtoUploadScreen]
- * renders an employer-name + declared-monthly-income form above the document picker. The
- * collected values are hoisted by the caller and threaded into the Basic EDD create call.
- */
-data class ProtoIncomeFormState(
-    val employerName: String,
-    val onEmployerNameChange: (String) -> Unit,
-    val declaredMonthlyIncome: String,
-    val onDeclaredMonthlyIncomeChange: (String) -> Unit,
-)
-
 @Composable
 fun ProtoUploadScreen(
     kicker: String,
@@ -69,7 +82,6 @@ fun ProtoUploadScreen(
     // backend does not expose this via API, so it is mirrored here to fail early with a clear
     // message instead of a generic server rejection on an oversized upload.
     maxSizeMb: Int = 15,
-    incomeForm: ProtoIncomeFormState? = null,
     onSubmit: (docTypeInt: Int, file: File) -> Unit,
     onBack: () -> Unit,
 ) {
@@ -136,43 +148,6 @@ fun ProtoUploadScreen(
             )
             Spacer(Modifier.height(8.dp))
             Text(subtitle, color = Proto.Sub, fontFamily = ProtoDisplay, fontSize = 15.sp)
-            if (incomeForm != null) {
-                Spacer(Modifier.height(20.dp))
-                MonoLabel("EMPLOYER & INCOME", Proto.Sub, size = 11)
-                Spacer(Modifier.height(10.dp))
-                BrutalBox(background = Color.White, shadow = false) {
-                    Box(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 16.dp)) {
-                        if (incomeForm.employerName.isEmpty()) {
-                            Text("Employer name", color = Proto.Sub, fontFamily = ProtoDisplay, fontSize = 16.sp)
-                        }
-                        BasicTextField(
-                            value = incomeForm.employerName,
-                            onValueChange = incomeForm.onEmployerNameChange,
-                            singleLine = true,
-                            textStyle = TextStyle(color = Proto.Ink, fontFamily = ProtoDisplay, fontSize = 16.sp, fontWeight = FontWeight.Medium),
-                            cursorBrush = SolidColor(Proto.Brand),
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                    }
-                }
-                Spacer(Modifier.height(10.dp))
-                BrutalBox(background = Color.White, shadow = false) {
-                    Box(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 16.dp)) {
-                        if (incomeForm.declaredMonthlyIncome.isEmpty()) {
-                            Text("Declared monthly income (AUD)", color = Proto.Sub, fontFamily = ProtoDisplay, fontSize = 16.sp)
-                        }
-                        BasicTextField(
-                            value = incomeForm.declaredMonthlyIncome,
-                            onValueChange = incomeForm.onDeclaredMonthlyIncomeChange,
-                            singleLine = true,
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                            textStyle = TextStyle(color = Proto.Ink, fontFamily = ProtoDisplay, fontSize = 16.sp, fontWeight = FontWeight.Medium),
-                            cursorBrush = SolidColor(Proto.Brand),
-                            modifier = Modifier.fillMaxWidth(),
-                        )
-                    }
-                }
-            }
 
             Spacer(Modifier.height(20.dp))
 
@@ -254,7 +229,7 @@ fun ProtoEddIncomeScreen(
 ) {
     var employer by remember { mutableStateOf("") }
     var income by remember { mutableStateOf("") }
-    val incomeValid = (income.replace(",", "").toDoubleOrNull() ?: 0.0) > 0.0
+    val incomeValid = (parseDeclaredIncome(income) ?: 0.0) > 0.0
 
     Column(Modifier.fillMaxSize().background(Proto.Canvas).verticalScroll(rememberScrollState())) {
         ProtoTopBar(step = null, onBack = onBack)
@@ -332,7 +307,7 @@ fun ProtoEddIncomeScreen(
                 label = "Continue",
                 enabled = incomeValid && !submitting,
                 background = Proto.Indigo,
-                onClick = { onSubmit(employer.trim(), income.replace(",", "")) },
+                onClick = { onSubmit(employer.trim(), income) },
             )
             Spacer(Modifier.height(24.dp))
         }

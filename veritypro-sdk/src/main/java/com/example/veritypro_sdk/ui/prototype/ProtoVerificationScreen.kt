@@ -792,11 +792,11 @@ fun ProtoVerificationScreen(
                         subjectId = subject,
                         subjectName = "${options.firstName} ${options.lastName}",
                         employerName = employer,
-                        declaredMonthlyIncome = income.toDoubleOrNull(),
+                        declaredMonthlyIncome = com.example.veritypro_sdk.ui.prototype.parseDeclaredIncome(income),
                         apiKey = options.apiKey,
                     )
                 },
-                onBack = onExit,
+                onBack = { stage = ProtoStage.Welcome },
             )
         }
 
@@ -821,6 +821,7 @@ fun ProtoVerificationScreen(
                 submitting = eddState is Resource.Loading,
                 errorMsg = (eddState as? Resource.Error)?.message?.ifBlank { "Couldn't submit. Please try again." },
                 onSubmit = { type, file ->
+                    phase = "submitting"
                     // Subject = the KYC session when present; otherwise the integration id (EDD-only
                     // products have no KYC session).
                     val subject = options.subjectId?.takeIf { it.isNotBlank() } ?: options.vendorData
@@ -849,7 +850,7 @@ fun ProtoVerificationScreen(
                         vm.submitEddDocument(subject, "${options.firstName} ${options.lastName}", file, type, options.apiKey, context)
                     }
                 },
-                onBack = onExit,
+                onBack = { stage = ProtoStage.EddIncome },
             )
         }
 
@@ -908,13 +909,25 @@ fun ProtoVerificationScreen(
                 title = doneTitle,
                 subtitle = doneSubtitle,
                 onDone = {
-                    val result = if (flowOk && serverDriven) requireNotNull(driver.terminalResult()) else if (flowOk) com.example.veritypro_sdk.utils.VerityResult.submitted(
-                                            engineSessionId().takeIf { it.isNotBlank() }, completedModules,
-                                            driver.serverSessionId(), (eddState as? Resource.Success)?.data?.caseId,
-                                        ).copy(eddAssessmentId = (basicEddState as? Resource.Success)?.data?.assessmentId) else com.example.veritypro_sdk.utils.VerityResult(
-                        status = "FAILED", sessionId = engineSessionId().takeIf { it.isNotBlank() },
-                        completedSteps = completedModules, serverSessionId = driver.serverSessionId(),
-                        error = com.example.veritypro_sdk.utils.VerityVerificationError("UPLOAD_FAILED", "Verification could not be submitted."),
+                    val baseResult = if (flowOk && serverDriven)
+                            (driver.terminalResult()
+                                ?: com.example.veritypro_sdk.utils.VerityResult.submitted(
+                                    engineSessionId().takeIf { it.isNotBlank() }, completedModules,
+                                    driver.serverSessionId()
+                                ))
+                        else if (flowOk)
+                            com.example.veritypro_sdk.utils.VerityResult.submitted(
+                                engineSessionId().takeIf { it.isNotBlank() }, completedModules,
+                                driver.serverSessionId(), (eddState as? Resource.Success)?.data?.caseId,
+                            )
+                        else
+                            com.example.veritypro_sdk.utils.VerityResult(
+                                status = "FAILED", sessionId = engineSessionId().takeIf { it.isNotBlank() },
+                                completedSteps = completedModules, serverSessionId = driver.serverSessionId(),
+                                error = com.example.veritypro_sdk.utils.VerityVerificationError("UPLOAD_FAILED", "Verification could not be submitted."),
+                            )
+                    val result = baseResult.copy(
+                        eddAssessmentId = (basicEddState as? Resource.Success)?.data?.assessmentId,
                     )
                     onTypedResult(result.copy(addressSessionId = vm.getAddressSessionId().takeIf { it.isNotBlank() }))
                     // Legacy callbacks cannot distinguish submission from approval. Fail closed.
