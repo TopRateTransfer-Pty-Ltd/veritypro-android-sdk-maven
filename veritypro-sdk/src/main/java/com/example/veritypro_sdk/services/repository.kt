@@ -1019,5 +1019,210 @@ class ApiRepository {
         }
     }
 
+    // ── Basic EDD Assessment lifecycle (approved §2.5) ──
+    // Routes: /edd/api/v1/edd/basic/assessments[...]. Auth: x-api-key (+ Integrationid when available).
+
+    /**
+     * CREATE a Basic EDD assessment. Returns the assessmentId (or an error).
+     * The backend may return the payload bare OR wrapped as { data: {...} }; both are handled.
+     */
+    suspend fun createBasicEddAssessment(
+        subjectId: String,
+        subjectName: String,
+        apiKey: String,
+        integrationId: String? = null,
+        idempotencyKey: String? = null,
+        clientReference: String? = null,
+        transactionSummary: BasicEddTransactionSummary? = null,
+        transactions: List<BasicEddTransaction>? = null,
+        currency: String = "AUD",
+    ): Resource<BasicEddAssessmentCreated> {
+        return try {
+            val request = BasicEddAssessmentRequest(
+                subjectId = subjectId,
+                subjectName = subjectName,
+                idempotencyKey = idempotencyKey,
+                clientReference = clientReference,
+                transactionSummary = transactionSummary,
+                transactions = transactions,
+                currency = currency,
+            )
+            val response = api.createBasicEddAssessment(
+                request = request,
+                apiKey = apiKey,
+                integrationId = integrationId?.takeIf { it.isNotBlank() },
+            )
+            val created = response.unwrap()
+            if (!created.assessmentId.isNullOrBlank()) {
+                Log.d("Verity", "Basic EDD assessment created: ${created.assessmentId} (status=${created.status})")
+                Resource.Success(created)
+            } else {
+                Log.e("Verity", "Basic EDD createAssessment returned no assessmentId")
+                Resource.Error("Couldn't create the EDD assessment. Please try again.")
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: IOException) {
+            Log.e("Verity", "Network error: ${e.message}")
+            Resource.Error("No internet connection. Please check your network.")
+        } catch (e: HttpException) {
+            val code = e.code()
+            val errorBody = e.response()?.errorBody()?.string()
+            Log.e("Verity", "Basic EDD createAssessment HTTP status=$code")
+            when (code) {
+                401, 403 -> Resource.Error(parseEddAuthError(code, errorBody))
+                422 -> Resource.Error("Invalid assessment request. Please check the subject details.")
+                in 500..599 -> Resource.Error("Server error. Please try again in a few moments.")
+                else -> {
+                    var errorMessage = "Failed to create assessment (HTTP $code). Please try again."
+                    if (errorBody != null) {
+                        try {
+                            val json = JSONObject(errorBody)
+                            val msg = json.optString("message", "")
+                            if (msg.isNotEmpty()) errorMessage = msg
+                        } catch (_: Exception) {}
+                    }
+                    Resource.Error(errorMessage)
+                }
+            }
+        } catch (e: Exception) {
+            Log.e("Verity", "Failed to create Basic EDD assessment: ${e.message}")
+            Resource.Error("Failed to create EDD assessment: ${e.message}")
+        }
+    }
+
+    /**
+     * ATTACH a document to a Basic EDD assessment (multipart, field name "document").
+     * 2xx = success.
+     */
+    suspend fun attachBasicEddDocument(
+        assessmentId: String,
+        file: File,
+        apiKey: String,
+        integrationId: String? = null,
+    ): Resource<Boolean> {
+        return try {
+            val mimeType = when (file.extension.lowercase()) {
+                "pdf" -> "application/pdf"
+                "png" -> "image/png"
+                "jpg", "jpeg" -> "image/jpeg"
+                "heic", "heif" -> "image/heic"
+                "webp" -> "image/webp"
+                "gif" -> "image/gif"
+                "bmp" -> "image/bmp"
+                "tif", "tiff" -> "image/tiff"
+                else -> "application/octet-stream"
+            }
+            val filePart = MultipartBody.Part.createFormData(
+                "document",
+                file.name,
+                file.asRequestBody(mimeType.toMediaTypeOrNull())
+            )
+            val response = api.attachBasicEddDocument(
+                assessmentId = assessmentId,
+                document = filePart,
+                apiKey = apiKey,
+                integrationId = integrationId?.takeIf { it.isNotBlank() },
+            )
+            Log.d("Verity", "Basic EDD document attached to $assessmentId")
+            Resource.Success(true)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: IOException) {
+            Log.e("Verity", "Network error: ${e.message}")
+            Resource.Error("No internet connection. Please check your network.")
+        } catch (e: HttpException) {
+            val code = e.code()
+            Log.e("Verity", "Basic EDD attachDocument HTTP status=$code")
+            when (code) {
+                401, 403 -> Resource.Error(parseEddAuthError(code, e.response()?.errorBody()?.string()))
+                413 -> Resource.Error("File is too large for the server. Please use a smaller file.")
+                422 -> Resource.Error("Invalid document format. Please upload a PDF, JPEG, or PNG file.")
+                in 500..599 -> Resource.Error("Server error. Please try again in a few moments.")
+                else -> Resource.Error("Failed to attach document (HTTP $code). Please try again.")
+            }
+        } catch (e: Exception) {
+            Log.e("Verity", "Failed to attach Basic EDD document: ${e.message}")
+            Resource.Error("Failed to attach document: ${e.message}")
+        }
+    }
+
+    /**
+     * SUBMIT a Basic EDD assessment. 202 = success (async processing begins).
+     */
+    suspend fun submitBasicEddAssessment(
+        assessmentId: String,
+        apiKey: String,
+        integrationId: String? = null,
+    ): Resource<Boolean> {
+        return try {
+            val response = api.submitBasicEddAssessment(
+                assessmentId = assessmentId,
+                body = "{}",
+                apiKey = apiKey,
+                integrationId = integrationId?.takeIf { it.isNotBlank() },
+            )
+            Log.d("Verity", "Basic EDD assessment submitted: $assessmentId")
+            Resource.Success(true)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: IOException) {
+            Log.e("Verity", "Network error: ${e.message}")
+            Resource.Error("No internet connection. Please check your network.")
+        } catch (e: HttpException) {
+            val code = e.code()
+            Log.e("Verity", "Basic EDD submitAssessment HTTP status=$code")
+            when (code) {
+                401, 403 -> Resource.Error(parseEddAuthError(code, e.response()?.errorBody()?.string()))
+                404 -> Resource.Error("Assessment not found. It may have been removed.")
+                409 -> Resource.Error("Assessment is not in a submittable state.")
+                in 500..599 -> Resource.Error("Server error. Please try again in a few moments.")
+                else -> Resource.Error("Failed to submit assessment (HTTP $code). Please try again.")
+            }
+        } catch (e: Exception) {
+            Log.e("Verity", "Failed to submit Basic EDD assessment: ${e.message}")
+            Resource.Error("Failed to submit assessment: ${e.message}")
+        }
+    }
+
+    /**
+     * POLL/RESULT for a Basic EDD assessment.
+     */
+    suspend fun getBasicEddAssessment(
+        assessmentId: String,
+        apiKey: String,
+        integrationId: String? = null,
+    ): Resource<BasicEddAssessmentResult> {
+        return try {
+            val response = api.getBasicEddAssessment(
+                assessmentId = assessmentId,
+                apiKey = apiKey,
+                integrationId = integrationId?.takeIf { it.isNotBlank() },
+            )
+            if (response.assessmentId != null || response.status != null) {
+                Resource.Success(response)
+            } else {
+                Resource.Error("Couldn't load the EDD assessment. Please try again.")
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: IOException) {
+            Log.e("Verity", "Network error: ${e.message}")
+            Resource.Error("No internet connection. Please check your network.")
+        } catch (e: HttpException) {
+            val code = e.code()
+            Log.e("Verity", "Basic EDD getAssessment HTTP status=$code")
+            when (code) {
+                401, 403 -> Resource.Error(parseEddAuthError(code, e.response()?.errorBody()?.string()))
+                404 -> Resource.Error("Assessment not found. It may have been removed.")
+                in 500..599 -> Resource.Error("Server error. Please try again in a few moments.")
+                else -> Resource.Error("Failed to load assessment (HTTP $code). Please try again.")
+            }
+        } catch (e: Exception) {
+            Log.e("Verity", "Failed to load Basic EDD assessment: ${e.message}")
+            Resource.Error("Failed to load assessment: ${e.message}")
+        }
+    }
+
 }
 

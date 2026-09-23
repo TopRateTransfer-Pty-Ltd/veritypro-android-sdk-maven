@@ -188,6 +188,40 @@ interface VerityApiService {
         @Header("x-api-key") apiKey: String
     ): ApiResponse<DocumentUrlResponse>
 
+    // ── Basic EDD Assessment lifecycle (approved §2.5) ──
+    // Routes: /edd/api/v1/edd/basic/assessments[...]. Auth: x-api-key (+ Integrationid when available).
+
+    @POST("/edd/api/v1/edd/basic/assessments")
+    suspend fun createBasicEddAssessment(
+        @Body request: BasicEddAssessmentRequest,
+        @Header("x-api-key") apiKey: String,
+        @Header("Integrationid") integrationId: String? = null,
+    ): BasicEddAssessmentCreateEnvelope
+
+    @Multipart
+    @POST("/edd/api/v1/edd/basic/assessments/{id}/documents")
+    suspend fun attachBasicEddDocument(
+        @Path("id") assessmentId: String,
+        @Part("document") document: MultipartBody.Part,
+        @Header("x-api-key") apiKey: String,
+        @Header("Integrationid") integrationId: String? = null,
+    ): ApiResponse<String>
+
+    @POST("/edd/api/v1/edd/basic/assessments/{id}/submit")
+    suspend fun submitBasicEddAssessment(
+        @Path("id") assessmentId: String,
+        @Body body: String = "{}",
+        @Header("x-api-key") apiKey: String,
+        @Header("Integrationid") integrationId: String? = null,
+    ): ApiResponse<String>
+
+    @GET("/edd/api/v1/edd/basic/assessments/{id}")
+    suspend fun getBasicEddAssessment(
+        @Path("id") assessmentId: String,
+        @Header("x-api-key") apiKey: String,
+        @Header("Integrationid") integrationId: String? = null,
+    ): BasicEddAssessmentResult
+
     // ── v2 Server-Driven Session Endpoints ──
 
     @POST("/kycintegration/v2/sessions")

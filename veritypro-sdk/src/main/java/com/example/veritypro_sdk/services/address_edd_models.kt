@@ -139,3 +139,98 @@ data class EddDocumentResponse(
 data class DocumentUrlResponse(
     val url: String
 )
+
+// ── Basic EDD Assessment lifecycle (approved §2.5) ──
+// Backend: BasicEddController.cs + hosted-verify secureClient.ts.
+// Routes: /edd/api/v1/edd/basic/assessments[...]. Auth: x-api-key (+ Integrationid when available).
+
+/** Request body for POST /edd/api/v1/edd/basic/assessments (CREATE). */
+data class BasicEddAssessmentRequest(
+    @SerializedName("subjectId") val subjectId: String,
+    @SerializedName("subjectName") val subjectName: String,
+    @SerializedName("idempotencyKey") val idempotencyKey: String? = null,
+    @SerializedName("clientReference") val clientReference: String? = null,
+    @SerializedName("transactionSummary") val transactionSummary: BasicEddTransactionSummary? = null,
+    @SerializedName("transactions") val transactions: List<BasicEddTransaction>? = null,
+    @SerializedName("currency") val currency: String = "AUD",
+)
+
+data class BasicEddTransactionSummary(
+    @SerializedName("declaredMonthlyIncome") val declaredMonthlyIncome: Double? = null,
+    @SerializedName("totalAmountSent") val totalAmountSent: Double? = null,
+    @SerializedName("periodDays") val periodDays: Int? = null,
+    @SerializedName("transactionCount") val transactionCount: Int? = null,
+)
+
+data class BasicEddTransaction(
+    @SerializedName("transactionId") val transactionId: String? = null,
+    @SerializedName("amount") val amount: Double,
+    @SerializedName("currency") val currency: String? = null,
+    @SerializedName("timestamp") val timestamp: String? = null,
+)
+
+/**
+ * CREATE response (201). The backend may return the payload bare OR wrapped as { data: {...} }.
+ * This model carries both shapes so the repository can unwrap either.
+ */
+data class BasicEddAssessmentCreated(
+    @SerializedName("assessmentId") val assessmentId: String? = null,
+    @SerializedName("status") val status: String? = null,
+    @SerializedName("requiredDocumentTypes") val requiredDocumentTypes: List<String>? = null,
+    @SerializedName("createdAt") val createdAt: String? = null,
+)
+
+/** Envelope that tolerates a bare payload or a { data: {...} } wrapper. */
+data class BasicEddAssessmentCreateEnvelope(
+    @SerializedName("data") val data: BasicEddAssessmentCreated? = null,
+    @SerializedName("assessmentId") val assessmentId: String? = null,
+    @SerializedName("status") val status: String? = null,
+    @SerializedName("requiredDocumentTypes") val requiredDocumentTypes: List<String>? = null,
+    @SerializedName("createdAt") val createdAt: String? = null,
+) {
+    /** Resolves the assessment regardless of whether the backend wrapped it in `data`. */
+    fun unwrap(): BasicEddAssessmentCreated {
+        val d = data
+        if (d != null) return d
+        return BasicEddAssessmentCreated(
+            assessmentId = assessmentId,
+            status = status,
+            requiredDocumentTypes = requiredDocumentTypes,
+            createdAt = createdAt,
+        )
+    }
+}
+
+/** Response for GET /edd/api/v1/edd/basic/assessments/{id} (POLL/RESULT). */
+data class BasicEddAssessmentResult(
+    @SerializedName("assessmentId") val assessmentId: String? = null,
+    @SerializedName("subjectId") val subjectId: String? = null,
+    @SerializedName("status") val status: String? = null,
+    @SerializedName("verdict") val verdict: String? = null,
+    @SerializedName("conclusionSummary") val conclusionSummary: String? = null,
+    @SerializedName("reviewRecommended") val reviewRecommended: Boolean? = null,
+    @SerializedName("financialSummary") val financialSummary: BasicEddFinancialSummary? = null,
+    @SerializedName("findings") val findings: List<BasicEddFinding>? = null,
+    @SerializedName("documentCount") val documentCount: Int? = null,
+    @SerializedName("startedAt") val startedAt: String? = null,
+    @SerializedName("completedAt") val completedAt: String? = null,
+)
+
+data class BasicEddFinancialSummary(
+    @SerializedName("declaredMonthlyIncome") val declaredMonthlyIncome: Double? = null,
+    @SerializedName("verifiedMonthlyIncome") val verifiedMonthlyIncome: Double? = null,
+    @SerializedName("totalAmountSent") val totalAmountSent: Double? = null,
+    @SerializedName("totalCredits") val totalCredits: Double? = null,
+    @SerializedName("totalDebits") val totalDebits: Double? = null,
+    @SerializedName("unexplainedCredits") val unexplainedCredits: Double? = null,
+    @SerializedName("openingBalance") val openingBalance: Double? = null,
+    @SerializedName("closingBalance") val closingBalance: Double? = null,
+    @SerializedName("currency") val currency: String? = null,
+)
+
+data class BasicEddFinding(
+    @SerializedName("code") val code: String? = null,
+    @SerializedName("severity") val severity: String? = null,
+    @SerializedName("amount") val amount: Double? = null,
+    @SerializedName("detail") val detail: String? = null,
+)
