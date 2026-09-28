@@ -22,6 +22,7 @@ import com.example.veritypro_sdk.services.MLRetrofitInstance
 import com.example.veritypro_sdk.services.MLVerifyBurstResponse
 import com.example.veritypro_sdk.services.Resource
 import com.example.veritypro_sdk.services.SessionData
+import com.example.veritypro_sdk.services.sanitizeMLHint
 import com.example.veritypro_sdk.services.VerificationRequestMultipart
 import com.example.veritypro_sdk.utils.VerificationFlowRouter
 import com.example.veritypro_sdk.utils.VerificationModule
@@ -606,7 +607,7 @@ class VerityProViewModel(
         imageFile: File,
         documentType: Int,
         isBackSide: Boolean = false,
-        onResult: (Boolean, String, Float) -> Unit
+        onResult: (docOk: Boolean, hint: String, confidence: Float, reason: String?) -> Unit
     ) {
         viewModelScope.launch {
             _mlPredictState.value = Resource.Loading("Verifying document...")
@@ -627,13 +628,23 @@ class VerityProViewModel(
                 is Resource.Success -> {
                     val response = result.data
                     val confidence = response.confidence ?: 0f
-                    onResult(response.docOk, response.hint, confidence)
+                    // sanitizeMLHint turns the service's raw tokens
+                    // ("Wrong document type. Expected DRIVERS_LICENSE, detected
+                    // PASSPORT.") into the words the customer sees on the
+                    // picker. It existed but was never called, because no
+                    // screen rendered the hint.
+                    onResult(
+                        response.docOk,
+                        sanitizeMLHint(response.hint),
+                        confidence,
+                        response.reason,
+                    )
                 }
                 is Resource.Error -> {
-                    onResult(false, result.message, 0f)
+                    onResult(false, result.message, 0f, null)
                 }
                 else -> {
-                    onResult(false, "Unknown error", 0f)
+                    onResult(false, "Unknown error", 0f, null)
                 }
             }
         }
@@ -646,7 +657,7 @@ class VerityProViewModel(
         bitmap: Bitmap,
         documentType: Int,
         isBackSide: Boolean = false,
-        onResult: (Boolean, String, Float) -> Unit
+        onResult: (docOk: Boolean, hint: String, confidence: Float, reason: String?) -> Unit
     ) {
         viewModelScope.launch {
             _mlPredictState.value = Resource.Loading("Verifying document...")
@@ -667,13 +678,23 @@ class VerityProViewModel(
                 is Resource.Success -> {
                     val response = result.data
                     val confidence = response.confidence ?: 0f
-                    onResult(response.docOk, response.hint, confidence)
+                    // sanitizeMLHint turns the service's raw tokens
+                    // ("Wrong document type. Expected DRIVERS_LICENSE, detected
+                    // PASSPORT.") into the words the customer sees on the
+                    // picker. It existed but was never called, because no
+                    // screen rendered the hint.
+                    onResult(
+                        response.docOk,
+                        sanitizeMLHint(response.hint),
+                        confidence,
+                        response.reason,
+                    )
                 }
                 is Resource.Error -> {
-                    onResult(false, result.message, 0f)
+                    onResult(false, result.message, 0f, null)
                 }
                 else -> {
-                    onResult(false, "Unknown error", 0f)
+                    onResult(false, "Unknown error", 0f, null)
                 }
             }
         }

@@ -574,6 +574,16 @@ fun ProtoVerificationScreen(
                     retakeAttempts += 1
                     stage = ProtoStage.Capture
                 },
+                // Offered only when the ML says the document shown is not the
+                // type the customer picked — a rejection no retake can clear.
+                onChangeDocumentType = {
+                    retakeAttempts = 0
+                    sideIndex = 0
+                    frontPath = null
+                    backPath = null
+                    capturedPath = null
+                    stage = ProtoStage.ChooseId
+                },
             )
         }
 

@@ -46,6 +46,7 @@ import androidx.compose.runtime.setValue
 import com.example.veritypro_sdk.services.MLCaptureState
 import com.example.veritypro_sdk.services.MLDeviceSignals
 import com.example.veritypro_sdk.services.MLDocumentType
+import com.example.veritypro_sdk.services.MLReason
 import com.example.veritypro_sdk.services.MLV2Repository
 import com.example.veritypro_sdk.services.Resource
 import com.example.veritypro_sdk.ui.verification.V2CaptureConfig
@@ -534,6 +535,7 @@ fun ProtoDocumentPreviewScreen(
     frameAspect: Float = 1.586f,
     onLooksGood: () -> Unit,
     onRetake: () -> Unit,
+    onChangeDocumentType: (() -> Unit)? = null,
 ) {
     // EXIF-aware decode: ImageCapture writes the sensor-oriented JPEG with an EXIF orientation tag
     // (pixels are NOT rotated). BitmapFactory ignores EXIF, so without this the portrait document
@@ -544,9 +546,13 @@ fun ProtoDocumentPreviewScreen(
     // "REJECT" (terminal spoof/tamper — manual only, no auto-loop).
     var outcome by remember(imagePath) { mutableStateOf<String?>(null) }
     var hint by remember(imagePath) { mutableStateOf("Checking your photo…") }
+    // The backend's machine-readable reason for a rejection. TYPE_MISMATCH is
+    // the one no amount of re-shooting can fix — the customer is holding a
+    // different document from the one they picked.
+    var reasonCode by remember(imagePath) { mutableStateOf<String?>(null) }
 
     LaunchedEffect(imagePath) {
-        outcome = null; hint = "Checking your photo…"
+        outcome = null; hint = "Checking your photo…"; reasonCode = null
         val file = File(imagePath)
         if (V2CaptureConfig.useV2CaptureVerify && padFrames.size >= MLV2Repository.MIN_PAD_FRAMES) {
             // ── V2 device-first path: POST /docai/v2/kyc/doc/capture-verify ──
@@ -573,7 +579,10 @@ fun ProtoDocumentPreviewScreen(
                 is Resource.Success -> when {
                     res.data.state == MLCaptureState.VERIFIED -> { outcome = "PASS"; hint = "Document verified" }
                     res.data.state == MLCaptureState.MANUAL_REVIEW -> { outcome = "PASS"; hint = "Submitted for review" }
-                    res.data.state == MLCaptureState.RETRY -> { outcome = "RETRY"; hint = res.data.retry?.hint ?: "Please retake." }
+                    res.data.state == MLCaptureState.RETRY -> {
+                        reasonCode = res.data.reasonCode
+                        outcome = "RETRY"; hint = res.data.retry?.hint ?: "Please retake."
+                    }
                     // SERVICE_ERROR = ML backend fault, not a model decision — treat as retryable.
                     res.data.reasonCode == "SERVICE_ERROR" -> { outcome = "RETRY"; hint = "Service temporarily unavailable. Please retake." }
                     else -> { outcome = "REJECT"; hint = "Not accepted (${res.data.reasonCode})." }
@@ -589,8 +598,9 @@ fun ProtoDocumentPreviewScreen(
             }
         } else {
             // v1 FRONT: presence / type / side, then anti-spoof.
-            vm.mlPredictDocument(file, docTypeInt, isBackSide = false) { docOk, pHint, _ ->
+            vm.mlPredictDocument(file, docTypeInt, isBackSide = false) { docOk, pHint, _, reason ->
                 if (!docOk) {
+                    reasonCode = reason
                     outcome = "RETRY"; hint = pHint.ifBlank { "Couldn't read the document clearly." }
                 } else {
                     vm.mlVerifyBurst(listOf(file), docTypeInt, isBackSide = false) { isReal, vHint, _ ->
@@ -602,11 +612,18 @@ fun ProtoDocumentPreviewScreen(
         }
     }
 
+    // A wrong-document rejection is not recoverable by re-shooting: the customer
+    // picked "Driver's License" and is holding a passport, and every retake will
+    // come back TYPE_MISMATCH. Auto-retaking it just bounced them between the
+    // camera and this screen with no explanation until the attempt cap ran out.
+    val isWrongDocument = reasonCode == MLReason.TYPE_MISMATCH
+
     // AUTO-RETAKE: a recoverable failure (RETRY) sends the user straight back to the camera after a
     // brief hint. Terminal REJECT (spoof/tamper) stays manual so a hard fail doesn't loop.
-    LaunchedEffect(outcome, autoRetake) {
-        if (outcome == "RETRY" && autoRetake) {
-            delay(1800)
+    LaunchedEffect(outcome, autoRetake, isWrongDocument) {
+        if (outcome == "RETRY" && autoRetake && !isWrongDocument) {
+            // Long enough to read the reason now that one is actually shown.
+            delay(2600)
             onRetake()
         }
     }
@@ -675,11 +692,38 @@ fun ProtoDocumentPreviewScreen(
                     }
                 }
             }
-            // Verdict text removed — the SCANNING · VERIFYING overlay on the image conveys processing;
-            // PASS is signalled by the enabled "Looks good" button (parity with iOS).
+            // VERDICT TEXT. This used to be omitted ("the SCANNING overlay conveys
+            // processing; PASS is signalled by the enabled button"), which left a
+            // REJECTED capture with nothing on screen at all: the service returned
+            // "Wrong document type. Expected DRIVERS_LICENSE, detected PASSPORT."
+            // and the screen threw it away, flashed, and bounced back to the camera.
+            // The customer saw the capture screen reset over and over and was never
+            // told they were holding the wrong document.
+            if (outcome != null && outcome != "PASS") {
+                Spacer(Modifier.height(14.dp))
+                Text(
+                    hint,
+                    color = if (outcome == "REJECT") Proto.Danger else Proto.Ink,
+                    fontFamily = ProtoDisplay,
+                    fontSize = 15.sp,
+                    fontWeight = FontWeight.Bold,
+                    lineHeight = 20.sp,
+                )
+            }
         }
         Column(Modifier.padding(24.dp)) {
-            if (outcome == "RETRY") {
+            if (outcome == "RETRY" && isWrongDocument && onChangeDocumentType != null) {
+                // Retaking cannot pass this check — send them back to the picker.
+                ProtoPrimaryButton("Choose a different ID", onClick = onChangeDocumentType)
+                Spacer(Modifier.height(10.dp))
+                Text(
+                    "Retake anyway",
+                    color = Proto.Sub, fontFamily = ProtoDisplay, fontSize = 14.sp,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.fillMaxWidth().protoClick(onRetake).padding(12.dp),
+                    textAlign = TextAlign.Center,
+                )
+            } else if (outcome == "RETRY") {
                 // Auto-retaking; offer an immediate manual retake too.
                 ProtoPrimaryButton("Retake now", background = Proto.Ink, onClick = onRetake)
             } else {
