@@ -113,6 +113,19 @@ data class MLPredictResponse(
     @SerializedName("hint")
     val hint: String,
 
+    /**
+     * Machine-readable rejection reason from the backend, e.g. TYPE_MISMATCH,
+     * SIDE_MISMATCH. The service has always sent this on a `docOk=false`
+     * response; the SDK simply never read it, so a rejection the customer
+     * cannot fix by re-shooting (they are holding the wrong document) was
+     * indistinguishable from one they can (blur, glare), and both were driven
+     * into the same auto-retake loop.
+     *
+     * Null on an older backend or a successful response.
+     */
+    @SerializedName("reason")
+    val reason: String? = null,
+
     @SerializedName("confidence")
     val confidence: Float? = null,
 
@@ -335,6 +348,18 @@ fun sanitizeMLHint(hint: String): String {
         result = pattern.replace(result, replacement)
     }
     return result
+}
+
+/**
+ * Machine-readable rejection reasons returned by the doc-ML service on a
+ * `docOk = false` prediction (`api/inference.py`).
+ */
+object MLReason {
+    /** The document shown is not the type the customer selected. */
+    const val TYPE_MISMATCH = "TYPE_MISMATCH"
+
+    /** The right document, wrong face of it. */
+    const val SIDE_MISMATCH = "SIDE_MISMATCH"
 }
 
 /**
