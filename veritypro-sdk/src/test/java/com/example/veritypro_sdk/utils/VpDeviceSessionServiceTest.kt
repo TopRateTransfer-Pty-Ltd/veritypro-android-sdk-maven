@@ -49,42 +49,20 @@ class VpDeviceSessionServiceTest {
         logMessages.clear()
     }
 
-    // ── API key guard tests ──────────────────────────────────────────────────
+    // ── No API key: the endpoint is anonymous ─────────────────────────────────
 
     @Test
-    fun `collectAndSubmit returns null for blank API key`() = runBlocking {
-        var handlerCalled = false
-        VpDeviceSessionService.testHandler = { _ -> handlerCalled = true; fakeResponse("") }
+    fun `collectAndSubmit mints without any API key`() = runBlocking {
+        VpDeviceSessionService.testHandler = { fakeResponse("""{"token":"vpds_nokey"}""") }
         val result = VpDeviceSessionService.collectAndSubmit(
-            context = buildMockContext(), apiKey = "",
-            integrationId = "intg-001"
+            context = buildMockContext(), integrationId = "intg-001"
         )
-        assertNull(result)
-        assertFalse("testHandler must not be called for blank key", handlerCalled)
+        assertEquals("vpds_nokey", result)
     }
 
     @Test
-    fun `collectAndSubmit returns null for whitespace-only API key`() = runBlocking {
-        var handlerCalled = false
-        VpDeviceSessionService.testHandler = { _ -> handlerCalled = true; fakeResponse("") }
-        val result = VpDeviceSessionService.collectAndSubmit(
-            context = buildMockContext(), apiKey = "   ",
-            integrationId = "intg-001"
-        )
-        assertNull(result)
-        assertFalse(handlerCalled)
-    }
-
-    @Test
-    fun `collectAndSubmit returns null for placeholder key starting with angle bracket`() = runBlocking {
-        var handlerCalled = false
-        VpDeviceSessionService.testHandler = { _ -> handlerCalled = true; fakeResponse("") }
-        val result = VpDeviceSessionService.collectAndSubmit(
-            context = buildMockContext(), apiKey = "<from-secrets>",
-            integrationId = "intg-001"
-        )
-        assertNull(result)
-        assertFalse(handlerCalled)
+    fun `default base url is production`() {
+        assertEquals("https://api.veritypro.ai", VP_DEVICE_DEFAULT_BASE_URL)
     }
 
     // ── HTTP success path ────────────────────────────────────────────────────
@@ -202,7 +180,8 @@ class VpDeviceSessionServiceTest {
         assertTrue("visitor_id", s.has("visitor_id"))
         assertTrue("session_id", s.has("session_id"))
         assertTrue("collected_at", s.has("collected_at"))
-        assertTrue("is_jailbroken", s.has("is_jailbroken"))
+        assertTrue("is_rooted", s.has("is_rooted"))
+        assertFalse("root is is_rooted on Android; is_jailbroken is the iOS signal", s.has("is_jailbroken"))
         assertTrue("is_emulator", s.has("is_emulator"))
         assertTrue("is_frida_detected", s.has("is_frida_detected"))
     }
@@ -225,16 +204,30 @@ class VpDeviceSessionServiceTest {
     }
 
     @Test
-    fun `request sets x-api-key header`() = runBlocking {
-        var apiKeyHeader: String? = null
+    fun `a passed apiKey is never sent`() = runBlocking {
+        var sawApiKeyHeader = true
         VpDeviceSessionService.testHandler = { req ->
-            apiKeyHeader = req.header("x-api-key")
+            sawApiKeyHeader = req.header("x-api-key") != null
             fakeResponse("""{"token":"vpds_t4"}""")
         }
         VpDeviceSessionService.collectAndSubmit(
-            context = buildMockContext(), apiKey = "my-secret-key-999", integrationId = "intg"
+            context = buildMockContext(), apiKey = "legacy-key", integrationId = "intg"
         )
-        assertEquals("my-secret-key-999", apiKeyHeader)
+        assertFalse("the endpoint is anonymous; a key in the app must not leave it", sawApiKeyHeader)
+    }
+
+    @Test
+    fun `unknown device facts are null not clean`() {
+        assertNull(fridaSignal(null))
+        assertEquals(true, fridaSignal("7f00 r-xp /data/local/tmp/frida-gadget.so"))
+        assertEquals(false, fridaSignal("7f00 r-xp /system/lib64/libc.so"))
+    }
+
+    @Test
+    fun `touch points come from declared touchscreen features`() {
+        assertEquals(5, touchPointsFromFeatures { it == android.content.pm.PackageManager.FEATURE_TOUCHSCREEN_MULTITOUCH_JAZZHAND || it == android.content.pm.PackageManager.FEATURE_TOUCHSCREEN })
+        assertEquals(1, touchPointsFromFeatures { it == android.content.pm.PackageManager.FEATURE_TOUCHSCREEN })
+        assertEquals(0, touchPointsFromFeatures { false })
     }
 
     @Test
@@ -350,21 +343,18 @@ class VpDeviceSessionServiceTest {
         // Smoke test uses REAL network — clear the test handler
         VpDeviceSessionService.testHandler = null
 
-        val apiKey = System.getProperty("veritypro.apiKey",
-            "0uztgfOqdIfBaKsTfGLVY0woWfFetS4F6tuOitjjVFw")
         val integrationId = System.getProperty("veritypro.integrationId", "smoke-test-intg")
         val ctx = buildMockContext()
 
         println("""
             |[SMOKE] ═══════════════════════════════════════════════════════
             |[SMOKE] Stage 1 — Android SDK device signal collection
-            |[SMOKE]   apiKey prefix : ${apiKey.take(8)}…
             |[SMOKE]   integrationId : $integrationId
             |[SMOKE]   endpoint      : https://api.skylinefare.com
         """.trimMargin())
 
         val token = VpDeviceSessionService.collectAndSubmit(
-            context = ctx, apiKey = apiKey, integrationId = integrationId,
+            context = ctx, integrationId = integrationId,
             baseUrl = "https://api.skylinefare.com"
         )
 

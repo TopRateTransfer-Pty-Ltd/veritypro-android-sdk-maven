@@ -195,9 +195,9 @@ fun onUserTapsSend() {
     lifecycleScope.launch {
         val deviceToken = VpDeviceSessionService.collectAndSubmit(
             context       = applicationContext,
-            apiKey        = "your-api-key",
             integrationId = "your-integration-uuid"
-            // baseUrl defaults to https://api.skylinefare.com
+            // No API key: this endpoint is anonymous; never ship a key in your app.
+            // baseUrl defaults to https://api.veritypro.ai (production)
         )
 
         submitTransaction(
@@ -218,7 +218,7 @@ val visitorId = VpDeviceSessionService.getOrCreateVisitorId(context)
 
 ### What signals are collected
 
-Device model, OS, screen, timezone, language, battery level, jailbreak/root detection (9 su-binary paths), emulator detection (28 checks), Frida injection detection, and a stable visitor ID (`SharedPreferences`). All signals are sent to VerityPro — you never see them.
+Device model, OS, screen, timezone, language, battery level, root detection (9 su-binary paths), emulator detection (28 checks), Frida injection detection, and a stable visitor ID (`SharedPreferences`). All signals are sent to VerityPro — you never see them.
 
 ### Rules
 
@@ -236,7 +236,6 @@ fun onUserTapsSend() {
     lifecycleScope.launch {
         val deviceToken = VpDeviceSessionService.collectAndSubmit(
             context       = applicationContext,
-            apiKey        = "your-api-key",
             integrationId = "your-integration-uuid"
         )
 

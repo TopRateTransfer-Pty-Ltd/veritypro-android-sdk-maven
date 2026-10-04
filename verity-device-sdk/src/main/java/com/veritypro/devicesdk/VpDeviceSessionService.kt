@@ -1,7 +1,9 @@
 package com.veritypro.devicesdk
 
 import android.content.Context
+import android.content.pm.PackageManager
 import android.os.Build
+import android.util.Log
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import kotlinx.coroutines.Dispatchers
@@ -17,18 +19,23 @@ import javax.net.ssl.HttpsURLConnection
 /**
  * Collects mobile device signals and submits them to POST /aml-intelligence/api/v1/device/sessions.
  * Returns a vpds_* token to embed in transactions for server-side device risk scoring.
- * Non-fatal: returns null on network error.
+ * Non-fatal: returns null on network error (logged).
  *
  * Standalone implementation — no dependency on the full veritypro-sdk module.
  */
 object VpDeviceSessionService {
 
+    private const val TAG = "VerityDevice"
     private const val PREFS_NAME = "vp_device_prefs"
     private const val VISITOR_ID_KEY = "_vp_vid"
 
+    /**
+     * @param apiKey Deprecated and ignored; never sent. The endpoint is anonymous and attributes
+     *   by integration_id, so a key in the app would only leak it.
+     */
     suspend fun collectAndSubmit(
         context: Context,
-        apiKey: String,
+        apiKey: String? = null,
         baseUrl: String,
         integrationId: String
     ): String? = withContext(Dispatchers.IO) {
@@ -47,6 +54,8 @@ object VpDeviceSessionService {
             val screen = JSONObject().apply {
                 put("w", metrics.widthPixels)
                 put("h", metrics.heightPixels)
+                // Not a placeholder: Android composites every display as RGBA_8888 (32 bits);
+                // Display.getPixelFormat() is documented to always return RGBA_8888 since API 17.
                 put("depth", 32)
                 put("ratio", metrics.density.toDouble())
             }
@@ -58,7 +67,7 @@ object VpDeviceSessionService {
                 put("tz_name", TimeZone.getDefault().id)
                 put("tz_offset", tzOffset)
                 put("language", Locale.getDefault().language)
-                put("touch_points", 5)
+                put("touch_points", touchPointsFromFeatures { context.packageManager.hasSystemFeature(it) })
                 put("is_rooted", rooted)
                 put("is_emulator", emulator)
                 put("is_frida_detected", frida ?: JSONObject.NULL)
@@ -113,7 +122,6 @@ object VpDeviceSessionService {
             val conn = (url.openConnection() as HttpsURLConnection).apply {
                 requestMethod = "POST"
                 setRequestProperty("Content-Type", "application/json")
-                setRequestProperty("x-api-key", apiKey)
                 doOutput = true
                 connectTimeout = 8_000
                 readTimeout = 8_000
@@ -121,11 +129,15 @@ object VpDeviceSessionService {
 
             OutputStreamWriter(conn.outputStream).use { it.write(body) }
 
-            if (conn.responseCode != 200) return@withContext null
+            if (conn.responseCode != 200) {
+                Log.w(TAG, "Device session mint failed: HTTP ${conn.responseCode}")
+                return@withContext null
+            }
 
             val response = conn.inputStream.bufferedReader().readText()
             JSONObject(response).optString("token", null)
         } catch (e: Exception) {
+            Log.w(TAG, "Device session mint failed: ${e.javaClass.simpleName}: ${e.message}")
             null
         }
     }
@@ -190,6 +202,18 @@ object VpDeviceSessionService {
         val model = Build.MODEL
         return "Mozilla/5.0 (Linux; Android $release; $model) AppleWebKit/537.36 VerityProDeviceSDK/1.0.0"
     }
+}
+
+/**
+ * Android has no max-touch-points API; the touchscreen features the device declares give a floor.
+ * Real phones declare jazzhand (5+). Never report touch the device did not declare.
+ */
+internal fun touchPointsFromFeatures(hasFeature: (String) -> Boolean): Int = when {
+    hasFeature(PackageManager.FEATURE_TOUCHSCREEN_MULTITOUCH_JAZZHAND) -> 5
+    hasFeature(PackageManager.FEATURE_TOUCHSCREEN_MULTITOUCH_DISTINCT) -> 2
+    hasFeature(PackageManager.FEATURE_TOUCHSCREEN_MULTITOUCH) -> 2
+    hasFeature(PackageManager.FEATURE_TOUCHSCREEN) -> 1
+    else -> 0
 }
 
 /** Unknown collection is distinct from a completed negative observation. */
