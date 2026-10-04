@@ -62,7 +62,11 @@ class VerityProViewModel(
         apiKey = options.apiKey
         storedOptions = options
         engineSessionId?.takeIf { it.isNotBlank() }?.let { currentSessionId = it }
-        options.apiBaseUrl?.let { repository.configureBaseUrl(it) }
+        options.apiBaseUrl?.let {
+            repository.configureBaseUrl(it)
+            // DocAI lives on the same origin as the API; doc-ml calls must not go to another host.
+            MLRetrofitInstance.configureForApiBaseUrl(it)
+        }
     }
 
     private val _kycState = MutableStateFlow<Resource<Any>>(Resource.Loading("Initializing KYC Verification"))

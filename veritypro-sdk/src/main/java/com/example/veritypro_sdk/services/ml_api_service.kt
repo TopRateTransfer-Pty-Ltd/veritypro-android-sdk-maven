@@ -2,6 +2,7 @@ package com.example.veritypro_sdk.services
 
 import retrofit2.http.Body
 import retrofit2.http.GET
+import retrofit2.http.Header
 import retrofit2.http.POST
 
 /**
@@ -24,6 +25,7 @@ interface MLApiService {
      */
     @POST("v1/kyc/doc/predict")
     suspend fun predict(
+        @Header("X-Verity-Session") veritySession: String,
         @Body request: MLPredictRequest
     ): MLPredictResponse
 
@@ -40,6 +42,7 @@ interface MLApiService {
      */
     @POST("v1/kyc/doc/verify-burst")
     suspend fun verifyBurst(
+        @Header("X-Verity-Session") veritySession: String,
         @Body request: MLVerifyBurstRequest
     ): MLVerifyBurstResponse
 
@@ -56,6 +59,7 @@ interface MLApiService {
      */
     @POST("v2/kyc/doc/capture-verify")
     suspend fun captureVerify(
+        @Header("X-Verity-Session") veritySession: String,
         @Body request: MLCaptureVerifyRequest
     ): MLCaptureVerifyResponse
 
@@ -65,6 +69,7 @@ interface MLApiService {
      */
     @POST("v2/kyc/doc/pair-check")
     suspend fun pairCheck(
+        @Header("X-Verity-Session") veritySession: String,
         @Body request: MLPairCheckRequest
     ): MLPairCheckResponse
 
@@ -79,6 +84,7 @@ interface MLApiService {
      */
     @POST("v1/kyc/doc/detect-presence")
     suspend fun detectPresence(
+        @Header("X-Verity-Session") veritySession: String,
         @Body request: MLDetectPresenceRequest
     ): MLDetectPresenceResponse
 
