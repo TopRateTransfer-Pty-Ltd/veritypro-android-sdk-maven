@@ -195,9 +195,11 @@ fun onUserTapsSend() {
     lifecycleScope.launch {
         val deviceToken = VpDeviceSessionService.collectAndSubmit(
             context       = applicationContext,
-            integrationId = "your-integration-uuid"
+            integrationId = "your-integration-uuid",
             // No API key: this endpoint is anonymous; never ship a key in your app.
-            // baseUrl defaults to https://api.veritypro.ai (production)
+            // baseUrl is REQUIRED; there is no default host. Sandbox: https://api.skylinefare.com,
+            // Live: https://api.veritypro.ai. A missing or non-HTTPS value throws IllegalArgumentException.
+            baseUrl       = BuildConfig.VERITY_API_BASE_URL
         )
 
         submitTransaction(
