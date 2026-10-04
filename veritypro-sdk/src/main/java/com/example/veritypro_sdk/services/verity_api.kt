@@ -202,7 +202,10 @@ interface VerityApiService {
     @POST("/edd/api/v1/edd/basic/assessments/{id}/documents")
     suspend fun attachBasicEddDocument(
         @Path("id") assessmentId: String,
-        @Part("document") document: MultipartBody.Part,
+        // Bare @Part: a MultipartBody.Part carries its own name ("document", set in
+        // ApiRepository.attachBasicEddDocument). @Part("document") here made Retrofit throw
+        // IllegalArgumentException while building the method, so every attach failed client-side.
+        @Part document: MultipartBody.Part,
         @Header("x-api-key") apiKey: String,
         @Header("Integrationid") integrationId: String? = null,
     ): ApiResponse<String>

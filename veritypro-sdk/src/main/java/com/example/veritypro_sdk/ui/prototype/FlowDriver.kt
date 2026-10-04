@@ -106,6 +106,11 @@ class ClientFlowDriver(
                     index = 0
                     return queue
                 }
+                android.util.Log.w("ClientFlowDriver",
+                    "Server session $existingId reports no pending steps (requested=$requested) — using the local module order")
+            } else if (result is Resource.Error) {
+                android.util.Log.e("ClientFlowDriver",
+                    "Fetching requestedSteps for $existingId failed (${result.message}) — using the local module order")
             }
         }
         queue = protoModuleOrder(options)
