@@ -90,7 +90,8 @@ class VerityPro(
          *         else -> { ... }
          *     }
          * }
-         * VerityPro.startStepUp(launcher, activity, challengeId = "...", capabilityToken = "...")
+         * VerityPro.startStepUp(launcher, activity, challengeId = "...", capabilityToken = "...",
+         *     apiBaseUrl = origin)  // the Sandbox or Live origin from the integration guide
          * ```
          *
          * @param challengeId Challenge ID returned by `POST /api/v1/step-up/challenges`.
@@ -98,6 +99,7 @@ class VerityPro(
          *   null, [apiKey] is used instead (suitable for dev/testing only — keep the API key
          *   server-side in production).
          * @param apiKey Permanent integrator API key. Required when [capabilityToken] is null.
+         * @param apiBaseUrl Required API origin (Sandbox or Live). There is no default host.
          */
         fun startStepUp(
             launcher: ManagedActivityResultLauncher<Intent, ActivityResult>,
@@ -105,12 +107,14 @@ class VerityPro(
             challengeId: String,
             capabilityToken: String? = null,
             apiKey: String? = null,
+            apiBaseUrl: String,
         ) {
             require(challengeId.isNotBlank()) { "challengeId must not be blank" }
             require(capabilityToken != null || !apiKey.isNullOrBlank()) {
                 "Either capabilityToken or apiKey must be provided"
             }
-            val intent = createStepUpIntent(activity, challengeId, capabilityToken, apiKey)
+            // There is no default host: without apiBaseUrl, createStepUpIntent threw on every call.
+            val intent = createStepUpIntent(activity, challengeId, capabilityToken, apiKey, apiBaseUrl = apiBaseUrl)
             launcher.launch(intent)
             Log.d("VerityPro", "startStepUp: challengeId=$challengeId, hasCapToken=${capabilityToken != null}")
         }
