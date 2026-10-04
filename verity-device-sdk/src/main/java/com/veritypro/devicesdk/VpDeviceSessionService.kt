@@ -112,13 +112,9 @@ object VpDeviceSessionService {
             val base = if (baseUrl.endsWith("/")) baseUrl.dropLast(1) else baseUrl
             val url = URL("$base/aml-intelligence/api/v1/device/sessions")
 
-            // SEC-025: Use HttpsURLConnection with system CA validation.
-            // HttpsURLConnection (not HttpURLConnection) enforces TLS and validates the
-            // server certificate against the device's trusted CA store.
-            // On Android 7.0+ (API 24+) the system CA store excludes user-installed CAs
-            // from trusted network traffic by default (per android:networkSecurityConfig)
-            // unless the app explicitly allows them — providing strong MITM resistance
-            // without explicit cert pinning.
+            // SEC-025: HttpsURLConnection validates the chain against the device trust store, and the
+            // handshake is then pinned to the ISRG root keys (same pins as veritypro-sdk) before any
+            // byte of the request is sent. An app-trusted or user-installed CA alone is not enough.
             val conn = (url.openConnection() as HttpsURLConnection).apply {
                 requestMethod = "POST"
                 setRequestProperty("Content-Type", "application/json")
@@ -126,6 +122,8 @@ object VpDeviceSessionService {
                 connectTimeout = 8_000
                 readTimeout = 8_000
             }
+            conn.connect()
+            SpkiPins.verify(conn)
 
             OutputStreamWriter(conn.outputStream).use { it.write(body) }
 
