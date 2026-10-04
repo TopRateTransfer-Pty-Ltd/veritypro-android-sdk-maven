@@ -111,6 +111,7 @@ object LightingCheck {
     suspend fun measure(context: Context, lifecycleOwner: LifecycleOwner): Verdict {
         val executor = Executors.newSingleThreadExecutor()
         var provider: ProcessCameraProvider? = null
+        var boundAnalysis: ImageAnalysis? = null
         return try {
             provider = awaitProvider(context) ?: return Verdict.Indeterminate
 
@@ -142,6 +143,7 @@ object LightingCheck {
             withContext_Main(context) {
                 provider.unbindAll()
                 provider.bindToLifecycle(lifecycleOwner, selector, analysis)
+                boundAnalysis = analysis
             }
 
             val luma = withTimeoutOrNull(TIMEOUT_MS) { result.await() }
@@ -186,7 +188,11 @@ object LightingCheck {
             // the work that must still happen on the cancellation path.
             withContext(NonCancellable) {
                 try {
-                    provider?.let { p -> withContext_Main(context) { p.unbindAll() } }
+                    // Release only this check's use case. The provider is process-wide, so
+                    // unbindAll() here would also tear down a camera another screen bound meanwhile.
+                    val p = provider
+                    val a = boundAnalysis
+                    if (p != null && a != null) withContext_Main(context) { p.unbind(a) }
                 } catch (e: Exception) {
                     Log.w(TAG, "unbind after lighting check failed: ${e.message}")
                 }

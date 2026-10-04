@@ -39,8 +39,8 @@ import androidx.compose.ui.unit.sp
 import java.io.File
 
 /**
- * Locale-aware declared-income parser. A comma is treated as a thousands separator when a dot is
- * present as the decimal point; otherwise a lone comma is the decimal separator. Returns null for
+ * Locale-aware declared-income parser. With both separators present, the last one is the decimal
+ * point; a lone comma is the decimal separator unless it groups thousands ("1,000"). Returns null for
  * anything non-numeric. Prevents silent corruption of AML source-of-funds data from `1,5`->15 style
  * naive comma stripping.
  */
@@ -57,8 +57,14 @@ fun parseDeclaredIncome(raw: String): Double? {
             t = t.replace(",", ".")
         }
     } else if (hasComma && hasDot) {
-        // "1,000.50" -> drop commas (thousands), keep dot decimal
-        t = t.replace(",", "")
+        // Whichever separator comes LAST is the decimal point, the other groups thousands:
+        // "1,000.50" -> 1000.50 ; "1.000,50" -> 1000.50. Treating the comma as thousands
+        // unconditionally turned "1.000,50" into 1.0005, a valid-looking wrong income.
+        t = if (t.lastIndexOf(',') > t.lastIndexOf('.')) {
+            t.replace(".", "").replace(",", ".")
+        } else {
+            t.replace(",", "")
+        }
     }
     return t.toDoubleOrNull()
 }
