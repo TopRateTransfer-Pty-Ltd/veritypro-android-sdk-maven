@@ -35,6 +35,7 @@ import com.amplifyframework.ui.liveness.ui.LivenessColorScheme
 import com.example.veritypro_sdk.services.BeginLivenessCredentials
 import com.example.veritypro_sdk.services.LivenessCredentialsProvider
 import com.example.veritypro_sdk.services.RetrofitInstance
+import com.example.veritypro_sdk.services.VerityEndpoint
 import com.example.veritypro_sdk.services.StepUpCompleteRequest
 import androidx.compose.material3.LinearProgressIndicator
 import com.example.veritypro_sdk.ui.prototype.BrutalBox
@@ -246,7 +247,7 @@ private fun StepUpFlowScreen(
     val stopMotion = rememberCaptureMotion(active = phase is StepUpPhase.Detecting) { captureRuntime = it }
 
     val authHeader = capabilityToken?.let { "Bearer $it" }
-    val api = remember(apiBaseUrl) { apiBaseUrl?.let { RetrofitInstance.createApi(it) } ?: RetrofitInstance.api }
+    val api = remember(apiBaseUrl) { RetrofitInstance.createApi(VerityEndpoint.requireApiOrigin(apiBaseUrl)) }
 
     val beginLiveness: () -> Unit = beginLiveness@{
         if (startedRef.value) return@beginLiveness

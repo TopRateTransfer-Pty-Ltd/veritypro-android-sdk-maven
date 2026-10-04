@@ -43,10 +43,10 @@ class ApiRepositoryUpdateKycTest {
 
     @Before
     fun setUp() {
-        repository = ApiRepository()
         mockApi = mockk()
         mockkObject(RetrofitInstance)
-        every { RetrofitInstance.api } returns mockApi
+        every { RetrofitInstance.createApi("https://gateway.test") } returns mockApi
+        repository = ApiRepository().apply { configureBaseUrl("https://gateway.test") }
     }
 
     @After

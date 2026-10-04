@@ -10,5 +10,10 @@ class DeviceSignalTest {
         assertEquals(5, touchPointsFromFeatures { it == android.content.pm.PackageManager.FEATURE_TOUCHSCREEN_MULTITOUCH_JAZZHAND })
     }
     @Test fun `no declared touchscreen reports zero not five`() { assertEquals(0, touchPointsFromFeatures { false }) }
-    @Test fun `default base url is production`() { assertEquals("https://api.veritypro.ai", VerityDevice.DEFAULT_BASE_URL) }
+    @Test fun `api origin is required and must be an https origin`() {
+        for (bad in listOf(null, "", " ", "http://gateway.test", "https://gateway.test/intelligence", "https://u:p@gateway.test", "gateway.test")) {
+            assertThrows(bad.toString(), IllegalArgumentException::class.java) { requireApiOrigin(bad) }
+        }
+        assertEquals("https://gateway.test", requireApiOrigin("https://gateway.test/"))
+    }
 }

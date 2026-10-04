@@ -35,7 +35,10 @@ import com.example.veritypro_sdk.services.BeginLivenessCredentials
 import com.example.veritypro_sdk.services.BeginLivenessData
 import com.example.veritypro_sdk.services.LivenessResultResponse
 import com.example.veritypro_sdk.services.Resource
+import io.mockk.Runs
 import io.mockk.coEvery
+import io.mockk.every
+import io.mockk.just
 import io.mockk.coVerify
 import io.mockk.mockk
 import kotlinx.coroutines.Dispatchers
@@ -121,13 +124,21 @@ class VerityProViewModelTest {
         assertEquals(false, accepted)
     }
     @Test fun `server session initialization supplies credentials without creating KYC`() = runTest(testDispatcher) {
-        val options = com.example.veritypro_sdk.utils.VerityOption("session-key", "integration", "Test", "Subject", "2000-01-01", "subject", "AU", mode="SERVER_DRIVEN")
+        val options = com.example.veritypro_sdk.utils.VerityOption("session-key", "integration", "Test", "Subject", "2000-01-01", "subject", "AU", mode="SERVER_DRIVEN", apiBaseUrl="https://gateway.test")
+        every { mockRepository.configureBaseUrl("https://gateway.test") } just Runs
         viewModel.initializeSession(options, "engine-1")
         coEvery { mockRepository.beginLiveness("engine-1", "session-key") } returns Resource.Success(makeBeginLivenessData())
         viewModel.startBeginLiveness("engine-1")
         advanceUntilIdle()
         coVerify(exactly=1) { mockRepository.beginLiveness("engine-1", "session-key") }
         assertEquals("engine-1", viewModel.getSessionId())
+    }
+
+    @Test fun `session without an API origin fails before any request`() {
+        val options = com.example.veritypro_sdk.utils.VerityOption("session-key", "integration", "Test", "Subject", "2000-01-01", "subject", "AU", mode="SERVER_DRIVEN")
+        val error = org.junit.Assert.assertThrows(IllegalArgumentException::class.java) { viewModel.initializeSession(options) }
+        assertTrue(error.message!!.contains("apiBaseUrl is required"))
+        coVerify(exactly=0) { mockRepository.configureBaseUrl(any()) }
     }
 
     @get:Rule

@@ -21,7 +21,9 @@ import java.util.UUID
 class ApiRepository {
     private var configuredApi: VerityApiService? = null
     private var configuredBaseUrl: String? = null
-    private val api: VerityApiService get() = configuredApi ?: RetrofitInstance.api
+    private val api: VerityApiService get() = checkNotNull(configuredApi) {
+        "VerityPro API is not configured: apiBaseUrl is required"
+    }
     fun configureBaseUrl(baseUrl: String) {
         if (configuredBaseUrl == baseUrl) return
         configuredApi = RetrofitInstance.createApi(baseUrl)

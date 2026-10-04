@@ -55,14 +55,21 @@ class VpDeviceSessionServiceTest {
     fun `collectAndSubmit mints without any API key`() = runBlocking {
         VpDeviceSessionService.testHandler = { fakeResponse("""{"token":"vpds_nokey"}""") }
         val result = VpDeviceSessionService.collectAndSubmit(
-            context = buildMockContext(), integrationId = "intg-001"
-        )
+            context = buildMockContext(), integrationId = "intg-001", baseUrl = "https://gateway.test")
         assertEquals("vpds_nokey", result)
     }
 
     @Test
-    fun `default base url is production`() {
-        assertEquals("https://api.veritypro.ai", VP_DEVICE_DEFAULT_BASE_URL)
+    fun `missing or malformed base url fails before any request`() = runBlocking {
+        var called = false
+        VpDeviceSessionService.testHandler = { called = true; fakeResponse("""{"token":"vpds_x"}""") }
+        for (bad in listOf("", "http://gateway.test", "https://gateway.test/intelligence")) {
+            try {
+                VpDeviceSessionService.collectAndSubmit(context = buildMockContext(), integrationId = "intg", baseUrl = bad)
+                fail("expected IllegalArgumentException for '$bad'")
+            } catch (expected: IllegalArgumentException) { }
+        }
+        assertFalse("no request may be sent without a valid origin", called)
     }
 
     // ── HTTP success path ────────────────────────────────────────────────────
@@ -76,8 +83,7 @@ class VpDeviceSessionServiceTest {
         }
         val token = VpDeviceSessionService.collectAndSubmit(
             context = buildMockContext(), apiKey = "valid-api-key",
-            integrationId = "intg-001"
-        )
+            integrationId = "intg-001", baseUrl = "https://gateway.test")
         assertTrue("Interceptor not called — check logs: $logMessages", interceptorCalled)
         assertEquals("vpds_abc123def456", token)
     }
@@ -86,8 +92,7 @@ class VpDeviceSessionServiceTest {
     fun `collectAndSubmit returns null when response token field is blank`() = runBlocking {
         VpDeviceSessionService.testHandler = { fakeResponse("""{"token":"","session_id":"xyz"}""") }
         val result = VpDeviceSessionService.collectAndSubmit(
-            context = buildMockContext(), apiKey = "key", integrationId = "intg"
-        )
+            context = buildMockContext(), apiKey = "key", integrationId = "intg", baseUrl = "https://gateway.test")
         assertNull(result)
     }
 
@@ -95,8 +100,7 @@ class VpDeviceSessionServiceTest {
     fun `collectAndSubmit returns null when response has no token field`() = runBlocking {
         VpDeviceSessionService.testHandler = { fakeResponse("""{"session":"xyz","status":"ok"}""") }
         val result = VpDeviceSessionService.collectAndSubmit(
-            context = buildMockContext(), apiKey = "key", integrationId = "intg"
-        )
+            context = buildMockContext(), apiKey = "key", integrationId = "intg", baseUrl = "https://gateway.test")
         assertNull(result)
     }
 
@@ -106,8 +110,7 @@ class VpDeviceSessionServiceTest {
     fun `collectAndSubmit returns null on HTTP 401`() = runBlocking {
         VpDeviceSessionService.testHandler = { fakeResponse("""{"error":"unauthorized"}""", code = 401) }
         val result = VpDeviceSessionService.collectAndSubmit(
-            context = buildMockContext(), apiKey = "bad-key", integrationId = "intg"
-        )
+            context = buildMockContext(), apiKey = "bad-key", integrationId = "intg", baseUrl = "https://gateway.test")
         assertNull(result)
     }
 
@@ -117,8 +120,7 @@ class VpDeviceSessionServiceTest {
             fakeResponse("""{"detail":"Invalid integration_id"}""", code = 422)
         }
         val result = VpDeviceSessionService.collectAndSubmit(
-            context = buildMockContext(), apiKey = "key", integrationId = "bad-intg"
-        )
+            context = buildMockContext(), apiKey = "key", integrationId = "bad-intg", baseUrl = "https://gateway.test")
         assertNull(result)
     }
 
@@ -126,8 +128,7 @@ class VpDeviceSessionServiceTest {
     fun `collectAndSubmit returns null on HTTP 500`() = runBlocking {
         VpDeviceSessionService.testHandler = { fakeResponse("""{"error":"internal"}""", code = 500) }
         val result = VpDeviceSessionService.collectAndSubmit(
-            context = buildMockContext(), apiKey = "key", integrationId = "intg"
-        )
+            context = buildMockContext(), apiKey = "key", integrationId = "intg", baseUrl = "https://gateway.test")
         assertNull(result)
     }
 
@@ -135,8 +136,7 @@ class VpDeviceSessionServiceTest {
     fun `collectAndSubmit returns null on malformed JSON response`() = runBlocking {
         VpDeviceSessionService.testHandler = { fakeResponse("NOT_JSON") }
         val result = VpDeviceSessionService.collectAndSubmit(
-            context = buildMockContext(), apiKey = "key", integrationId = "intg"
-        )
+            context = buildMockContext(), apiKey = "key", integrationId = "intg", baseUrl = "https://gateway.test")
         assertNull(result)
     }
 
@@ -151,8 +151,7 @@ class VpDeviceSessionServiceTest {
         }
         VpDeviceSessionService.collectAndSubmit(
             context = buildMockContext(), apiKey = "key",
-            integrationId = "intg-payload-test"
-        )
+            integrationId = "intg-payload-test", baseUrl = "https://gateway.test")
         val body = capturedBody!!
         assertEquals("intg-payload-test", body.getString("integration_id"))
         assertEquals("android-2.1.0", body.getString("sdk_version"))
@@ -167,8 +166,7 @@ class VpDeviceSessionServiceTest {
             fakeResponse("""{"token":"vpds_t2"}""")
         }
         VpDeviceSessionService.collectAndSubmit(
-            context = buildMockContext(), apiKey = "key", integrationId = "intg"
-        )
+            context = buildMockContext(), apiKey = "key", integrationId = "intg", baseUrl = "https://gateway.test")
         val s = capturedSignals!!
         assertTrue("ua", s.has("ua"))
         assertEquals("android", s.getString("platform"))
@@ -194,8 +192,7 @@ class VpDeviceSessionServiceTest {
             fakeResponse("""{"token":"vpds_t3"}""")
         }
         VpDeviceSessionService.collectAndSubmit(
-            context = buildMockContext(), apiKey = "key", integrationId = "intg"
-        )
+            context = buildMockContext(), apiKey = "key", integrationId = "intg", baseUrl = "https://gateway.test")
         val screen = capturedScreen!!
         assertTrue("screen.w", screen.has("w"))
         assertTrue("screen.h", screen.has("h"))
@@ -211,8 +208,7 @@ class VpDeviceSessionServiceTest {
             fakeResponse("""{"token":"vpds_t4"}""")
         }
         VpDeviceSessionService.collectAndSubmit(
-            context = buildMockContext(), apiKey = "legacy-key", integrationId = "intg"
-        )
+            context = buildMockContext(), apiKey = "legacy-key", integrationId = "intg", baseUrl = "https://gateway.test")
         assertFalse("the endpoint is anonymous; a key in the app must not leave it", sawApiKeyHeader)
     }
 
@@ -240,8 +236,7 @@ class VpDeviceSessionServiceTest {
             fakeResponse("""{"token":"vpds_t5"}""")
         }
         VpDeviceSessionService.collectAndSubmit(
-            context = buildMockContext(), apiKey = "key", integrationId = "intg"
-        )
+            context = buildMockContext(), apiKey = "key", integrationId = "intg", baseUrl = "https://gateway.test")
         assertEquals("/intelligence/api/v1/device/sessions", capturedPath)
         assertEquals("POST", capturedMethod)
     }
@@ -254,8 +249,7 @@ class VpDeviceSessionServiceTest {
             fakeResponse("""{"token":"vpds_t6"}""")
         }
         VpDeviceSessionService.collectAndSubmit(
-            context = buildMockContext(), apiKey = "key", integrationId = "intg"
-        )
+            context = buildMockContext(), apiKey = "key", integrationId = "intg", baseUrl = "https://gateway.test")
         assertNotNull(contentType)
         assertTrue("Expected application/json, got: $contentType",
             contentType!!.startsWith("application/json"))
@@ -304,8 +298,8 @@ class VpDeviceSessionServiceTest {
             fakeResponse("""{"token":"vpds_r${sessionIds.size}"}""")
         }
 
-        VpDeviceSessionService.collectAndSubmit(buildMockContext(), "key", "intg")
-        VpDeviceSessionService.collectAndSubmit(buildMockContext(), "key", "intg")
+        VpDeviceSessionService.collectAndSubmit(buildMockContext(), "key", "intg", baseUrl = "https://gateway.test")
+        VpDeviceSessionService.collectAndSubmit(buildMockContext(), "key", "intg", baseUrl = "https://gateway.test")
 
         assertEquals(2, sessionIds.size)
         assertNotEquals("session_id must differ across calls", sessionIds[0], sessionIds[1])
@@ -323,8 +317,8 @@ class VpDeviceSessionServiceTest {
         }
 
         val ctx = buildMockContext(visitorId = "pinned-visitor-id")
-        VpDeviceSessionService.collectAndSubmit(ctx, "key", "intg")
-        VpDeviceSessionService.collectAndSubmit(ctx, "key", "intg")
+        VpDeviceSessionService.collectAndSubmit(ctx, "key", "intg", baseUrl = "https://gateway.test")
+        VpDeviceSessionService.collectAndSubmit(ctx, "key", "intg", baseUrl = "https://gateway.test")
 
         assertEquals(2, visitorIds.size)
         assertEquals("visitor_id must be stable across calls", visitorIds[0], visitorIds[1])

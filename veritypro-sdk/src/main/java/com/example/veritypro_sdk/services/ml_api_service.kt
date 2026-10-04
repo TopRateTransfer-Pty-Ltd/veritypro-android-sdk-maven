@@ -9,7 +9,7 @@ import retrofit2.http.POST
  * ML Backend API Service Interface
  *
  * KYC Document Verification ML API endpoints
- * Backend: https://api.skylinefare.com/docai/ (cloud DocAI)
+ * Backend: `<apiBaseUrl>/docai` (cloud DocAI on the integrator's configured API origin)
  */
 interface MLApiService {
 

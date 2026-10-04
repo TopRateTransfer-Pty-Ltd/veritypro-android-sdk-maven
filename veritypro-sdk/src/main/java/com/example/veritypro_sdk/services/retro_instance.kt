@@ -2,7 +2,6 @@ package com.example.veritypro_sdk.services
 
 import android.os.Build
 import android.util.Log
-import okhttp3.CertificatePinner
 import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
 import retrofit2.Retrofit
@@ -22,50 +21,33 @@ private fun createSafeLoggingInterceptor(level: HttpLoggingInterceptor.Level): H
 }
 
 object RetrofitInstance {
-    // Retrofit requires every base URL to end in '/'.  Keep the default
-    // singleton on the same normalized form as createApi(baseUrl), otherwise
-    // the first SDK request fails while constructing Retrofit before any HTTP
-    // call is made.
-    private const val BASE_URL = "https://api.skylinefare.com/"
-    /** A session owns its endpoint; configuring one integrator never changes another session. */
+    /**
+     * A session owns its endpoint; configuring one integrator never changes another session.
+     * There is no default API: [baseUrl] is the integrator's configured origin, and the client
+     * pins that host to the ISRG roots ([VerityEndpoint.ISRG_ROOT_PINS]).
+     */
     fun createApi(baseUrl: String): VerityApiService {
-        val uri = java.net.URI(baseUrl)
-        require(uri.scheme == "https" && !uri.host.isNullOrBlank() && uri.userInfo == null && uri.query == null && uri.fragment == null) {
-            "apiBaseUrl must be an HTTPS origin without credentials, query or fragment"
-        }
-        require(uri.path.isNullOrEmpty() || uri.path == "/") { "apiBaseUrl must be the gateway origin" }
-        return Retrofit.Builder().baseUrl(baseUrl.trimEnd('/') + "/")
-            .addConverterFactory(GsonConverterFactory.create()).client(okHttpClient).build().create(VerityApiService::class.java)
+        val origin = VerityEndpoint.requireApiOrigin(baseUrl)
+        // Retrofit requires every base URL to end in '/'.
+        return Retrofit.Builder().baseUrl("$origin/")
+            .addConverterFactory(GsonConverterFactory.create())
+            .client(VerityEndpoint.pinnedClient(okHttpClient, origin))
+            .build().create(VerityApiService::class.java)
     }
 
-    // Certificate pinning for api.skylinefare.com — pinned to Let's Encrypt ROOT CAs
-    // so that leaf cert renewals (every 90 days) never break the app.
-    // ISRG Root X1 valid until 2035, ISRG Root X2 valid until 2040.
-    private val certificatePinner = CertificatePinner.Builder()
-        .add("api.skylinefare.com", "sha256/C5+lpZ7tcVwmwQIMcRtPbsQtWLABXhQzejna0wHFr8M=") // ISRG Root X1 (RSA, expires 2035)
-        .add("api.skylinefare.com", "sha256/diGVwiVYbubAI3RW4hB9xU8e/CH2GnkuvVFZE8zmgzI=") // ISRG Root X2 (ECDSA, expires 2040)
-        .build()
-
-    val okHttpClient = OkHttpClient.Builder()
-        .addInterceptor(RequestSigningInterceptor())
-        // Lets the KYC submit declare its own, longer budget without slowing the
-        // failure of every other call. See PerCallTimeoutInterceptor — the 60 s
-        // default below is shorter than the server's own 120 s upstream budget, so
-        // without this the phone abandons submissions the server then completes.
-        .addInterceptor(PerCallTimeoutInterceptor())
-        .certificatePinner(certificatePinner)
-        .connectTimeout(60, TimeUnit.SECONDS)
-        .readTimeout(60, TimeUnit.SECONDS)
-        .writeTimeout(60, TimeUnit.SECONDS)
-        .build()
-
-    val api: VerityApiService by lazy {
-        Retrofit.Builder()
-            .baseUrl(BASE_URL)
-            .addConverterFactory(GsonConverterFactory.create())
-            .client(okHttpClient)
+    /** Unpinned base; only ever used through [createApi], which adds the pins for its host. */
+    private val okHttpClient: OkHttpClient by lazy {
+        OkHttpClient.Builder()
+            .addInterceptor(RequestSigningInterceptor())
+            // Lets the KYC submit declare its own, longer budget without slowing the
+            // failure of every other call. See PerCallTimeoutInterceptor — the 60 s
+            // default below is shorter than the server's own 120 s upstream budget, so
+            // without this the phone abandons submissions the server then completes.
+            .addInterceptor(PerCallTimeoutInterceptor())
+            .connectTimeout(60, TimeUnit.SECONDS)
+            .readTimeout(60, TimeUnit.SECONDS)
+            .writeTimeout(60, TimeUnit.SECONDS)
             .build()
-            .create(VerityApiService::class.java)
     }
 }
 
@@ -73,28 +55,24 @@ object RetrofitInstance {
 /**
  * ML Backend Retrofit Instance
  *
- * Configurable ML backend for document verification
- * Auto-detects emulator vs physical device:
- * - Emulator: http://10.0.2.2:8001 (maps to host localhost)
- * - Physical device: Must be configured with actual ML backend URL
+ * DocAI lives on the session's API origin: [configureForApiBaseUrl] points it at `<apiBaseUrl>/docai`.
+ * [configure] exists only for local development against a doc-ml process on this machine or LAN.
+ * There is no default: using [api] before either is called throws.
  */
 object MLRetrofitInstance {
 
     private const val TAG = "MLRetrofitInstance"
 
-    // Production ML backend URL — locked to prevent tampering
-    private const val ML_BASE_URL = "https://api.skylinefare.com/docai/"
-
-    // Allowed URL prefixes for ML backend (whitelist)
+    // Local-development origins accepted by configure(); production goes through configureForApiBaseUrl.
     private val ALLOWED_URL_PREFIXES = listOf(
-        "https://api.skylinefare.com/",
         "http://10.0.2.2:",      // Android emulator → host localhost
         "http://localhost:",
         "http://127.0.0.1:",
         "http://192.168."        // LAN — local dev on physical device
     )
 
-    private var mlBaseUrl: String = ML_BASE_URL
+    @Volatile
+    private var mlBaseUrl: String? = null
 
     // Logging interceptor — HEADERS only to prevent leaking base64 images,
     // API keys, and AWS credentials in logcat. BODY level must NEVER be used
@@ -107,13 +85,7 @@ object MLRetrofitInstance {
         }
     )
 
-    // Certificate pinning (same root CA pins as main RetrofitInstance)
-    private val certificatePinner = CertificatePinner.Builder()
-        .add("api.skylinefare.com", "sha256/C5+lpZ7tcVwmwQIMcRtPbsQtWLABXhQzejna0wHFr8M=") // ISRG Root X1 (RSA, expires 2035)
-        .add("api.skylinefare.com", "sha256/diGVwiVYbubAI3RW4hB9xU8e/CH2GnkuvVFZE8zmgzI=") // ISRG Root X2 (ECDSA, expires 2040)
-        .build()
-
-    private fun buildOkHttpClient(): OkHttpClient {
+    private fun buildOkHttpClient(baseUrl: String): OkHttpClient {
         val builder = OkHttpClient.Builder()
             .addInterceptor(RequestSigningInterceptor())
             .connectTimeout(15, TimeUnit.SECONDS)
@@ -122,9 +94,9 @@ object MLRetrofitInstance {
             .callTimeout(60, TimeUnit.SECONDS)    // hard cap — prevents 43s+ hangs without timeout
             .addInterceptor(loggingInterceptor)
 
-        // Only apply certificate pinning for production URLs
-        if (mlBaseUrl.startsWith("https://api.skylinefare.com")) {
-            builder.certificatePinner(certificatePinner)
+        // Every HTTPS origin is pinned to the ISRG roots; only local-dev plain HTTP is not.
+        if (baseUrl.startsWith("https://")) {
+            builder.certificatePinner(VerityEndpoint.pinnerFor(baseUrl))
         }
 
         return builder.build()
@@ -137,7 +109,7 @@ object MLRetrofitInstance {
 
     /**
      * Configure the ML backend URL for local development only.
-     * URL must match the allowed whitelist (production domain or localhost variants).
+     * URL must be a local-development origin; production DocAI is set by [configureForApiBaseUrl].
      *
      * @param baseUrl The ML backend base URL
      * @throws IllegalArgumentException if URL is not in the allowed whitelist
@@ -166,12 +138,8 @@ object MLRetrofitInstance {
      * whatever API the session used.
      */
     fun configureForApiBaseUrl(apiBaseUrl: String) {
-        val uri = java.net.URI(apiBaseUrl)
-        require(uri.scheme == "https" && !uri.host.isNullOrBlank() && uri.userInfo == null && uri.query == null && uri.fragment == null) {
-            "apiBaseUrl must be an HTTPS origin without credentials, query or fragment"
-        }
-        require(uri.path.isNullOrEmpty() || uri.path == "/") { "apiBaseUrl must be the gateway origin" }
-        val docai = apiBaseUrl.trimEnd('/') + "/docai"
+        val origin = VerityEndpoint.requireApiOrigin(apiBaseUrl)
+        val docai = "$origin/docai"
         synchronized(this) {
             if (mlBaseUrl == docai) return
             mlBaseUrl = docai
@@ -191,13 +159,15 @@ object MLRetrofitInstance {
             // Slow path: synchronize and double-check
             synchronized(this) {
                 mlApiService?.let { return it }
+                val base = checkNotNull(mlBaseUrl) {
+                    "DocAI is not configured: start the SDK with apiBaseUrl (or call configureForApiBaseUrl)"
+                }
                 val newRetrofit = Retrofit.Builder()
                     // configure() trims the trailing '/'; Retrofit requires the base URL to end in
-                    // '/' when it carries a path (e.g. ".../docai") — re-add it here. Host-only URLs
-                    // are unaffected (OkHttp normalises those to a root path).
-                    .baseUrl(if (mlBaseUrl.endsWith("/")) mlBaseUrl else "$mlBaseUrl/")
+                    // '/' when it carries a path (e.g. ".../docai") — re-add it here.
+                    .baseUrl(if (base.endsWith("/")) base else "$base/")
                     .addConverterFactory(GsonConverterFactory.create())
-                    .client(buildOkHttpClient())
+                    .client(buildOkHttpClient(base))
                     .build()
                 retrofit = newRetrofit
                 val newService = newRetrofit.create(MLApiService::class.java)
@@ -209,10 +179,10 @@ object MLRetrofitInstance {
     /**
      * Check if ML backend is configured and reachable
      */
-    fun isConfigured(): Boolean = mlBaseUrl.isNotEmpty()
+    fun isConfigured(): Boolean = !mlBaseUrl.isNullOrEmpty()
 
     /**
      * Get current ML backend URL
      */
-    fun getBaseUrl(): String = mlBaseUrl
+    fun getBaseUrl(): String? = mlBaseUrl
 }

@@ -9,6 +9,7 @@ import android.view.WindowManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import com.example.veritypro_sdk.services.VerityEndpoint
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -22,9 +23,6 @@ private const val TAG = "VpDeviceSession"
 private const val PREFS_NAME = "vp_device_prefs"
 private const val KEY_VISITOR_ID = "_vp_vid"
 private const val MINT_PATH = "/intelligence/api/v1/device/sessions"
-
-/** Production API. Pass baseUrl explicitly to target staging. */
-const val VP_DEVICE_DEFAULT_BASE_URL = "https://api.veritypro.ai"
 
 /**
  * Mints a vpds_* device-session token by POSTing mobile device signals to the
@@ -70,15 +68,21 @@ object VpDeviceSessionService {
      *
      * @param apiKey Deprecated and ignored; never sent. The endpoint is anonymous and attributes
      *   by integration_id, so a key in the app would only leak it.
+     * @param baseUrl The integrator's API origin. Required: there is no default host.
+     * @throws IllegalArgumentException when [baseUrl] is missing or not an HTTPS origin — a
+     *   configuration error, raised before any collection. Network failures still return null.
      */
     suspend fun collectAndSubmit(
         context: Context,
         apiKey: String? = null,
         integrationId: String,
-        baseUrl: String = VP_DEVICE_DEFAULT_BASE_URL
-    ): String? = withTimeoutOrNull(8_000L) {
-        tryMint(context, integrationId, baseUrl)
-    }.also { if (it == null) Log.w(TAG, "Device session mint timed out or failed") }
+        baseUrl: String
+    ): String? {
+        val origin = VerityEndpoint.requireApiOrigin(baseUrl, "baseUrl")
+        return withTimeoutOrNull(8_000L) {
+            tryMint(context, integrationId, origin)
+        }.also { if (it == null) Log.w(TAG, "Device session mint timed out or failed") }
+    }
 
     private suspend fun tryMint(
         context: Context,
@@ -87,7 +91,7 @@ object VpDeviceSessionService {
     ): String? = withContext(Dispatchers.IO) {
         try {
             val payload = buildPayload(context, integrationId)
-            val url = "${baseUrl.trimEnd('/')}$MINT_PATH"
+            val url = "$baseUrl$MINT_PATH"
 
             val request = Request.Builder()
                 .url(url)
@@ -96,7 +100,8 @@ object VpDeviceSessionService {
 
             // In unit tests testHandler is set — bypass OkHttpClient entirely so
             // Android stubs with null Build.* fields never trigger OkHttp init.
-            val response = testHandler?.invoke(request) ?: httpClient.newCall(request).execute()
+            val response = testHandler?.invoke(request)
+                ?: VerityEndpoint.pinnedClient(httpClient, baseUrl).newCall(request).execute()
             response.use { res ->
                 if (!res.isSuccessful) {
                     Log.w(TAG, "HTTP ${res.code} from device sessions endpoint")

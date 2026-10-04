@@ -29,7 +29,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.veritypro_android.ui.theme.VerityproandroidTheme
 import com.example.veritypro_sdk.VerityPro
-import com.example.veritypro_sdk.services.MLRetrofitInstance
 import androidx.compose.runtime.mutableStateOf
 import com.example.veritypro_sdk.ui.prototype.ProtoVerificationScreen
 import com.example.veritypro_sdk.ui.theme.ThemeMode
@@ -44,10 +43,8 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // Point the ML client at the DEPLOYED doc-ml via the gateway so v2 capture-verify hits the
-        // live endpoint: base + relative "v2/kyc/doc/capture-verify" = /docai/v2/kyc/doc/capture-verify.
-        // (Swap back to "http://192.168.4.126:8001/" to use a local doc-ml server.)
-        MLRetrofitInstance.configure("https://api.skylinefare.com/docai/")
+        // DocAI follows the session's apiBaseUrl (BuildConfig.API_BASE_URL) — `<origin>/docai`.
+        // For a local doc-ml server, call MLRetrofitInstance.configure("http://<lan-ip>:8001/") here.
 
         setContent {
             VerityproandroidTheme {
@@ -107,6 +104,7 @@ fun VerityProDemoApp() {
             options = VerityOption(
                 apiKey = BuildConfig.API_KEY,
                 integrationId = BuildConfig.INTEGRATION_ID,
+                apiBaseUrl = BuildConfig.API_BASE_URL,
                 signingKey = null,
                 placesApiKey = BuildConfig.PLACES_API_KEY,
                 requiredModules = product.value,
@@ -151,6 +149,7 @@ fun VerityProDemoApp() {
     val options = VerityOption(
         apiKey = BuildConfig.API_KEY,
         integrationId = BuildConfig.INTEGRATION_ID,
+        apiBaseUrl = BuildConfig.API_BASE_URL,
         firstName = "Ade",
         lastName = "Oba",
         dateOfBirth = "1990-01-15T00:00:00.000Z",
