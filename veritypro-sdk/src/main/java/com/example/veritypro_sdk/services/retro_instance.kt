@@ -95,7 +95,7 @@ object MLRetrofitInstance {
     // API keys, and AWS credentials in logcat. BODY level must NEVER be used
     // in release builds (SaaS B2B/B2C security requirement).
     private val loggingInterceptor = createSafeLoggingInterceptor(
-        if (Build.FINGERPRINT.contains("generic") || Build.FINGERPRINT.contains("emulator")) {
+        if (Build.FINGERPRINT?.contains("generic") == true || Build.FINGERPRINT?.contains("emulator") == true) {  // null only off-device (JVM unit tests)
             HttpLoggingInterceptor.Level.HEADERS  // Emulator: headers only (still no body)
         } else {
             HttpLoggingInterceptor.Level.NONE     // Physical device: no logging
@@ -152,6 +152,28 @@ object MLRetrofitInstance {
             mlApiService = null
         }
         Log.d(TAG, "ML backend configured: $trimmed")
+    }
+
+    /**
+     * Point the ML client at the DocAI surface of the session's API origin: `<apiBaseUrl>/docai`.
+     * Same validation as [RetrofitInstance.createApi] (an HTTPS origin, nothing else), because it is
+     * the same integrator-supplied value. Before this the SDK sent ID images to the staging host
+     * whatever API the session used.
+     */
+    fun configureForApiBaseUrl(apiBaseUrl: String) {
+        val uri = java.net.URI(apiBaseUrl)
+        require(uri.scheme == "https" && !uri.host.isNullOrBlank() && uri.userInfo == null && uri.query == null && uri.fragment == null) {
+            "apiBaseUrl must be an HTTPS origin without credentials, query or fragment"
+        }
+        require(uri.path.isNullOrEmpty() || uri.path == "/") { "apiBaseUrl must be the gateway origin" }
+        val docai = apiBaseUrl.trimEnd('/') + "/docai"
+        synchronized(this) {
+            if (mlBaseUrl == docai) return
+            mlBaseUrl = docai
+            retrofit = null
+            mlApiService = null
+        }
+        Log.d(TAG, "ML backend follows API origin: $docai")
     }
 
     /**
