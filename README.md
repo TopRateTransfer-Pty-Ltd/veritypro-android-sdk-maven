@@ -202,12 +202,9 @@ when (val r = VerityPro.extractStepUpResult(result)) {
 `VerityPro.extractResult(result)` also works on a step-up result: it returns a `VerityResult`
 with `verdict`, `similarityScore`, `attemptCount` and `maxAttempts`.
 
-> **Known defect: do not use `VerityPro.startStepUp(launcher, activity, ...)`.** It has no
-> `apiBaseUrl` parameter and calls `createStepUpIntent` without one, so it always throws
-> `IllegalArgumentException: apiBaseUrl is required` now that there is no default host
-> [`veritypro-sdk/.../VerityPro.kt`, `startStepUp`]. Use `createStepUpIntent(..., apiBaseUrl = ...)`
-> as above, or `createVerificationIntent` with `mode = STEP_UP_AUTH`, `stepUpChallengeId` and
-> `apiBaseUrl` set on `VerityOption`.
+> `VerityPro.startStepUp(launcher, activity, challengeId = ..., capabilityToken = ..., apiBaseUrl = ...)`
+> is the one-call alternative: `apiBaseUrl` is a required parameter (since #50; before that it
+> threw on every call because it could not pass an origin).
 
 ### Device collection (standalone, for transaction monitoring)
 
@@ -272,10 +269,10 @@ and `utils/VpDeviceSessionService.kt`]. Pins are on CA keys, so the 90-day leaf 
 SDK rebuild. OkHttp pins only hosts it has an entry for, so other hosts the SDK talks to (for
 example AWS liveness endpoints) use default system trust.
 
-**The standalone `verity-device-sdk` module is not pinned.** It uses `HttpsURLConnection` with the
-device's system CA store and states that it relies on that instead of pinning
-[`verity-device-sdk/.../VpDeviceSessionService.kt`, SEC-025]. If you need pinned device collection,
-use `VpDeviceSessionService.collectAndSubmit` from `veritypro-sdk`, which is pinned.
+`verity-device-sdk` is pinned to the same three ISRG root keys (since #50). After the TLS handshake it
+rebuilds the platform-verified chain and requires one of those keys before any request byte is sent
+[`verity-device-sdk/.../SpkiPins.kt`]. On a pin failure `collect` returns `null` (logged), like any
+other network failure.
 
 ## Security notes
 
