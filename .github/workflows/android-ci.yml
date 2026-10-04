@@ -50,6 +50,19 @@ jobs:
       - name: SDK unit tests
         run: ./gradlew :veritypro-sdk:testDebugUnitTest :verity-device-sdk:testDebugUnitTest --no-daemon --stacktrace
 
+      # Release AAR as a run artifact: the Flutter wrapper (verity_flutter_sdk/android/libs) vendors
+      # this AAR, so it should come from a CI run tied to a commit sha, not a developer machine.
+      - name: Build release AAR
+        run: ./gradlew :veritypro-sdk:assembleRelease --no-daemon --stacktrace
+
+      - name: Upload release AAR
+        uses: actions/upload-artifact@v4
+        with:
+          name: veritypro-sdk-release-aar-${{ github.sha }}
+          path: veritypro-sdk/build/outputs/aar/veritypro-sdk-release.aar
+          if-no-files-found: error
+          retention-days: 14
+
       - name: Upload unit test reports
         if: failure()
         uses: actions/upload-artifact@v4
