@@ -8,6 +8,7 @@ import android.os.Bundle
 import android.util.Log
 import androidx.activity.compose.ManagedActivityResultLauncher
 import androidx.activity.result.ActivityResult
+import com.example.veritypro_sdk.services.VerityEndpoint
 import com.example.veritypro_sdk.ui.theme.ThemeMode
 import com.example.veritypro_sdk.utils.LivenessResult
 import com.example.veritypro_sdk.utils.StepUpResult
@@ -39,6 +40,8 @@ class VerityPro(
             if (options.verityMode == VerityMode.STEP_UP_AUTH) return createStepUpIntent(
                 context, requireNotNull(options.stepUpChallengeId) { "stepUpChallengeId is required" },
                 options.stepUpCapabilityToken, options.apiKey, operationId, options.apiBaseUrl)
+            // No config, no call: the API origin is the integrator's, never a built-in default.
+            VerityEndpoint.requireApiOrigin(options.apiBaseUrl)
             com.example.veritypro_sdk.ui.prototype.protoModuleOrder(options)
             val id = operationId ?: java.util.UUID.randomUUID().toString()
             NativeOperations.prepare(id)
@@ -52,6 +55,7 @@ class VerityPro(
         @JvmStatic fun createStepUpIntent(context: Context, challengeId: String, capabilityToken: String? = null, apiKey: String? = null, operationId: String? = null, apiBaseUrl: String? = null): Intent {
             require(challengeId.isNotBlank()) { "challengeId must not be blank" }
             require(!capabilityToken.isNullOrBlank() || !apiKey.isNullOrBlank()) { "A challenge token or API key is required" }
+            val origin = VerityEndpoint.requireApiOrigin(apiBaseUrl)
             val id = operationId ?: java.util.UUID.randomUUID().toString()
             NativeOperations.prepare(id)
             return Intent(context, StepUpSdkActivity::class.java).apply {
@@ -59,7 +63,7 @@ class VerityPro(
                 putExtra(StepUpSdkActivity.EXTRA_API_KEY, apiKey)
                 putExtra(StepUpSdkActivity.EXTRA_CAPABILITY_TOKEN, capabilityToken?.takeIf { it.isNotBlank() })
                 putExtra(EXTRA_OPERATION_ID, id)
-                putExtra("api_base_url", apiBaseUrl)
+                putExtra("api_base_url", origin)
             }
         }
 

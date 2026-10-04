@@ -19,6 +19,7 @@ import com.example.veritypro_sdk.services.MLNextAction
 import com.example.veritypro_sdk.services.MLPredictResponse
 import com.example.veritypro_sdk.services.MLRepository
 import com.example.veritypro_sdk.services.MLRetrofitInstance
+import com.example.veritypro_sdk.services.VerityEndpoint
 import com.example.veritypro_sdk.services.MLVerifyBurstResponse
 import com.example.veritypro_sdk.services.Resource
 import com.example.veritypro_sdk.services.SessionData
@@ -65,11 +66,11 @@ class VerityProViewModel(
         apiKey = options.apiKey
         storedOptions = options
         engineSessionId?.takeIf { it.isNotBlank() }?.let { currentSessionId = it }
-        options.apiBaseUrl?.let {
-            repository.configureBaseUrl(it)
-            // DocAI lives on the same origin as the API; doc-ml calls must not go to another host.
-            MLRetrofitInstance.configureForApiBaseUrl(it)
-        }
+        // No config, no call: there is no built-in host, so a session without an API origin stops here.
+        val origin = VerityEndpoint.requireApiOrigin(options.apiBaseUrl)
+        repository.configureBaseUrl(origin)
+        // DocAI lives on the same origin as the API; doc-ml calls must not go to another host.
+        MLRetrofitInstance.configureForApiBaseUrl(origin)
     }
 
     private val _kycState = MutableStateFlow<Resource<Any>>(Resource.Loading("Initializing KYC Verification"))

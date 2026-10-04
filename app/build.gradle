@@ -38,6 +38,9 @@ android {
         def cfg = { String name -> System.getenv(name) ?: properties.getProperty(name, "") }
         buildConfigField "String", "API_KEY", "\"${cfg('API_KEY')}\""
         buildConfigField "String", "INTEGRATION_ID", "\"${cfg('INTEGRATION_ID')}\""
+        // VerityPro API origin (Sandbox or Live). The SDK has no default host: an empty value
+        // makes the demo fail at session start with "apiBaseUrl is required".
+        buildConfigField "String", "API_BASE_URL", "\"${cfg('API_BASE_URL')}\""
         // Google Places key for address autocomplete — never hard-coded / committed.
         buildConfigField "String", "PLACES_API_KEY", "\"${cfg('GOOGLE_PLACES_API_KEY')}\""
     }
