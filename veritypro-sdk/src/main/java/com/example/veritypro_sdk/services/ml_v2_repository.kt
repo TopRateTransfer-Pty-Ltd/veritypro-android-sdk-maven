@@ -100,7 +100,7 @@ class MLV2Repository {
                 "captureVerify: session=$captureSessionId side=$side pad=${padFrameModels.size}"
             )
 
-            val response = MLRetrofitInstance.api.captureVerify(request)
+            val response = MLRetrofitInstance.api.captureVerify(request.captureSessionId, request)
 
             Log.d(
                 TAG,
@@ -140,6 +140,7 @@ class MLV2Repository {
     ): Resource<MLPairCheckResponse> {
         return try {
             val response = MLRetrofitInstance.api.pairCheck(
+                captureSessionId,
                 MLPairCheckRequest(captureSessionId, docTypeExpected, policyVersion)
             )
             Log.d(

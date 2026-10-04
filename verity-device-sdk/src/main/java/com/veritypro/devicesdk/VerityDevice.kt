@@ -9,23 +9,26 @@ import android.content.Context
  */
 object VerityDevice {
 
+    /** Production API. Pass baseUrl explicitly to target staging. */
+    const val DEFAULT_BASE_URL = "https://api.veritypro.ai"
+
     /**
      * Collects device signals and returns a vpds_* session token.
-     * Non-fatal: returns null on network failure.
+     * Non-fatal: returns null on network failure (logged).
      *
      * @param context Application context
-     * @param apiKey Your VerityPro API key (sk_live_... or sk_test_...)
+     * @param apiKey Deprecated and ignored; pass nothing. The device-session endpoint is anonymous
+     *   (attribution is by integrationId), so no secret key may ship inside an app. It is never sent.
      * @param integrationId Your integration UUID from the VerityPro dashboard
-     * @param baseUrl API base URL. Defaults to https://api.skylinefare.com
+     * @param baseUrl API base URL. Defaults to [DEFAULT_BASE_URL] (production).
      */
     suspend fun collect(
         context: Context,
-        apiKey: String,
+        apiKey: String? = null,
         integrationId: String,
-        baseUrl: String = "https://api.skylinefare.com"
+        baseUrl: String = DEFAULT_BASE_URL
     ): String? = VpDeviceSessionService.collectAndSubmit(
         context = context,
-        apiKey = apiKey,
         baseUrl = baseUrl,
         integrationId = integrationId
     )

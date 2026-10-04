@@ -27,6 +27,11 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          # The action's default list includes 'tools', which current cmdline-tools no longer
+          # ship ("Failed to find package 'tools'" broke every build on 2026-10-04).
+          # AGP downloads the platform/build-tools it needs itself.
+          packages: platform-tools
 
       - name: Make gradlew executable
         run: chmod +x ./gradlew

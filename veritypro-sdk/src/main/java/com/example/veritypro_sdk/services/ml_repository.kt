@@ -86,7 +86,7 @@ class MLRepository {
 
             Log.d(TAG, "Predicting document: session=$sessionId, type=$docTypeExpected, side=$sideExpected")
 
-            val response = MLRetrofitInstance.api.predict(request)
+            val response = MLRetrofitInstance.api.predict(request.sessionId, request)
 
             Log.d(TAG, "Prediction result: docOk=${response.docOk}, nextAction=${response.nextAction}, hint=${response.hint}")
 
@@ -139,7 +139,7 @@ class MLRepository {
 
             Log.d(TAG, "Predicting document from bitmap: session=$sessionId")
 
-            val response = MLRetrofitInstance.api.predict(request)
+            val response = MLRetrofitInstance.api.predict(request.sessionId, request)
 
             Log.d(TAG, "Prediction result: docOk=${response.docOk}, nextAction=${response.nextAction}")
 
@@ -203,7 +203,7 @@ class MLRepository {
 
             Log.d(TAG, "Verifying burst: session=$sessionId, frames=${frames.size}")
 
-            val response = MLRetrofitInstance.api.verifyBurst(request)
+            val response = MLRetrofitInstance.api.verifyBurst(request.sessionId, request)
 
             Log.d(TAG, "Burst result: decision=${response.decision}, spoof=${response.spoof.reason}")
 
@@ -259,7 +259,7 @@ class MLRepository {
 
             Log.d(TAG, "Verifying burst bitmaps: session=$sessionId, frames=${bitmaps.size}")
 
-            val response = MLRetrofitInstance.api.verifyBurst(request)
+            val response = MLRetrofitInstance.api.verifyBurst(request.sessionId, request)
 
             Log.d(TAG, "Burst result: decision=${response.decision}")
 
@@ -300,7 +300,7 @@ class MLRepository {
 
             Log.d(TAG, "Detecting document presence: session=$sessionId")
 
-            val response = MLRetrofitInstance.api.detectPresence(request)
+            val response = MLRetrofitInstance.api.detectPresence(request.sessionId, request)
 
             Log.d(TAG, "Presence result: hasDocument=${response.hasDocument}, confidence=${response.confidence}")
 
