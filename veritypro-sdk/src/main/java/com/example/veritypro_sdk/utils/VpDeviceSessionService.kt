@@ -1,6 +1,7 @@
 package com.example.veritypro_sdk.utils
 
 import android.content.Context
+import android.content.pm.PackageManager
 import android.os.Build
 import android.util.DisplayMetrics
 import android.util.Log
@@ -21,6 +22,9 @@ private const val TAG = "VpDeviceSession"
 private const val PREFS_NAME = "vp_device_prefs"
 private const val KEY_VISITOR_ID = "_vp_vid"
 private const val MINT_PATH = "/intelligence/api/v1/device/sessions"
+
+/** Production API. Pass baseUrl explicitly to target staging. */
+const val VP_DEVICE_DEFAULT_BASE_URL = "https://api.veritypro.ai"
 
 /**
  * Mints a vpds_* device-session token by POSTing mobile device signals to the
@@ -63,25 +67,21 @@ object VpDeviceSessionService {
      *
      * Suspend — must be called from a coroutine. Never throws; callers treat
      * null as "token unavailable" and continue the KYC flow without it.
+     *
+     * @param apiKey Deprecated and ignored; never sent. The endpoint is anonymous and attributes
+     *   by integration_id, so a key in the app would only leak it.
      */
     suspend fun collectAndSubmit(
         context: Context,
-        apiKey: String,
+        apiKey: String? = null,
         integrationId: String,
-        baseUrl: String = "https://api.skylinefare.com"
-    ): String? {
-        if (apiKey.isBlank() || apiKey.startsWith("<")) {
-            Log.w(TAG, "Invalid API key — skipping device session mint")
-            return null
-        }
-        return withTimeoutOrNull(8_000L) {
-            tryMint(context, apiKey, integrationId, baseUrl)
-        }.also { if (it == null) Log.w(TAG, "Device session mint timed out or failed") }
-    }
+        baseUrl: String = VP_DEVICE_DEFAULT_BASE_URL
+    ): String? = withTimeoutOrNull(8_000L) {
+        tryMint(context, integrationId, baseUrl)
+    }.also { if (it == null) Log.w(TAG, "Device session mint timed out or failed") }
 
     private suspend fun tryMint(
         context: Context,
-        apiKey: String,
         integrationId: String,
         baseUrl: String
     ): String? = withContext(Dispatchers.IO) {
@@ -92,7 +92,6 @@ object VpDeviceSessionService {
             val request = Request.Builder()
                 .url(url)
                 .post(payload.toString().toRequestBody("application/json".toMediaType()))
-                .addHeader("x-api-key", apiKey)
                 .build()
 
             // In unit tests testHandler is set — bypass OkHttpClient entirely so
@@ -109,7 +108,7 @@ object VpDeviceSessionService {
                 token
             }
         } catch (e: Exception) {
-            Log.w(TAG, "Device session mint error: ${e.message}")
+            Log.w(TAG, "Device session mint error: ${e.javaClass.simpleName}: ${e.message}")
             null
         }
     }
@@ -131,17 +130,20 @@ object VpDeviceSessionService {
                 put("screen", JSONObject().apply {
                     put("w", metrics.widthPixels)
                     put("h", metrics.heightPixels)
+                    // Not a placeholder: Android composites every display as RGBA_8888 (32 bits);
+                    // Display.getPixelFormat() is documented to always return RGBA_8888 since API 17.
                     put("depth", 32)
                     put("ratio", metrics.density.toDouble())
                 })
                 put("tz_name", tz.id)
                 put("tz_offset", timezoneOffsetMinutes(tz, System.currentTimeMillis()))
                 put("language", locale.language)
-                put("touch_points", 5)
+                put("touch_points", touchPointsFromFeatures { context.packageManager.hasSystemFeature(it) })
                 getBatteryLevel(context)?.let { put("battery", it) }
-                put("is_jailbroken", isRooted())
+                // Root is is_rooted; is_jailbroken is the iOS signal. Unknown is sent as null, never false.
+                put("is_rooted", isRooted() ?: JSONObject.NULL)
                 put("is_emulator", isEmulator())
-                put("is_frida_detected", isFridaDetected())
+                put("is_frida_detected", fridaSignal(readProcessMaps()) ?: JSONObject.NULL)
                 put("visitor_id", getOrCreateVisitorId(context))
                 put("session_id", UUID.randomUUID().toString())
                 put("collected_at", System.currentTimeMillis())
@@ -155,13 +157,16 @@ object VpDeviceSessionService {
         if (level >= 0) level.toDouble() / 100.0 else null
     } catch (_: Exception) { null }
 
-    private fun isRooted(): Boolean = try {
+    private fun isRooted(): Boolean? = try {
         listOf(
             "/su", "/system/bin/su", "/system/xbin/su", "/sbin/su",
             "/system/sd/xbin/su", "/system/bin/failsafe/su",
             "/data/local/xbin/su", "/data/local/bin/su", "/data/local/su"
         ).any { java.io.File(it).exists() }
-    } catch (_: Exception) { false }
+    } catch (e: Exception) {
+        Log.w(TAG, "Root check unreadable: ${e.javaClass.simpleName}")
+        null
+    }
 
     private fun isEmulator(): Boolean = try {
         Build.FINGERPRINT?.startsWith("generic") == true ||
@@ -173,8 +178,27 @@ object VpDeviceSessionService {
         (Build.BRAND?.startsWith("generic") == true && Build.DEVICE?.startsWith("generic") == true)
     } catch (_: Exception) { false }
 
-    private fun isFridaDetected(): Boolean = try {
+    private fun readProcessMaps(): String? = try {
         java.io.File("/proc/self/maps").readText()
-            .let { it.contains("frida") || it.contains("gadget") }
-    } catch (_: Exception) { false }
+    } catch (e: Exception) {
+        Log.w(TAG, "Frida check unreadable: ${e.javaClass.simpleName}")
+        null
+    }
+}
+
+/** Unreadable process maps is unknown (null), not a clean negative. */
+internal fun fridaSignal(processMaps: String?): Boolean? = processMaps?.let {
+    it.contains("frida") || it.contains("gadget")
+}
+
+/**
+ * Android has no max-touch-points API; the touchscreen features the device declares give a floor.
+ * Real phones declare jazzhand (5+). Never report touch the device did not declare.
+ */
+internal fun touchPointsFromFeatures(hasFeature: (String) -> Boolean): Int = when {
+    hasFeature(PackageManager.FEATURE_TOUCHSCREEN_MULTITOUCH_JAZZHAND) -> 5
+    hasFeature(PackageManager.FEATURE_TOUCHSCREEN_MULTITOUCH_DISTINCT) -> 2
+    hasFeature(PackageManager.FEATURE_TOUCHSCREEN_MULTITOUCH) -> 2
+    hasFeature(PackageManager.FEATURE_TOUCHSCREEN) -> 1
+    else -> 0
 }
