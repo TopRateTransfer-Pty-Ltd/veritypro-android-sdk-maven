@@ -43,3 +43,18 @@ jobs:
           API_KEY: ${{ secrets.API_KEY }}
           INTEGRATION_ID: ${{ secrets.INTEGRATION_ID }}
         run: ./gradlew :app:assembleDebug --no-daemon --stacktrace
+
+      # Unit tests for both SDK modules. Until this step existed CI only compiled the app, so a
+      # green run said nothing about the SDKs' tests (veritypro-sdk #45: 3 new test classes had
+      # run nowhere). The test reports are uploaded on failure.
+      - name: SDK unit tests
+        run: ./gradlew :veritypro-sdk:testDebugUnitTest :verity-device-sdk:testDebugUnitTest --no-daemon --stacktrace
+
+      - name: Upload unit test reports
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-reports
+          path: |
+            veritypro-sdk/build/reports/tests/
+            verity-device-sdk/build/reports/tests/
