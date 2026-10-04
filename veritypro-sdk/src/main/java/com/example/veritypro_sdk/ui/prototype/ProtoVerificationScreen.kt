@@ -53,12 +53,14 @@ import com.amplifyframework.auth.cognito.AWSCognitoAuthPlugin
 import com.amplifyframework.core.Amplify
 import com.example.veritypro_sdk.services.CountryDocumentItem
 import com.example.veritypro_sdk.services.Resource
+import com.example.veritypro_sdk.services.BasicEddAssessmentCreated
 import com.example.veritypro_sdk.ui.verification.VerityProViewModel
+import com.example.veritypro_sdk.utils.LightingCheck
 import com.example.veritypro_sdk.utils.VerityMode
 import com.example.veritypro_sdk.utils.VerityOption
 import kotlinx.coroutines.launch
 
-private enum class ProtoStage { Welcome, Connecting, ChooseId, CameraAccess, BeforeShoot, Capture, DocPreview, PairChecking, AddressEntry, SelfieIntro, Liveness, AddressUpload, EddUpload, Submitting, AllComplete, Error }
+private enum class ProtoStage { Welcome, Connecting, ChooseId, CameraAccess, BeforeShoot, Capture, DocPreview, PairChecking, AddressEntry, SelfieIntro, LightingWarning, Liveness, AddressUpload, EddIncome, EddUpload, Submitting, AllComplete, Error }
 
 // Ordered active modules for this product (document → biometric → address → edd).
 // internal (not private) so the co-located [ClientFlowDriver] can reuse it as its start() computation.
@@ -81,7 +83,7 @@ internal fun protoModuleOrder(options: VerityOption): List<String> {
 private fun stageForModule(module: String): ProtoStage = when (module) {
     "BIOMETRIC" -> ProtoStage.SelfieIntro
     "ADDRESS" -> ProtoStage.AddressEntry   // enter address → create session → upload proof
-    "EDD" -> ProtoStage.EddUpload
+    "EDD" -> ProtoStage.EddIncome           // income/employer → then upload income-evidence doc
     else -> ProtoStage.ChooseId // DOCUMENT
 }
 
@@ -98,6 +100,28 @@ private fun protoDocTypeInt(name: String?): Int {
 // Passport = front only; Driver's Licence & ID Card = front + back. List of isBack flags.
 private fun protoSides(name: String?): List<Boolean> =
     if (protoDocTypeInt(name) == 2) listOf(false) else listOf(false, true)
+
+/**
+ * Bounded poll of the Basic EDD assessment verdict (parity with the web Orchestrator's
+ * pollEddVerdict). Returns the terminal verdict when the submitted assessment leaves Processing
+ * within the window; else null. The integator polls GET /edd/.../assessments/{eddAssessmentId}
+ * for the final outcome when null (the async assessment is still running).
+ */
+private suspend fun pollEddVerdictIfAny(vm: VerityProViewModel, options: VerityOption): String? {
+    val state = vm.basicEddState.value
+    val created = (state as? com.example.veritypro_sdk.services.Resource.Success)
+        ?.data as? com.example.veritypro_sdk.services.BasicEddAssessmentCreated
+    val id = created?.assessmentId?.takeIf { it.isNotBlank() } ?: return null
+    val repo = vm.repository()
+    val terminal = setOf("COMPLETED", "REVIEW_REQUIRED", "UNABLE_TO_ASSESS", "FAILED", "INCONSISTENT")
+    for (attempt in 0 until 12) {
+        if (attempt > 0) kotlinx.coroutines.delay(1_000)
+        val r = repo.getBasicEddAssessment(id, options.apiKey, options.integrationId.takeIf { it.isNotBlank() })
+        val data = (r as? com.example.veritypro_sdk.services.Resource.Success)?.data ?: continue
+        if (terminal.contains(data.status?.uppercase())) return data.verdict ?: data.status
+    }
+    return null
+}
 
 // Capture-frame aspect ratio: passport data page (ID-3, ~125×88mm → 1.42) is chunkier and gets a
 // taller/bigger box; licence & ID card (ID-1, ~85.6×54mm → 1.586) are wider.
@@ -202,10 +226,14 @@ fun ProtoVerificationScreen(
     val livenessCredentials by vm.livenessCredentials.collectAsState()
     val addressState by vm.addressState.collectAsState()
     val eddState by vm.eddState.collectAsState()
+    val basicEddState by vm.basicEddState.collectAsState()
     var addressStreet by remember { mutableStateOf(options.streetAddress ?: "") }
     var livenessApproved by remember { mutableStateOf(false) }
     // Overall terminal outcome shown on the completion screen (submission accepted end-to-end).
     var flowOk by remember { mutableStateOf(false) }
+    // EDD "required verify": resolved Basic EDD verdict from the bounded post-submit poll (mirrors web's
+    // pollEddVerdict). null when the async assessment is still running — the integrator polls via the id.
+    var terminalEddVerdict by remember { mutableStateOf<String?>(null) }
     // SERVER-DRIVEN only: whether the document multipart already posted at the DOCUMENT module (so the
     // final Submitting stage does not re-post it). Unused in client mode.
     var docUploaded by remember { mutableStateOf(false) }
@@ -232,13 +260,56 @@ fun ProtoVerificationScreen(
     val maxAutoRetakes = 3
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+
+    // User-facing lighting advice from the pre-liveness check. Null unless the check measured
+    // a poor frame — see LightingCheck for why a poor reading advises rather than blocks.
+    var lightingAdvice by remember { mutableStateOf<String?>(null) }
+
+    // Exactly one lighting check may be in flight. Without this, tapping "check again" and then
+    // "Continue anyway" leaves the first check running: it later resolves, moves the stage, and
+    // unbinds the camera WHILE AWS is opening it. Starting a new check — or continuing past the
+    // warning — cancels any outstanding one first.
+    var lightingJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
+    // Bumped whenever a check is started or abandoned. A result whose generation no longer
+    // matches belongs to a superseded attempt and is discarded — cancellation alone is not
+    // enough, because a check can finish measuring in the instant before its cancel lands.
+    var lightingGen by remember { mutableStateOf(0) }
+
+    /**
+     * Run the check, then hand off. Supersedes any in-flight check so only the latest decision
+     * can move the flow. [onPoor] fires only for a measured-poor frame; an unmeasurable check
+     * proceeds, because it must never block.
+     */
+    fun runLightingCheckThen(onPoor: (String) -> Unit, onProceed: () -> Unit) {
+        lightingJob?.cancel()
+        lightingGen += 1
+        val gen = lightingGen
+        lightingJob = scope.launch {
+            val verdict = LightingCheck.measure(context, lifecycleOwner)
+            // Superseded while measuring — must not move the stage or the user could be pulled
+            // out of the AWS handoff that has already begun.
+            if (gen != lightingGen) return@launch
+            if (verdict is LightingCheck.Verdict.Poor) onPoor(verdict.advice) else onProceed()
+        }
+    }
+
+    /** Skip the check entirely and hand off, abandoning anything still measuring. */
+    fun cancelLightingCheckAndProceed(onProceed: () -> Unit) {
+        lightingJob?.cancel()
+        lightingJob = null
+        lightingGen += 1 // invalidates any result still in flight
+        onProceed()
+    }
 
     // Select the flow driver: explicit injection wins; otherwise SERVER_DRIVEN → ServerFlowDriver,
     // every other mode → ClientFlowDriver (identical to the pre-refactor client behaviour).
+    // Gap 2 fix: pass the repository to ClientFlowDriver so it can fetch requestedSteps from the
+    // backend when options.serverSessionId is set, making client mode server-authoritative for modules.
     val serverDriven = options.verityMode == VerityMode.SERVER_DRIVEN
     val driver = remember(flowDriver) {
         flowDriver ?: if (serverDriven) ServerFlowDriver(options, vm.repository())
-        else ClientFlowDriver(options, vm)
+        else ClientFlowDriver(options, vm, repository = vm.repository())
     }
     // Server-driven errors from the driver (start/completeModule throw) surface on the error screen.
     var driverError by remember { mutableStateOf<String?>(null) }
@@ -503,6 +574,16 @@ fun ProtoVerificationScreen(
                     retakeAttempts += 1
                     stage = ProtoStage.Capture
                 },
+                // Offered only when the ML says the document shown is not the
+                // type the customer picked — a rejection no retake can clear.
+                onChangeDocumentType = {
+                    retakeAttempts = 0
+                    sideIndex = 0
+                    frontPath = null
+                    backPath = null
+                    capturedPath = null
+                    stage = ProtoStage.ChooseId
+                },
             )
         }
 
@@ -571,16 +652,52 @@ fun ProtoVerificationScreen(
                     context, Manifest.permission.CAMERA
                 ) == PackageManager.PERMISSION_GRANTED
                 if (camGranted) {
-                    // Reset any stale liveness state from a previous attempt (same VM lifecycle,
-                    // e.g. LIVENESS_ONLY run followed by BIOMETRIC) before starting fresh.
-                    vm.resetLivenessState()
-                    vm.startBeginLivenessWithAssessment(engineSessionId(), context)
-                    stage = ProtoStage.Liveness
+                    // Measure the room BEFORE spending a liveness session on it. The engine's
+                    // brightness gate runs server-side after the whole challenge, so without
+                    // this a user can pass liveness at 99.63 and still be told their selfie was
+                    // unusable. Advisory only — see LightingCheck for why it must not block.
+                    runLightingCheckThen(
+                        onPoor = { advice ->
+                            lightingAdvice = advice
+                            stage = ProtoStage.LightingWarning
+                        },
+                        onProceed = {
+                            // Reset any stale liveness state from a previous attempt (same VM
+                            // lifecycle, e.g. LIVENESS_ONLY run followed by BIOMETRIC).
+                            vm.resetLivenessState()
+                            vm.startBeginLivenessWithAssessment(engineSessionId(), context)
+                            stage = ProtoStage.Liveness
+                        },
+                    )
                 } else {
                     livenessCameraLauncher.launch(Manifest.permission.CAMERA)
                 }
             },
             onBack = { stage = ProtoStage.Welcome },
+        )
+
+        ProtoStage.LightingWarning -> ProtoLightingWarningScreen(
+            advice = lightingAdvice.orEmpty(),
+            onRecheck = {
+                runLightingCheckThen(
+                    onPoor = { advice -> lightingAdvice = advice },
+                    onProceed = {
+                        vm.resetLivenessState()
+                        vm.startBeginLivenessWithAssessment(engineSessionId(), context)
+                        stage = ProtoStage.Liveness
+                    },
+                )
+            },
+            onContinueAnyway = {
+                // Cancels any recheck still measuring, so it cannot unbind the camera out from
+                // under the AWS handoff that is about to start.
+                cancelLightingCheckAndProceed {
+                    vm.resetLivenessState()
+                    vm.startBeginLivenessWithAssessment(engineSessionId(), context)
+                    stage = ProtoStage.Liveness
+                }
+            },
+            onBack = { cancelLightingCheckAndProceed { stage = ProtoStage.SelfieIntro } },
         )
 
         ProtoStage.Liveness -> when (val bs = beginState) {
@@ -605,8 +722,10 @@ fun ProtoVerificationScreen(
                                 if (!ok) {
                                     // SERVER: never post /steps/BIOMETRIC/complete for a failed liveness
                                     // result — that would advance the flow with an unverified selfie.
-                                    driverError = "The liveness check didn't pass. Please try again."
-                                    stage = ProtoStage.Error
+                                    // Go back to the selfie intro so the user can retry WITHOUT losing the
+                                    // captured document (ProtoStage.Error's onRetry reset the whole flow to
+                                    // Welcome and discarded the front/back images).
+                                    stage = ProtoStage.SelfieIntro
                                 } else {
                                     // CLIENT mode unchanged: advance regardless; the final submit carries
                                     // livenessApproved and the backend decisions on it.
@@ -682,6 +801,41 @@ fun ProtoVerificationScreen(
             )
         }
 
+        ProtoStage.EddIncome -> {
+            // EDD step 1 (parity with iOS .eddIncome + web eddIncome): collect employer + declared
+            // monthly income, then create the Basic EDD assessment (POST /edd/api/v1/edd/basic/
+            // assessments) with employerName (top-level) + transactionSummary.declaredMonthlyIncome.
+            // On success advance to EddUpload for the income-evidence document. Legacy EddCase upload
+            // path below is untouched.
+            val latestEddAssessment = basicEddState
+            var submittedIncome by remember { mutableStateOf(false) }
+            LaunchedEffect(latestEddAssessment) {
+                val s = latestEddAssessment
+                when (s) {
+                    is Resource.Success<*> -> if (submittedIncome && (s.data as? BasicEddAssessmentCreated)?.assessmentId != null) {
+                        stage = ProtoStage.EddUpload
+                    }
+                    else -> {}
+                }
+            }
+            ProtoEddIncomeScreen(
+                submitting = latestEddAssessment is Resource.Loading,
+                errorMsg = (latestEddAssessment as? Resource.Error)?.message?.ifBlank { "Couldn't create the assessment. Please try again." },
+                onSubmit = { employer, income ->
+                    submittedIncome = true
+                    val subject = options.subjectId?.takeIf { it.isNotBlank() } ?: options.vendorData
+                    vm.submitBasicEddAssessment(
+                        subjectId = subject,
+                        subjectName = "${options.firstName} ${options.lastName}",
+                        employerName = employer,
+                        declaredMonthlyIncome = com.example.veritypro_sdk.ui.prototype.parseDeclaredIncome(income),
+                        apiKey = options.apiKey,
+                    )
+                },
+                onBack = { stage = ProtoStage.Welcome },
+            )
+        }
+
         ProtoStage.EddUpload -> {
             // EDD: upload an income document that carries the source-of-funds information.
             // EDD doc types (backend enum): 0 = Bank Statement, 1 = Pay Slip, 2 = Tax Return.
@@ -703,6 +857,7 @@ fun ProtoVerificationScreen(
                 submitting = eddState is Resource.Loading,
                 errorMsg = (eddState as? Resource.Error)?.message?.ifBlank { "Couldn't submit. Please try again." },
                 onSubmit = { type, file ->
+                    phase = "submitting"
                     // Subject = the KYC session when present; otherwise the integration id (EDD-only
                     // products have no KYC session).
                     val subject = options.subjectId?.takeIf { it.isNotBlank() } ?: options.vendorData
@@ -731,7 +886,7 @@ fun ProtoVerificationScreen(
                         vm.submitEddDocument(subject, "${options.firstName} ${options.lastName}", file, type, options.apiKey, context)
                     }
                 },
-                onBack = onExit,
+                onBack = { stage = ProtoStage.EddIncome },
             )
         }
 
@@ -760,6 +915,7 @@ fun ProtoVerificationScreen(
                         captureAttempts = retakeAttempts + 1,
                     )
                     if (flowOk) completedModules = (listOf("DOCUMENT") + completedModules).distinct()
+                    terminalEddVerdict = pollEddVerdictIfAny(vm, options)
                     stage = ProtoStage.AllComplete
                 }
             } else {
@@ -771,6 +927,7 @@ fun ProtoVerificationScreen(
                         protoWants(options).biometric -> livenessApproved
                         else -> true
                     }
+                    terminalEddVerdict = pollEddVerdictIfAny(vm, options)
                     stage = ProtoStage.AllComplete
                 }
             }
@@ -790,13 +947,26 @@ fun ProtoVerificationScreen(
                 title = doneTitle,
                 subtitle = doneSubtitle,
                 onDone = {
-                    val result = if (flowOk && serverDriven) requireNotNull(driver.terminalResult()) else if (flowOk) com.example.veritypro_sdk.utils.VerityResult.submitted(
-                        engineSessionId().takeIf { it.isNotBlank() }, completedModules,
-                        driver.serverSessionId(), (eddState as? Resource.Success)?.data?.caseId,
-                    ) else com.example.veritypro_sdk.utils.VerityResult(
-                        status = "FAILED", sessionId = engineSessionId().takeIf { it.isNotBlank() },
-                        completedSteps = completedModules, serverSessionId = driver.serverSessionId(),
-                        error = com.example.veritypro_sdk.utils.VerityVerificationError("UPLOAD_FAILED", "Verification could not be submitted."),
+                    val baseResult = if (flowOk && serverDriven)
+                            (driver.terminalResult()
+                                ?: com.example.veritypro_sdk.utils.VerityResult.submitted(
+                                    engineSessionId().takeIf { it.isNotBlank() }, completedModules,
+                                    driver.serverSessionId()
+                                ))
+                        else if (flowOk)
+                            com.example.veritypro_sdk.utils.VerityResult.submitted(
+                                engineSessionId().takeIf { it.isNotBlank() }, completedModules,
+                                driver.serverSessionId(), (eddState as? Resource.Success)?.data?.caseId,
+                            )
+                        else
+                            com.example.veritypro_sdk.utils.VerityResult(
+                                status = "FAILED", sessionId = engineSessionId().takeIf { it.isNotBlank() },
+                                completedSteps = completedModules, serverSessionId = driver.serverSessionId(),
+                                error = com.example.veritypro_sdk.utils.VerityVerificationError("UPLOAD_FAILED", "Verification could not be submitted."),
+                            )
+                    val result = baseResult.copy(
+                        eddAssessmentId = (basicEddState as? Resource.Success)?.data?.assessmentId,
+                        eddVerdict = terminalEddVerdict,
                     )
                     onTypedResult(result.copy(addressSessionId = vm.getAddressSessionId().takeIf { it.isNotBlank() }))
                     // Legacy callbacks cannot distinguish submission from approval. Fail closed.

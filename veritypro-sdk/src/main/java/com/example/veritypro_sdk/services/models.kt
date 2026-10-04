@@ -58,7 +58,11 @@ data class SessionStateResponse(
     val completedSteps: List<String>,
     val currentStep: String? = null,
     val nextAction: NextAction? = null,
-    val kycEngineSessionId: String? = null
+    val kycEngineSessionId: String? = null,
+    /** Attempt ID of the KYC verification record linked to this session.
+     *  Unique per evidence submission; matches the attemptId in decision webhook payloads.
+     *  Null until the document step creates a KYCVerification on the backend. */
+    val attemptId: String? = null
 )
 
 data class CreateSessionRequest(

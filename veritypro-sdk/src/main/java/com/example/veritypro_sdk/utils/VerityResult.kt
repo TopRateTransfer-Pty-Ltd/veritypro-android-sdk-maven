@@ -83,8 +83,14 @@ data class VerityResult(
     val completedSteps: List<String> = emptyList(),
     /** Face similarity confidence score (biometric flows only). */
     val confidence: Float? = null,
-    /** EDD case ID when an EDD module was triggered. */
+    /** EDD case ID when an EDD module was triggered (legacy case path). */
     val eddCaseId: String? = null,
+    /** Basic EDD assessment ID (approved §2.5 lifecycle) — the async assessment, not a case. */
+    val eddAssessmentId: String? = null,
+    /** Basic EDD terminal verdict: CONSISTENT | INCONSISTENT | REVIEW_REQUIRED | UNABLE_TO_ASSESS.
+     *  Present when the flow already resolved the verdict; otherwise poll GET /…/{id} with
+     *  [eddAssessmentId] for the final outcome. */
+    val eddVerdict: String? = null,
     /** Present for all non-approved outcomes that carry error detail. */
     val error: VerityVerificationError? = null,
     val serverSessionId: String? = null,
@@ -96,6 +102,11 @@ data class VerityResult(
     val attemptCount: Int? = null,
     val maxAttempts: Int? = null,
     val addressSessionId: String? = null,
+    /** Address verification terminal verdict (merchant data): VERIFIED | REVIEW_REQUIRED |
+     *  UNVERIFIED | RESUBMISSION_REQUIRED | UNABLE_TO_ASSESS. Present when the flow already
+     *  resolved it; otherwise poll the address verification by [addressSessionId] for the
+     *  final outcome. Never surfaced in the end-user UI. */
+    val addressVerdict: String? = null,
 ) : Parcelable {
     val outcome: VerityOutcome get() = VerityOutcome.entries.find { it.name == status } ?: VerityOutcome.FAILED
     val isApproved: Boolean get() = outcome == VerityOutcome.APPROVED

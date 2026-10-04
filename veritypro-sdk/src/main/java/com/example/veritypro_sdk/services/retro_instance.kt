@@ -48,6 +48,11 @@ object RetrofitInstance {
 
     val okHttpClient = OkHttpClient.Builder()
         .addInterceptor(RequestSigningInterceptor())
+        // Lets the KYC submit declare its own, longer budget without slowing the
+        // failure of every other call. See PerCallTimeoutInterceptor — the 60 s
+        // default below is shorter than the server's own 120 s upstream budget, so
+        // without this the phone abandons submissions the server then completes.
+        .addInterceptor(PerCallTimeoutInterceptor())
         .certificatePinner(certificatePinner)
         .connectTimeout(60, TimeUnit.SECONDS)
         .readTimeout(60, TimeUnit.SECONDS)

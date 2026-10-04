@@ -17,6 +17,11 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -32,6 +37,37 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import java.io.File
+
+/**
+ * Locale-aware declared-income parser. With both separators present, the last one is the decimal
+ * point; a lone comma is the decimal separator unless it groups thousands ("1,000"). Returns null for
+ * anything non-numeric. Prevents silent corruption of AML source-of-funds data from `1,5`->15 style
+ * naive comma stripping.
+ */
+fun parseDeclaredIncome(raw: String): Double? {
+    var t = raw.trim()
+    if (t.isEmpty()) return null
+    val hasDot = t.contains('.')
+    val hasComma = t.contains(',')
+    if (hasComma && !hasDot) {
+        // "1,5" -> 1.5 ; "1,000" -> 1000 (final group of 3 => thousands)
+        if (Regex("""^-?\d{1,3}(,\d{3})+$""").matches(t)) {
+            t = t.replace(",", "")
+        } else {
+            t = t.replace(",", ".")
+        }
+    } else if (hasComma && hasDot) {
+        // Whichever separator comes LAST is the decimal point, the other groups thousands:
+        // "1,000.50" -> 1000.50 ; "1.000,50" -> 1000.50. Treating the comma as thousands
+        // unconditionally turned "1.000,50" into 1.0005, a valid-looking wrong income.
+        t = if (t.lastIndexOf(',') > t.lastIndexOf('.')) {
+            t.replace(".", "").replace(",", ".")
+        } else {
+            t.replace(",", "")
+        }
+    }
+    return t.toDoubleOrNull()
+}
 
 /**
  * Reusable neo-brutalist upload screen for the Address and EDD modules: pick an evidence type,
@@ -118,6 +154,7 @@ fun ProtoUploadScreen(
             )
             Spacer(Modifier.height(8.dp))
             Text(subtitle, color = Proto.Sub, fontFamily = ProtoDisplay, fontSize = 15.sp)
+
             Spacer(Modifier.height(20.dp))
 
             MonoLabel("DOCUMENT TYPE", Proto.Sub, size = 11)
@@ -177,6 +214,106 @@ fun ProtoUploadScreen(
                 enabled = selectedType != null && pickedFile != null && !submitting,
                 background = accent,
                 onClick = { onSubmit(selectedType!!, pickedFile!!) },
+            )
+            Spacer(Modifier.height(24.dp))
+        }
+    }
+}
+
+/**
+ * EDD module — step 1 (parity with iOS ProtoEddIncomeScreen + web EddIncomeScreen): collect the
+ * subject's employer + declared monthly income BEFORE the income-evidence document is uploaded.
+ * These are threaded into the Basic EDD assessment create call as `employerName` (top-level) and
+ * `transactionSummary.declaredMonthlyIncome`. The legacy EddCase upload path is untouched.
+ */
+@Composable
+fun ProtoEddIncomeScreen(
+    submitting: Boolean,
+    errorMsg: String?,
+    onSubmit: (employerName: String, declaredMonthlyIncome: String) -> Unit,
+    onBack: () -> Unit,
+) {
+    var employer by remember { mutableStateOf("") }
+    var income by remember { mutableStateOf("") }
+    val incomeValid = (parseDeclaredIncome(income) ?: 0.0) > 0.0
+
+    Column(Modifier.fillMaxSize().background(Proto.Canvas).verticalScroll(rememberScrollState())) {
+        ProtoTopBar(step = null, onBack = onBack)
+        Column(Modifier.fillMaxWidth().padding(horizontal = 24.dp)) {
+            MonoLabel("ENHANCED DUE DILIGENCE", Proto.Indigo, size = 12)
+            Spacer(Modifier.height(12.dp))
+            Text(
+                "Your income", color = Proto.Ink, fontFamily = ProtoDisplay,
+                fontSize = 34.sp, fontWeight = FontWeight.Black, letterSpacing = (-1).sp, lineHeight = 36.sp,
+            )
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "Tell us where your funds come from. This helps us confirm your source of funds.",
+                color = Proto.Sub, fontFamily = ProtoDisplay, fontSize = 15.sp,
+            )
+            Spacer(Modifier.height(20.dp))
+
+            MonoLabel("EMPLOYER NAME (OPTIONAL)", Proto.Sub, size = 11)
+            Spacer(Modifier.height(10.dp))
+            BrutalBox(background = Color.White, shadow = false) {
+                Box(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 16.dp)) {
+                    if (employer.isEmpty()) {
+                        Text(
+                            "e.g. Acme Pty Ltd", color = Proto.Sub, fontFamily = ProtoDisplay, fontSize = 16.sp,
+                        )
+                    }
+                    BasicTextField(
+                        value = employer,
+                        onValueChange = { employer = it },
+                        singleLine = true,
+                        textStyle = TextStyle(color = Proto.Ink, fontFamily = ProtoDisplay,
+                            fontSize = 16.sp, fontWeight = FontWeight.Medium),
+                        cursorBrush = SolidColor(Proto.Indigo),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+            }
+
+            Spacer(Modifier.height(18.dp))
+            MonoLabel("DECLARED MONTHLY INCOME", Proto.Sub, size = 11)
+            Spacer(Modifier.height(10.dp))
+            BrutalBox(background = Color.White, shadow = false) {
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text("\$", color = Proto.Ink, fontFamily = ProtoDisplay, fontSize = 18.sp, fontWeight = FontWeight.Black)
+                    Spacer(Modifier.width(8.dp))
+                    if (income.isEmpty()) {
+                        Text("0", color = Proto.Sub, fontFamily = ProtoDisplay, fontSize = 16.sp)
+                    }
+                    Box(Modifier.weight(1f)) {
+                        BasicTextField(
+                            value = income,
+                            onValueChange = { income = it },
+                            singleLine = true,
+                            textStyle = TextStyle(color = Proto.Ink, fontFamily = ProtoDisplay,
+                                fontSize = 16.sp, fontWeight = FontWeight.Medium),
+                            cursorBrush = SolidColor(Proto.Indigo),
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(14.dp))
+            when {
+                submitting -> MonoLabel("CREATING ASSESSMENT…", Proto.Amber, size = 11)
+                errorMsg != null -> Text(errorMsg, color = Proto.Danger, fontFamily = ProtoDisplay, fontSize = 14.sp, fontWeight = FontWeight.Medium)
+            }
+
+            Spacer(Modifier.height(16.dp))
+            ProtoPrimaryButton(
+                label = "Continue",
+                enabled = incomeValid && !submitting,
+                background = Proto.Indigo,
+                onClick = { onSubmit(employer.trim(), income) },
             )
             Spacer(Modifier.height(24.dp))
         }

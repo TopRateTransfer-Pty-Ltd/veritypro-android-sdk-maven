@@ -7,6 +7,7 @@ import okhttp3.RequestBody
 import retrofit2.http.Body
 import retrofit2.http.GET
 import retrofit2.http.Header
+import retrofit2.http.Headers
 import retrofit2.http.Multipart
 import retrofit2.http.POST
 import retrofit2.http.Part
@@ -20,6 +21,18 @@ interface VerityApiService {
         @Body data: DataPayload, @Header("x-api-key") apiKey: String,
     ): ApiResponse<SessionData>
 
+    // 180 s, not the client-wide 60 s. This call uploads the document images and the
+    // liveness video, then blocks while the server runs the verification pipeline —
+    // and the integration service alone allows its call to the KYC engine 120 s
+    // ("F-18: Increased to 120s to accommodate large video uploads"). Waiting only
+    // 60 s aborted submissions the server was still completing: observed on device as
+    // SocketTimeoutException at readResponseHeaders 82 s in, discarding a liveness
+    // result that had already SUCCEEDED at 99.63 confidence.
+    //
+    // 180 s = the server's 120 s upstream budget plus headroom for its own work and a
+    // slow uplink. Do NOT convert this into a retry: the submit is not idempotent and
+    // retrying it has already caused duplicate uploads once (same F-18 note).
+    @Headers("${PerCallTimeoutInterceptor.TIMEOUT_HEADER}: 180")
     @POST("/kycintegration/kyc-verification/update-kyc-verification")
     @Multipart
     suspend fun updateKyc(
@@ -174,6 +187,43 @@ interface VerityApiService {
         @Path("documentId") documentId: String,
         @Header("x-api-key") apiKey: String
     ): ApiResponse<DocumentUrlResponse>
+
+    // ── Basic EDD Assessment lifecycle (approved §2.5) ──
+    // Routes: /edd/api/v1/edd/basic/assessments[...]. Auth: x-api-key (+ Integrationid when available).
+
+    @POST("/edd/api/v1/edd/basic/assessments")
+    suspend fun createBasicEddAssessment(
+        @Body request: BasicEddAssessmentRequest,
+        @Header("x-api-key") apiKey: String,
+        @Header("Integrationid") integrationId: String? = null,
+    ): BasicEddAssessmentCreateEnvelope
+
+    @Multipart
+    @POST("/edd/api/v1/edd/basic/assessments/{id}/documents")
+    suspend fun attachBasicEddDocument(
+        @Path("id") assessmentId: String,
+        // Bare @Part: a MultipartBody.Part carries its own name ("document", set in
+        // ApiRepository.attachBasicEddDocument). @Part("document") here made Retrofit throw
+        // IllegalArgumentException while building the method, so every attach failed client-side.
+        @Part document: MultipartBody.Part,
+        @Header("x-api-key") apiKey: String,
+        @Header("Integrationid") integrationId: String? = null,
+    ): ApiResponse<String>
+
+    @POST("/edd/api/v1/edd/basic/assessments/{id}/submit")
+    suspend fun submitBasicEddAssessment(
+        @Path("id") assessmentId: String,
+        @Body body: String = "{}",
+        @Header("x-api-key") apiKey: String,
+        @Header("Integrationid") integrationId: String? = null,
+    ): ApiResponse<String>
+
+    @GET("/edd/api/v1/edd/basic/assessments/{id}")
+    suspend fun getBasicEddAssessment(
+        @Path("id") assessmentId: String,
+        @Header("x-api-key") apiKey: String,
+        @Header("Integrationid") integrationId: String? = null,
+    ): BasicEddAssessmentResult
 
     // ── v2 Server-Driven Session Endpoints ──
 

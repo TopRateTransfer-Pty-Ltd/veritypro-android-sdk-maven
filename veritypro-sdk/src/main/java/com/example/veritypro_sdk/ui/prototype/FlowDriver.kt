@@ -52,6 +52,12 @@ interface FlowDriver {
     fun serverSessionId(): String? = null
     fun completedModules(): List<String> = emptyList()
     fun terminalResult(): com.example.veritypro_sdk.utils.VerityResult? = null
+    /**
+     * The Attempt ID of the KYC verification record for the current session.
+     * Matches the attemptId field in decision webhook payloads.
+     * Null for client-driven flows or before the document step creates a KYCVerification.
+     */
+    fun attemptId(): String? = null
 }
 
 /** Canonical module order — matches the web Orchestrator's CANONICAL_ORDER. */
@@ -74,12 +80,39 @@ private fun orderSteps(steps: List<String>?): List<String> {
 class ClientFlowDriver(
     private val options: VerityOption,
     private val vm: VerityProViewModel,
+    /** Optional repository. When set AND options.serverSessionId is non-null, start() fetches
+     *  the backend session's requestedSteps so the module order is server-authoritative (Gap 2 fix).
+     *  When null, falls back to the fully local protoModuleOrder() derivation. */
+    private val repository: ApiRepository? = null,
 ) : FlowDriver {
 
     private var queue: List<String> = emptyList()
     private var index: Int = 0
 
     override suspend fun start(): List<String> {
+        // Gap 2 fix: when a serverSessionId is set, fetch the backend's requestedSteps so the
+        // module list is server-authoritative rather than a local guess. Falls back to the local
+        // protoModuleOrder() if the fetch fails, keeping backward compatibility.
+        val existingId = options.serverSessionId?.takeIf { it.isNotBlank() }
+        if (existingId != null && repository != null) {
+            val result = repository.getV2SessionState(existingId, options.apiKey)
+            if (result is Resource.Success) {
+                val state = result.data
+                val requested = orderSteps(state.requestedSteps)
+                val completed = state.completedSteps.map { it.uppercase() }.toSet()
+                val pending = requested.filter { it !in completed }
+                if (pending.isNotEmpty()) {
+                    queue = pending
+                    index = 0
+                    return queue
+                }
+                android.util.Log.w("ClientFlowDriver",
+                    "Server session $existingId reports no pending steps (requested=$requested) — using the local module order")
+            } else if (result is Resource.Error) {
+                android.util.Log.e("ClientFlowDriver",
+                    "Fetching requestedSteps for $existingId failed (${result.message}) — using the local module order")
+            }
+        }
         queue = protoModuleOrder(options)
         index = 0
         return queue
@@ -174,6 +207,7 @@ class ServerFlowDriver(
     // establish a returning-user session that runs EDD/BIOMETRIC standalone (no identity prepend).
     override fun serverSessionId(): String? = session?.id?.takeIf { it.isNotBlank() }
     override fun completedModules(): List<String> = session?.completedSteps.orEmpty()
+    override fun attemptId(): String? = session?.attemptId?.takeIf { it.isNotBlank() }
     override fun terminalResult(): com.example.veritypro_sdk.utils.VerityResult? = session?.let {
         com.example.veritypro_sdk.utils.VerityResult.fromServerStatus(it.status, it.kycEngineSessionId, it.completedSteps, it.id)
     }

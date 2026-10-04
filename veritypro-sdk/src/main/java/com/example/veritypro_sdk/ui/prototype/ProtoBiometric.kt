@@ -34,6 +34,51 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
+/**
+ * Shown when the pre-liveness lighting check measured a poor frame.
+ *
+ * Advisory, never a dead end: the reading is a proxy that cannot see backlighting, so
+ * "Continue anyway" is always offered. The point is to give the user the chance to fix the
+ * room BEFORE a liveness session is spent — the engine's brightness gate only runs
+ * server-side, after the whole challenge is complete.
+ */
+@Composable
+fun ProtoLightingWarningScreen(
+    advice: String,
+    onRecheck: () -> Unit,
+    onContinueAnyway: () -> Unit,
+    onBack: () -> Unit = {},
+) {
+    Column(Modifier.fillMaxSize().background(Proto.Canvas).verticalScroll(rememberScrollState())) {
+        ProtoTopBar(step = null, onBack = onBack)
+        Column(Modifier.fillMaxWidth().padding(horizontal = 24.dp)) {
+            MonoLabel("BIOMETRIC · LIGHTING", Proto.Teal, size = 12)
+            Spacer(Modifier.height(12.dp))
+            Text(
+                "Let's get the\nlight right",
+                color = Proto.Ink,
+                fontFamily = ProtoDisplay,
+                fontSize = 34.sp,
+                fontWeight = FontWeight.Black,
+                lineHeight = 38.sp,
+            )
+            Spacer(Modifier.height(16.dp))
+            Text(
+                advice,
+                color = Proto.Ink,
+                fontFamily = ProtoDisplay,
+                fontSize = 15.sp,
+                lineHeight = 21.sp,
+            )
+            Spacer(Modifier.height(28.dp))
+            ProtoPrimaryButton("I've moved — check again", background = Proto.Teal, onClick = onRecheck)
+            Spacer(Modifier.height(12.dp))
+            ProtoPrimaryButton("Continue anyway", background = Proto.Ink, onClick = onContinueAnyway)
+            Spacer(Modifier.height(32.dp))
+        }
+    }
+}
+
 /** Screen 7 — selfie intro (biometric module). No backend/vendor names shown. */
 internal fun selfieIntroCopy(hasDocument: Boolean): String = if (hasDocument)
     "We match your face to your document and check you're really there."

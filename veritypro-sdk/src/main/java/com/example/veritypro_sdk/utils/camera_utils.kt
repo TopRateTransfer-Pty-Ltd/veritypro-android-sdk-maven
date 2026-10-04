@@ -121,6 +121,24 @@ object CameraUtils {
         if (isConcurrentVideoSafe(context)) DocumentVideoTier.HD else DocumentVideoTier.SD
 
     /**
+     * How a document side should be captured on THIS device.
+     *
+     * Only FULL/LEVEL_3 hardware guarantees a maximum-size JPEG concurrent with a video
+     * stream. Below that, asking for both in one session makes CameraX silently collapse
+     * the still (observed 540×362 on a TCL T442M) — and the JPEG is the verification
+     * evidence, so it is not the thing that may degrade.
+     *
+     * [SEQUENTIAL] mirrors how Veriff's native SDKs do it: a `-pre-video` clip is recorded
+     * while the user frames the document, then the high-quality still is taken as a second,
+     * separate capture. Both artefacts survive, neither is compromised.
+     */
+    enum class DocumentCaptureStrategy { CONCURRENT, SEQUENTIAL }
+
+    fun getDocumentCaptureStrategy(context: Context): DocumentCaptureStrategy =
+        if (isConcurrentVideoSafe(context)) DocumentCaptureStrategy.CONCURRENT
+        else DocumentCaptureStrategy.SEQUENTIAL
+
+    /**
      * Bind Preview + VideoCapture ONLY (no ImageCapture) so a session clip records at full quality
      * without collapsing the still. This is the first phase of the sequenced record-then-photo
      * capture used on devices that cannot bind a full-resolution still and video concurrently.
@@ -280,21 +298,64 @@ object CameraUtils {
                                     "(longEdge=$longEdge < 1280) — rebinding WITHOUT VideoCapture"
                             )
                             onVideoCaptureBound?.invoke(false)
-                            val photoFirstGroup = UseCaseGroup.Builder()
-                                .apply { viewPort?.let { setViewPort(it) } }
-                                .apply {
-                                    useCases.filter { it !== videoCapture }.forEach { addUseCase(it) }
+
+                            // Dropping VideoCapture also drops the anti-spoof signal it was
+                            // providing. The PAD frame collector was skipped above PRECISELY
+                            // because VideoCapture was going to be bound — so without re-adding
+                            // it here the caller is left with neither signal, and a readiness
+                            // gate of the form (pads >= target || videoBound) can never become
+                            // true. Field case (TCL T442M, Sept 2026): the document capture
+                            // screen sat on "STARTING CAMERA…" with an inert shutter forever,
+                            // even though the preview was streaming normally.
+                            // Removing video puts us at Preview + ImageCapture + ImageAnalysis —
+                            // the CameraX GUARANTEED 3-use-case combination (see the comment on
+                            // the frameCollector bind above), and it does not involve
+                            // VideoCapture, so it cannot retrigger the quirk we just worked
+                            // around.
+                            val padAnalyzer =
+                                if (frameCollector != null && !useDetection)
+                                    createFrameCollectorAnalyzer(context, frameCollector)
+                                else null
+
+                            fun bindPhotoFirst(withPadAnalyzer: Boolean): Camera {
+                                val group = UseCaseGroup.Builder()
+                                    .apply { viewPort?.let { setViewPort(it) } }
+                                    .apply {
+                                        useCases.filter { it !== videoCapture }.forEach { addUseCase(it) }
+                                        if (withPadAnalyzer) padAnalyzer?.let { addUseCase(it) }
+                                    }
+                                    .build()
+                                cameraProvider.unbindAll()
+                                return cameraProvider.bindToLifecycle(lifecycleOwner, cameraSelector, group)
+                            }
+
+                            camera = bindPhotoFirst(withPadAnalyzer = padAnalyzer != null)
+
+                            // The document PHOTO remains the verification evidence, so if adding
+                            // the analyzer costs us JPEG resolution the analyzer loses, not the
+                            // photo. Verify rather than assume — this is the same collapse we are
+                            // already here to correct.
+                            var padAnalyzerBound = padAnalyzer != null
+                            if (padAnalyzerBound) {
+                                val withAnalyzer = imageCapture.resolutionInfo?.resolution
+                                val analyzerLongEdge =
+                                    withAnalyzer?.let { maxOf(it.width, it.height) } ?: 0
+                                if (analyzerLongEdge < 1280) {
+                                    Log.e(
+                                        TAG,
+                                        "IMAGE_QUALITY_GUARD: PAD analyzer collapsed the JPEG to " +
+                                            "$withAnalyzer — dropping the analyzer to protect photo quality. " +
+                                            "NO anti-spoof signal is available on this device."
+                                    )
+                                    camera = bindPhotoFirst(withPadAnalyzer = false)
+                                    padAnalyzerBound = false
                                 }
-                                .build()
-                            cameraProvider.unbindAll()
-                            camera = cameraProvider.bindToLifecycle(
-                                lifecycleOwner,
-                                cameraSelector,
-                                photoFirstGroup
-                            )
+                            }
+
                             Log.i(
                                 TAG,
-                                "IMAGE_QUALITY_GUARD: rebound photo-first — JPEG now ${imageCapture.resolutionInfo?.resolution}"
+                                "IMAGE_QUALITY_GUARD: rebound photo-first — JPEG now " +
+                                    "${imageCapture.resolutionInfo?.resolution}, padAnalyzer=$padAnalyzerBound"
                             )
                         } else {
                             Log.i(TAG, "ImageCapture bound at ${boundRes} (video=${videoCapture != null})")
@@ -378,7 +439,7 @@ object CameraUtils {
      * levels where Camera2 guarantees a maximum-size JPEG concurrent with a
      * video stream (PRIV/PREVIEW + PRIV/PREVIEW + JPEG/MAXIMUM is a FULL row).
      */
-    private fun isConcurrentVideoSafe(context: Context): Boolean {
+    fun isConcurrentVideoSafe(context: Context): Boolean {
         return try {
             val manager = context.getSystemService(Context.CAMERA_SERVICE)
                 as android.hardware.camera2.CameraManager
