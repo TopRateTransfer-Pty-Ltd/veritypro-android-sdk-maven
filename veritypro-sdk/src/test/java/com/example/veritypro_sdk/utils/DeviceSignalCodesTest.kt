@@ -164,6 +164,7 @@ class DeviceSignalCodesTest {
             signingValid = true, frida = false, screenRecording = false,
         )
         assertFalse(v.isRooted); assertFalse(v.isCompromised); assertFalse(v.bootloaderUnlocked)
-        assertEquals(listOf("probe_unreadable:/proc/self/mounts:getprop"), v.integrityDetections)
+        assertEquals(listOf(DeviceSignalCodes.PROBE_UNREADABLE), v.integrityDetections)
+        assertEquals(listOf("/proc/self/mounts", "getprop"), v.unreadableSources)
     }
 }

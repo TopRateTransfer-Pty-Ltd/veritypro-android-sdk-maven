@@ -84,6 +84,8 @@ object DeviceSignalCodes {
         val integrityDetections: List<String>,
         val tamperDetections: List<String>,
         val integrityRiskScore: Double,
+        /** Probe sources that could not be read (serialised as deviceIntegrity.unreadableSources). */
+        val unreadableSources: List<String> = emptyList(),
     )
 
     fun derive(
@@ -119,10 +121,9 @@ object DeviceSignalCodes {
         if (boot.roSecureOff) integrity += RO_SECURE_OFF
         val unlocked = bootloaderOpen || bootNotGreen || devBuild || boot.roDebuggable || boot.roSecureOff
 
-        if (root.unreadableSources.isNotEmpty() || boot.unreadable) {
-            integrity += (listOf(PROBE_UNREADABLE) + root.unreadableSources + (if (boot.unreadable) listOf("getprop") else emptyList()))
-                .joinToString(":")
-        }
+        // Bare code in detections (matchable by equality); the sources travel in their own field.
+        val unreadable = root.unreadableSources + (if (boot.unreadable) listOf("getprop") else emptyList())
+        if (unreadable.isNotEmpty()) integrity += PROBE_UNREADABLE
         if (emulator) integrity += EMULATOR
         if (vpnActive) integrity += VPN_ACTIVE
         if (frida) integrity += FRIDA_DETECTED
@@ -152,6 +153,7 @@ object DeviceSignalCodes {
             integrityDetections = integrity,
             tamperDetections = tamper,
             integrityRiskScore = risk.coerceAtMost(1.0),
+            unreadableSources = unreadable,
         )
     }
 

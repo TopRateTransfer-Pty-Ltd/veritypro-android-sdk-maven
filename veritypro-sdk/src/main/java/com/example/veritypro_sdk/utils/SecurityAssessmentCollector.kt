@@ -123,6 +123,7 @@ object SecurityAssessmentCollector {
                 put("bootloaderUnlocked", verdict.bootloaderUnlocked)
                 put("riskScore", verdict.integrityRiskScore)
                 put("detections", JSONArray(verdict.integrityDetections))
+                if (verdict.unreadableSources.isNotEmpty()) put("unreadableSources", JSONArray(verdict.unreadableSources))
             })
 
             // ─── 2. deviceFingerprint ───
