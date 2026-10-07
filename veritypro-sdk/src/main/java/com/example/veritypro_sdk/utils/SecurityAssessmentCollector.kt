@@ -424,28 +424,34 @@ object SecurityAssessmentCollector {
      * survives that, and it is not part of this SDK yet.
      */
     internal fun probeRoot(context: Context): DeviceSignalCodes.RootProbe {
-        val su = suPaths.any { runCatching { File(it).exists() }.getOrDefault(false) } || whichSuFound()
+        val unreadable = ArrayList<String>(3)
+        val suOnPath = whichSuFound()                      // null = `which` could not answer
+        if (suOnPath == null) unreadable += "which-su"
+        val su = suPaths.any { runCatching { File(it).exists() }.getOrDefault(false) } || suOnPath == true
         val testKeys = Build.TAGS?.contains("test-keys") == true
         val pm = context.packageManager
+        var pmFailed = false
         val manager = rootManagerPackages.any { pkg ->
             try {
                 pm.getPackageInfo(pkg, 0); true
             } catch (_: PackageManager.NameNotFoundException) {
                 false
             } catch (e: Exception) {
-                // A failing PackageManager query is not "not installed"; say so in the log rather
-                // than silently reading as clean.
-                Log.w("Verity", "root-manager probe failed for $pkg: ${e.javaClass.simpleName}")
+                // A failing PackageManager query is not "not installed": recorded as probe_unreadable.
+                Log.w("Verity", "root-manager probe failed for $pkg: ${e.javaClass.simpleName}; recorded as probe_unreadable")
+                pmFailed = true
                 false
             }
         }
+        if (pmFailed && !manager) unreadable += "root-manager"
         val mounts = readProcLines("/proc/self/mounts")
+        if (mounts == null) unreadable += "/proc/self/mounts"
         val magisk = mounts != null && DeviceSignalCodes.mountsLookRooted(mounts.asSequence())
         val writable = mounts != null && DeviceSignalCodes.mountsShowWritableSystem(mounts.asSequence())
         return DeviceSignalCodes.RootProbe(
             suBinary = su, testKeys = testKeys, rootManagerApp = manager, magiskMount = magisk,
             systemWritable = writable,
-            unreadableSources = if (mounts == null) listOf("/proc/self/mounts") else emptyList(),
+            unreadableSources = unreadable,
         )
     }
 
@@ -550,7 +556,12 @@ object SecurityAssessmentCollector {
         return FridaProbe(found = DeviceSignalCodes.mapsShowFrida(maps.asSequence()), unreadable = unreadable)
     }
 
-    private fun whichSuFound(): Boolean = !runBounded("which", "su").isNullOrBlank()
+    /** True = `su` on PATH; false = `which` answered "not found"; null = `which` could not answer. */
+    private fun whichSuFound(): Boolean? = when (val r = runBoundedLines("which", "su")) {
+        is Bounded.Ok -> r.lines.firstOrNull()?.isNotBlank() == true
+        Bounded.NotFound -> false
+        Bounded.Unreadable -> null
+    }
 
     /** Lines of a /proc file, or null when it cannot be read. Null is reported as PROBE_UNREADABLE by the caller. */
     private fun readProcLines(path: String): List<String>? = try {
@@ -562,7 +573,7 @@ object SecurityAssessmentCollector {
 
     /** `[ro.key]: [value]` lines from one bounded `getprop` run, or null when it failed or timed out. */
     private fun readAllProps(): Map<String, String>? {
-        val lines = runBoundedLines("getprop") ?: return null
+        val lines = (runBoundedLines("getprop") as? Bounded.Ok)?.lines ?: return null
         val out = HashMap<String, String>(lines.size)
         for (line in lines) {
             val m = PROP_LINE.matchEntire(line.trim()) ?: continue
@@ -578,8 +589,12 @@ object SecurityAssessmentCollector {
      * given at most one second BEFORE anything is read, so a command that never prints cannot
      * block the collector; a destroyed process yields null.
      */
-    private fun runBounded(vararg cmd: String): String? =
-        runBoundedLines(*cmd)?.firstOrNull()?.trim()?.takeIf { it.isNotEmpty() }
+    /** Outcome of a bounded command: output, a clean non-zero exit (e.g. "not found"), or no answer. */
+    internal sealed class Bounded {
+        class Ok(val lines: List<String>) : Bounded()
+        object NotFound : Bounded()
+        object Unreadable : Bounded()
+    }
 
     /**
      * Runs a tiny command and returns its output lines, or null on failure/timeout. stdout is drained
@@ -587,7 +602,7 @@ object SecurityAssessmentCollector {
      * 64 KB pipe buffer, and waiting before reading would block the child on a full pipe until the
      * timeout, which then read as "no properties" (review on #51).
      */
-    private fun runBoundedLines(vararg cmd: String): List<String>? = try {
+    private fun runBoundedLines(vararg cmd: String): Bounded = try {
         // stdout only: stderr text ("not found", a permission message) must never read as output.
         val process = ProcessBuilder(*cmd).start()
         Thread({ try { process.errorStream.use { it.skip(Long.MAX_VALUE) } } catch (_: Exception) {} }, "verity-probe-stderr")
@@ -602,22 +617,22 @@ object SecurityAssessmentCollector {
             process.destroyForcibly()
             reader.join(200)
             Log.w("Verity", "'${cmd.joinToString(" ")}' did not finish within 1s; recorded as probe_unreadable")
-            null
+            Bounded.Unreadable
         } else {
             reader.join(500)
             when {
                 reader.isAlive -> {
                     // The drain did not finish: a truncated property map would read as "clean".
                     Log.w("Verity", "'${cmd.joinToString(" ")}' output not fully read within 500ms; recorded as probe_unreadable")
-                    null
+                    Bounded.Unreadable
                 }
-                process.exitValue() != 0 -> null   // e.g. `which su` -> not found. Not an error, not evidence.
-                else -> ArrayList(lines)
+                process.exitValue() != 0 -> Bounded.NotFound   // e.g. `which su` -> not found. Not an error, not evidence.
+                else -> Bounded.Ok(ArrayList(lines))
             }
         }
     } catch (e: Exception) {
         Log.w("Verity", "'${cmd.joinToString(" ")}' failed: ${e.javaClass.simpleName}; recorded as probe_unreadable")
-        null
+        Bounded.Unreadable
     }
 
     private fun isEmulator(): Boolean {
