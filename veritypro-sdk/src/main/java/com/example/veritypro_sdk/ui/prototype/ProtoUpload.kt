@@ -137,7 +137,7 @@ fun ProtoUploadScreen(
                 }
                 else -> {
                     pickedFile = f
-                    pickedName = uri.lastPathSegment?.substringAfterLast('/') ?: "document"
+                    pickedName = displayNameOf(context, uri) ?: "document.$ext"
                 }
             }
         }
@@ -318,4 +318,19 @@ fun ProtoEddIncomeScreen(
             Spacer(Modifier.height(24.dp))
         }
     }
+}
+
+/**
+ * The file name the user would recognise. A content:// URI's last segment is an opaque id
+ * ("document:155" on the Downloads provider), so ask the provider for OpenableColumns.DISPLAY_NAME
+ * first and fall back to the last path segment stripped of its "scheme:" prefix.
+ */
+private fun displayNameOf(context: android.content.Context, uri: android.net.Uri): String? {
+    val fromProvider = runCatching {
+        context.contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
+            val i = c.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+            if (i >= 0 && c.moveToFirst()) c.getString(i) else null
+        }
+    }.getOrNull()?.takeIf { it.isNotBlank() }
+    return fromProvider ?: uri.lastPathSegment?.substringAfterLast('/')?.substringAfterLast(':')?.takeIf { it.isNotBlank() }
 }

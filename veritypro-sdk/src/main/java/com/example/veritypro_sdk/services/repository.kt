@@ -36,13 +36,9 @@ class ApiRepository {
      * structured JSON errors, and ASP.NET validation error format.
      */
     private fun parseHttpError(statusCode: Int, errorBody: String?): String {
-        // 401/403 with empty body — auth middleware rejected before reaching controller
+        // Empty body: 401/403 from the auth middleware, or a 404/429/5xx with nothing to parse.
         if (errorBody.isNullOrBlank()) {
-            return when (statusCode) {
-                401 -> "Authentication failed. Please verify your API key is correct and active."
-                403 -> "Access denied. Your API key does not have permission for this operation."
-                else -> "HTTP $statusCode error"
-            }
+            return CustomerMessages.forEmptyError(statusCode)
         }
 
         // Response bodies can contain identity data or credentials. Never log them.
@@ -85,42 +81,18 @@ class ApiRepository {
             // Not valid JSON — fall through to default
         }
 
-        return when (statusCode) {
-            401 -> "Authentication failed. Please verify your API key is correct and active."
-            403 -> "Access denied. Your API key does not have permission for this operation."
-            else -> "HTTP $statusCode error"
-        }
+        // Not a shape we understand (an nginx HTML page, plain text): same handling as an empty body.
+        return CustomerMessages.forUnparsedError(statusCode)
     }
 
     /**
-     * Parse structured error from EDD backend auth handler.
+     * Map an EDD 401/403 to what the CUSTOMER sees. The diagnosis (error_code, message) goes to
+     * logcat for the integrator; the screen only ever shows a plain sentence. Owner rule
+     * (2026-10-07): customers never see technical or back-end wording.
      * Expected JSON: {"error_code": "edd_not_provisioned"|"integration_inactive", "message": "..."}
      */
-    private fun parseEddAuthError(statusCode: Int, errorBody: String?): String {
-        if (errorBody != null) {
-            try {
-                val json = JSONObject(errorBody)
-                val errorCode = json.optString("error_code", "")
-                return when (errorCode) {
-                    "edd_not_provisioned" ->
-                        "EDD is not enabled for this integration. Please enable EDD in the VerityPro dashboard and try again."
-                    "integration_inactive" ->
-                        "This integration is inactive. Please re-activate it in the VerityPro dashboard."
-                    else -> {
-                        val msg = json.optString("message", "")
-                        if (msg.isNotEmpty()) msg
-                        else "Authentication failed. Please verify your API key and ensure EDD is enabled."
-                    }
-                }
-            } catch (_: Exception) {
-                // Not valid JSON — fall through
-            }
-        }
-        return if (statusCode == 403)
-            "EDD verification is not enabled for this integration. Contact support."
-        else
-            "Authentication failed. Please verify your API key and ensure EDD is enabled for this integration."
-    }
+    private fun parseEddAuthError(statusCode: Int, errorBody: String?): String =
+        CustomerMessages.forEddAuthFailure(statusCode, errorBody)
 
     suspend fun createKyc(data: VerityOption): Resource<SessionData> {
         return try {
@@ -328,11 +300,11 @@ class ApiRepository {
             }
         } catch (e: IOException) {
             Log.e("Verity", "getLivenessResult network error: ${e.message}")
-            Resource.Error("Network error: ${e.message}")
+            Resource.Error("No internet connection. Please check your network.")
         } catch (e: HttpException) {
             val body = e.response()?.errorBody()?.string()
             Log.e("Verity", "getLivenessResult HTTP status=${e.code()}")
-            Resource.Error("HTTP ${e.code()}: ${body ?: e.message()}")
+            Resource.Error(parseHttpError(e.code(), body))
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -428,11 +400,11 @@ class ApiRepository {
             }
         } catch (e: IOException) {
             Log.e("Verity", "beginLiveness network error: ${e.message}")
-            Resource.Error("Network error: ${e.message}")
+            Resource.Error("No internet connection. Please check your network.")
         } catch (e: HttpException) {
             val body = e.response()?.errorBody()?.string()
             Log.e("Verity", "beginLiveness HTTP status=${e.code()}")
-            Resource.Error("HTTP ${e.code()}: ${body ?: e.message()}")
+            Resource.Error(parseHttpError(e.code(), body))
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -485,7 +457,7 @@ class ApiRepository {
             } catch (e: HttpException) {
                 val code = e.code()
                 val errorBody = e.response()?.errorBody()?.string()
-                lastError = "HTTP $code Error: Unknown error"
+                lastError = null  // resolved lazily below
                 if (errorBody != null) {
                     try {
                         val json = JSONObject(errorBody)
@@ -497,7 +469,7 @@ class ApiRepository {
                 }
                 Log.e("Verity", "createAddressVerification HTTP status=$code attempt=${attempt + 1}")
                 // Don't retry on 4xx client errors (except 429)
-                if (code in 400..499 && code != 429) return Resource.Error(lastError!!)
+                if (code in 400..499 && code != 429) return Resource.Error(lastError ?: CustomerMessages.forUnparsedError(code))
             } catch (e: Exception) {
                 lastError = "Failed to create address verification: ${e.message}"
                 Log.e("Verity", "Attempt ${attempt + 1} failed: ${e.message}")
@@ -511,7 +483,7 @@ class ApiRepository {
             }
         }
 
-        return Resource.Error(lastError ?: "Failed to create address verification after $maxRetries attempts")
+        return Resource.Error(lastError ?: CustomerMessages.SERVICE_UNAVAILABLE)
     }
 
     suspend fun submitAddressDocument(
@@ -582,7 +554,7 @@ class ApiRepository {
             val errorBody = e.response()?.errorBody()?.string()
             // Log the raw body so the real backend reason is visible (previously discarded).
             Log.e("Verity", "submitAddressDocument HTTP status=${e.code()}")
-            var errorMessage = "HTTP ${e.code()} Error"
+            var errorMessage: String? = null  // resolved lazily below
             if (errorBody != null) {
                 try {
                     val json = JSONObject(errorBody)
@@ -594,7 +566,7 @@ class ApiRepository {
                     if (!msg.isNullOrBlank()) errorMessage = msg
                 } catch (_: Exception) {}
             }
-            Resource.Error(errorMessage)
+            Resource.Error(errorMessage ?: CustomerMessages.forUnparsedError(e.code()))
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -760,17 +732,17 @@ class ApiRepository {
                     Resource.Error("EDD case not found. It may have been deleted or the ID is incorrect.")
                 }
                 else -> {
-                    var errorMessage = "HTTP $code Error: Unknown error"
+                    var errorMessage: String? = null  // resolved lazily below
                     if (errorBody != null) {
                         try {
                             val json = JSONObject(errorBody)
                             val errorObj = json.optJSONObject("Error")
                             if (errorObj != null) {
-                                errorMessage = errorObj.optString("message", errorMessage)
+                                errorMessage = errorObj.optString("message", "").ifBlank { null } ?: errorMessage
                             }
                         } catch (_: Exception) {}
                     }
-                    Resource.Error(errorMessage)
+                    Resource.Error(errorMessage ?: CustomerMessages.forUnparsedError(code))
                 }
             }
         } catch (e: Exception) {
@@ -801,17 +773,17 @@ class ApiRepository {
             Resource.Error("No internet connection. Please check your network.")
         } catch (e: HttpException) {
             val errorBody = e.response()?.errorBody()?.string()
-            var errorMessage = "HTTP ${e.code()} Error: Unknown error"
+            var errorMessage: String? = null  // resolved lazily below
             if (errorBody != null) {
                 try {
                     val json = JSONObject(errorBody)
                     val errorObj = json.optJSONObject("Error")
                     if (errorObj != null) {
-                        errorMessage = errorObj.optString("message", errorMessage)
+                        errorMessage = errorObj.optString("message", "").ifBlank { null } ?: errorMessage
                     }
                 } catch (_: Exception) {}
             }
-            Resource.Error(errorMessage)
+            Resource.Error(errorMessage ?: CustomerMessages.forUnparsedError(e.code()))
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -837,17 +809,17 @@ class ApiRepository {
             Resource.Error("No internet connection. Please check your network.")
         } catch (e: HttpException) {
             val errorBody = e.response()?.errorBody()?.string()
-            var errorMessage = "HTTP ${e.code()} Error: Unknown error"
+            var errorMessage: String? = null  // resolved lazily below
             if (errorBody != null) {
                 try {
                     val json = JSONObject(errorBody)
                     val errorObj = json.optJSONObject("Error")
                     if (errorObj != null) {
-                        errorMessage = errorObj.optString("message", errorMessage)
+                        errorMessage = errorObj.optString("message", "").ifBlank { null } ?: errorMessage
                     }
                 } catch (_: Exception) {}
             }
-            Resource.Error(errorMessage)
+            Resource.Error(errorMessage ?: CustomerMessages.forUnparsedError(e.code()))
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -880,19 +852,19 @@ class ApiRepository {
 
             when (code) {
                 401 -> Resource.Error("Session expired. Please restart the verification process.")
-                403 -> Resource.Error("EDD verification is not enabled for this integration. Contact support.")
+                403 -> Resource.Error(CustomerMessages.forEddAuthFailure(403, errorBody))
                 else -> {
-                    var errorMessage = "HTTP $code Error: Unknown error"
+                    var errorMessage: String? = null  // resolved lazily below
                     if (errorBody != null) {
                         try {
                             val json = JSONObject(errorBody)
                             val errorObj = json.optJSONObject("Error")
                             if (errorObj != null) {
-                                errorMessage = errorObj.optString("message", errorMessage)
+                                errorMessage = errorObj.optString("message", "").ifBlank { null } ?: errorMessage
                             }
                         } catch (_: Exception) {}
                     }
-                    Resource.Error(errorMessage)
+                    Resource.Error(errorMessage ?: CustomerMessages.forUnparsedError(code))
                 }
             }
         } catch (e: Exception) {
@@ -923,19 +895,19 @@ class ApiRepository {
             val errorBody = e.response()?.errorBody()?.string()
             when (code) {
                 401 -> Resource.Error("Session expired. Please restart the verification process.")
-                403 -> Resource.Error("EDD verification is not enabled for this integration. Contact support.")
+                403 -> Resource.Error(CustomerMessages.forEddAuthFailure(403, errorBody))
                 else -> {
-                    var errorMessage = "HTTP $code Error: Unknown error"
+                    var errorMessage: String? = null  // resolved lazily below
                     if (errorBody != null) {
                         try {
                             val json = JSONObject(errorBody)
                             val errorObj = json.optJSONObject("Error")
                             if (errorObj != null) {
-                                errorMessage = errorObj.optString("message", errorMessage)
+                                errorMessage = errorObj.optString("message", "").ifBlank { null } ?: errorMessage
                             }
                         } catch (_: Exception) {}
                     }
-                    Resource.Error(errorMessage)
+                    Resource.Error(errorMessage ?: CustomerMessages.forUnparsedError(code))
                 }
             }
         } catch (e: Exception) {
