@@ -92,26 +92,38 @@ object SecurityAssessmentCollector {
             assessment.put("CollectedAt", java.time.Instant.now().toString())
 
             val emulator = isEmulator()
-            val rooted = checkRooted(context)
+            val probes = runProbes(context)
+            val fridaProbe = probes.frida ?: FridaProbe(found = false, unreadable = listOf("frida-probe"))
+            val rootProbe = if (fridaProbe.unreadable.isEmpty()) probes.root
+                else probes.root.copy(unreadableSources = probes.root.unreadableSources + fridaProbe.unreadable)
+            val bootProbe = probes.boot
+            val frida = fridaProbe.found
             val debuggerAttached = android.os.Debug.isDebuggerConnected()
             val debuggable = isDebuggable(context)
             val vpnActive = isVpnActive(context)
             val signingValid = verifyCodeSigning(context)
             val screenRecording = isScreenBeingRecorded(context)
+            val verdict = DeviceSignalCodes.derive(
+                root = rootProbe, boot = bootProbe, emulator = emulator, vpnActive = vpnActive,
+                debuggerAttached = debuggerAttached, debuggable = debuggable, signingValid = signingValid,
+                frida = frida, screenRecording = screenRecording,
+            )
+            val rooted = verdict.isRooted
             val sensorManager = context.getSystemService(Context.SENSOR_SERVICE) as? SensorManager
             val hasAccel = sensorManager?.getDefaultSensor(Sensor.TYPE_ACCELEROMETER) != null
             val hasGyro = sensorManager?.getDefaultSensor(Sensor.TYPE_GYROSCOPE) != null
 
             // ─── 1. deviceIntegrity ───
-            val integrityDetections = JSONArray()
-            if (rooted) integrityDetections.put("root_detected")
-            if (emulator) integrityDetections.put("emulator")
-            if (vpnActive) integrityDetections.put("vpn_active")
-
+            // Codes are the contract (DeviceSignalCodes <-> backend DeviceSignalVocabulary). The
+            // explicit isRooted boolean is what the backend and the engine read first; the codes
+            // say WHY so an analyst sees "magisk_mount", not just "rooted".
             assessment.put("deviceIntegrity", JSONObject().apply {
-                put("isCompromised", rooted)
-                put("riskScore", calculateIntegrityRisk(rooted, emulator, vpnActive))
-                put("detections", integrityDetections)
+                put("isCompromised", verdict.isCompromised)
+                put("isRooted", verdict.isRooted)
+                put("bootloaderUnlocked", verdict.bootloaderUnlocked)
+                put("riskScore", verdict.integrityRiskScore)
+                put("detections", JSONArray(verdict.integrityDetections))
+                if (verdict.unreadableSources.isNotEmpty()) put("unreadableSources", JSONArray(verdict.unreadableSources))
             })
 
             // ─── 2. deviceFingerprint ───
@@ -140,24 +152,19 @@ object SecurityAssessmentCollector {
             })
 
             // ─── 3. tamperingResult ───
-            val tamperDetections = JSONArray()
-            if (debuggerAttached) tamperDetections.put("debugger_attached")
-            if (debuggable) tamperDetections.put("debuggable_build")
-            if (!signingValid) tamperDetections.put("signature_mismatch")
-            if (rooted) tamperDetections.put("root_detected")
-
             assessment.put("tamperingResult", JSONObject().apply {
-                put("isTampered", debuggerAttached || rooted || !signingValid)
+                put("isTampered", verdict.isTampered)
                 put("debuggerAttached", debuggerAttached)
+                put("debuggableBuild", debuggable)
                 put("codeSigningValid", signingValid)
-                put("detections", tamperDetections)
+                put("detections", JSONArray(verdict.tamperDetections))
             })
 
             // ─── 4. injectionCheck ───
             assessment.put("injectionCheck", JSONObject().apply {
                 put("physicalCamera", context.packageManager.hasSystemFeature(PackageManager.FEATURE_CAMERA_ANY))
                 put("screenRecording", screenRecording)
-                put("environmentSecure", !debuggerAttached && !rooted && signingValid && !screenRecording)
+                put("environmentSecure", verdict.environmentSecure)
             })
 
             // ─── 5. auditLog ───
@@ -177,7 +184,7 @@ object SecurityAssessmentCollector {
             val hasPhysicalCamera = context.packageManager.hasSystemFeature(PackageManager.FEATURE_CAMERA_ANY)
             val networkType = getNetworkType(context)
             assessment.put("captureMetadata", JSONObject().apply {
-                put("sdkVersion", "android-2.0.0")
+                put("sdkVersion", VeritySdkVersion.PAYLOAD)
                 put("isPhysicalCamera", hasPhysicalCamera)
                 put("networkType", networkType)
                 putOpt("captureAttempts", runtimeData?.captureAttempts)
@@ -231,7 +238,7 @@ object SecurityAssessmentCollector {
                 signingValid = signingValid,
                 physicalCamera = context.packageManager.hasSystemFeature(PackageManager.FEATURE_CAMERA_ANY),
                 screenRecording = screenRecording,
-                environmentSecure = !debuggerAttached && !rooted && signingValid && !screenRecording,
+                environmentSecure = verdict.environmentSecure,
                 hasAccel = hasAccel,
                 hasGyro = hasGyro,
                 captureAttempts = runtimeData?.captureAttempts,
@@ -389,36 +396,240 @@ object SecurityAssessmentCollector {
     // ─── Detection helpers (unchanged) ───────────────────────────────────────────
 
     /**
-     * Returns true when the device appears to be rooted / has su binaries.
+     * Returns true when the device appears to be rooted.
      * Public so that callers can gate verification on device integrity.
      */
-    fun checkRooted(context: Context): Boolean {
-        val suPaths = arrayOf(
-            "/system/app/Superuser.apk", "/sbin/su", "/system/bin/su",
-            "/system/xbin/su", "/data/local/xbin/su", "/data/local/bin/su",
-            "/system/sd/xbin/su", "/system/bin/failsafe/su", "/data/local/su", "/su/bin/su"
-        )
-        if (suPaths.any { File(it).exists() }) return true
-        if (Build.TAGS?.contains("test-keys") == true) return true
-        val rootPackages = arrayOf(
-            "com.topjohnwu.magisk", "eu.chainfire.supersu", "com.koushikdutta.superuser",
-            "com.noshufou.android.su", "com.thirdparty.superuser", "com.yellowes.su",
-            "com.kingroot.kinguser", "com.kingo.root", "com.smedialink.oneclean",
-            "com.zhiqupk.root.global"
-        )
+    fun checkRooted(context: Context): Boolean = probeRoot(context).any
+
+    private val suPaths = arrayOf(
+        "/system/app/Superuser.apk", "/sbin/su", "/system/bin/su",
+        "/system/xbin/su", "/data/local/xbin/su", "/data/local/bin/su",
+        "/system/sd/xbin/su", "/system/bin/failsafe/su", "/data/local/su", "/su/bin/su"
+    )
+
+    // Declared in the SDK manifest <queries> block: without that, getPackageInfo throws
+    // NameNotFoundException for every one of these on Android 11+ whether installed or not,
+    // which is why this probe was silently dead until 2026-10-07.
+    private val rootManagerPackages = arrayOf(
+        "com.topjohnwu.magisk", "eu.chainfire.supersu", "com.koushikdutta.superuser",
+        "com.noshufou.android.su", "com.thirdparty.superuser", "com.yellowes.su",
+        "com.kingroot.kinguser", "com.kingo.root", "com.smedialink.oneclean",
+        "com.zhiqupk.root.global", "me.weishu.kernelsu", "io.github.vvb2060.magisk",
+        "com.kingouser.com", "me.bmax.apatch"
+    )
+
+    /**
+     * Every root probe, each as "evidence found". Heuristic by nature: Magisk with DenyList
+     * unmounts itself from a denied process and hides su, so a clean result is "no evidence",
+     * not "proven clean". Hardware attestation (Play Integrity) is the only signal that
+     * survives that, and it is not part of this SDK yet.
+     */
+    internal fun probeRoot(context: Context): DeviceSignalCodes.RootProbe {
+        val unreadable = ArrayList<String>(3)
+        val suOnPath = whichSuFound()                      // null = `which` could not answer
+        if (suOnPath == null) unreadable += "which-su"
+        val su = suPaths.any { runCatching { File(it).exists() }.getOrDefault(false) } || suOnPath == true
+        val testKeys = Build.TAGS?.contains("test-keys") == true
         val pm = context.packageManager
-        for (pkg in rootPackages) {
-            try { pm.getPackageInfo(pkg, 0); return true }
-            catch (_: PackageManager.NameNotFoundException) {}
+        var pmFailed = false
+        val manager = rootManagerPackages.any { pkg ->
+            try {
+                pm.getPackageInfo(pkg, 0); true
+            } catch (_: PackageManager.NameNotFoundException) {
+                false
+            } catch (e: Exception) {
+                // A failing PackageManager query is not "not installed": recorded as probe_unreadable.
+                Log.w("Verity", "root-manager probe failed for $pkg: ${e.javaClass.simpleName}; recorded as probe_unreadable")
+                pmFailed = true
+                false
+            }
         }
+        if (pmFailed && !manager) unreadable += "root-manager"
+        val mounts = readProcLines("/proc/self/mounts")
+        if (mounts == null) unreadable += "/proc/self/mounts"
+        val magisk = mounts != null && DeviceSignalCodes.mountsLookRooted(mounts.asSequence())
+        val writable = mounts != null && DeviceSignalCodes.mountsShowWritableSystem(mounts.asSequence())
+        return DeviceSignalCodes.RootProbe(
+            suBinary = su, testKeys = testKeys, rootManagerApp = manager, magiskMount = magisk,
+            systemWritable = writable,
+            unreadableSources = unreadable,
+        )
+    }
+
+    internal fun probeBoot(): DeviceSignalCodes.BootProbe {
+        // One `getprop` process (no args prints every property) instead of six; parsed once.
+        val props = readAllProps()
+        return DeviceSignalCodes.BootProbe(
+            verifiedBootState = props?.get("ro.boot.verifiedbootstate"),
+            flashLocked = props?.get("ro.boot.flash.locked"),
+            vbmetaDeviceState = props?.get("ro.boot.vbmeta.device_state"),
+            buildType = props?.get("ro.build.type") ?: Build.TYPE,
+            roDebuggable = props?.get("ro.debuggable") == "1",
+            roSecureOff = props?.get("ro.secure") == "0",
+            unreadable = props == null,
+        )
+    }
+
+    /** Raw results of the three probes that touch the filesystem, a subprocess or a socket. */
+    internal class ProbeResults(
+        val root: DeviceSignalCodes.RootProbe,
+        val boot: DeviceSignalCodes.BootProbe,
+        /** Null only when the probe itself missed the deadline or threw. */
+        val frida: FridaProbe?,
+    )
+
+    /** Result of the Frida probe: evidence found, plus any source that could not be checked. */
+    internal class FridaProbe(val found: Boolean, val unreadable: List<String>)
+
+    /**
+     * Run probeRoot / probeBoot / isFridaPresent in parallel with ONE shared deadline, so the
+     * collector blocks its caller for at most [PROBE_DEADLINE_MS] no matter how many subprocesses
+     * are involved (the review on #51 measured ~7s worst case when they ran one after another).
+     * A probe that misses the deadline is logged and reads as "no evidence" for that probe only.
+     */
+    internal fun runProbes(context: Context): ProbeResults {
+        val pool = java.util.concurrent.Executors.newFixedThreadPool(3) { r -> Thread(r, "verity-probe").apply { isDaemon = true } }
         try {
-            val process = Runtime.getRuntime().exec(arrayOf("which", "su"))
-            val reader = BufferedReader(InputStreamReader(process.inputStream))
-            val result = reader.readLine()
-            reader.close(); process.destroy()
-            if (!result.isNullOrBlank()) return true
-        } catch (_: Exception) {}
-        return false
+            val rootF = pool.submit<DeviceSignalCodes.RootProbe> { probeRoot(context) }
+            val bootF = pool.submit<DeviceSignalCodes.BootProbe> { probeBoot() }
+            val fridaF = pool.submit<FridaProbe> { isFridaPresent() }
+            val deadline = System.currentTimeMillis() + PROBE_DEADLINE_MS
+            fun <T> await(name: String, f: java.util.concurrent.Future<T>, fallback: T): T = try {
+                f.get((deadline - System.currentTimeMillis()).coerceAtLeast(1), java.util.concurrent.TimeUnit.MILLISECONDS)
+            } catch (e: java.util.concurrent.TimeoutException) {
+                Log.w("Verity", "device probe '$name' missed the ${PROBE_DEADLINE_MS}ms deadline; recorded as probe_unreadable")
+                f.cancel(true); fallback
+            } catch (e: Exception) {
+                Log.w("Verity", "device probe '$name' failed: ${e.javaClass.simpleName}; recorded as probe_unreadable")
+                fallback
+            }
+            // Fallbacks are UNREADABLE, never a clean default: a probe that did not answer is missing evidence.
+            return ProbeResults(
+                root = await("root", rootF, DeviceSignalCodes.RootProbe(unreadableSources = listOf("root-probe"))),
+                boot = await("boot", bootF, DeviceSignalCodes.BootProbe(unreadable = true)),
+                frida = await<FridaProbe?>("frida", fridaF, null),
+            )
+        } finally {
+            pool.shutdownNow()
+        }
+    }
+
+    /**
+     * Must cover the slowest single probe: `which su` / `getprop` are each bounded at 1000 ms waitFor +
+     * 500 ms drain, plus process spawn; with 1500 ms a successful slow probe was cancelled at the
+     * deadline and misreported as probe_unreadable (review on #51).
+     */
+    private const val PROBE_DEADLINE_MS = 2500L
+
+    /**
+     * Frida: default server port open on loopback, or a gadget/agent mapped into this process.
+     * The socket probe runs on its own thread so it works from the main thread too (Android
+     * throws NetworkOnMainThreadException for a connect on the UI thread) and is bounded.
+     */
+    internal fun isFridaPresent(): FridaProbe {
+        // 0 = closed, 1 = open, -1 = not answered. Atomic: written on the probe thread, read after join.
+        val port = java.util.concurrent.atomic.AtomicInteger(-1)
+        val t = Thread({
+            port.set(try {
+                java.net.Socket().use { s ->
+                    s.connect(java.net.InetSocketAddress("127.0.0.1", 27042), 150)
+                    1
+                }
+            } catch (_: Exception) { 0 })
+        }, "verity-frida-port")
+        t.isDaemon = true
+        t.start()
+        t.join(400)
+        val unreadable = ArrayList<String>(2)
+        when (port.get()) {
+            1 -> return FridaProbe(found = true, unreadable = emptyList())
+            -1 -> {
+                Log.w("Verity", "Frida port probe did not answer within 400ms; recorded as probe_unreadable")
+                unreadable += "frida-port"
+            }
+        }
+        // Hidden /proc/self/maps is itself a hooking tell; recorded, never read as "no Frida".
+        val maps = readProcLines("/proc/self/maps")
+        if (maps == null) {
+            unreadable += "/proc/self/maps"
+            return FridaProbe(found = false, unreadable = unreadable)
+        }
+        return FridaProbe(found = DeviceSignalCodes.mapsShowFrida(maps.asSequence()), unreadable = unreadable)
+    }
+
+    /** True = `su` on PATH; false = `which` answered "not found"; null = `which` could not answer. */
+    private fun whichSuFound(): Boolean? = when (val r = runBoundedLines("which", "su")) {
+        is Bounded.Ok -> r.lines.firstOrNull()?.isNotBlank() == true
+        Bounded.NotFound -> false
+        Bounded.Unreadable -> null
+    }
+
+    /** Lines of a /proc file, or null when it cannot be read. Null is reported as PROBE_UNREADABLE by the caller. */
+    private fun readProcLines(path: String): List<String>? = try {
+        File(path).bufferedReader().use { it.readLines() }
+    } catch (e: Exception) {
+        Log.w("Verity", "could not read $path: ${e.javaClass.simpleName}; recorded as probe_unreadable")
+        null
+    }
+
+    /** `[ro.key]: [value]` lines from one bounded `getprop` run, or null when it failed or timed out. */
+    private fun readAllProps(): Map<String, String>? {
+        val lines = (runBoundedLines("getprop") as? Bounded.Ok)?.lines ?: return null
+        val out = HashMap<String, String>(lines.size)
+        for (line in lines) {
+            val m = PROP_LINE.matchEntire(line.trim()) ?: continue
+            out[m.groupValues[1]] = m.groupValues[2]
+        }
+        return out
+    }
+
+    private val PROP_LINE = Regex("""\[([^\]]+)\]: \[([^\]]*)\]""")
+
+    /** Outcome of a bounded command: output, a clean non-zero exit (e.g. "not found"), or no answer. */
+    internal sealed class Bounded {
+        class Ok(val lines: List<String>) : Bounded()
+        object NotFound : Bounded()
+        object Unreadable : Bounded()
+    }
+
+    /**
+     * Runs a tiny command for at most one second. Ok(lines) on a zero exit, NotFound on a clean
+     * non-zero exit, Unreadable on timeout, a failed spawn or an unfinished drain. stdout is drained
+     * on a reader thread WHILE the process runs: a bare `getprop` dump is routinely larger than the
+     * 64 KB pipe buffer, and waiting before reading would block the child on a full pipe until the
+     * timeout, which then read as "no properties" (review on #51).
+     */
+    private fun runBoundedLines(vararg cmd: String): Bounded = try {
+        // stdout only: stderr text ("not found", a permission message) must never read as output.
+        val process = ProcessBuilder(*cmd).start()
+        Thread({ try { process.errorStream.use { it.skip(Long.MAX_VALUE) } } catch (_: Exception) {} }, "verity-probe-stderr")
+            .apply { isDaemon = true; start() }
+        val lines = java.util.Collections.synchronizedList(ArrayList<String>())
+        val reader = Thread({
+            try {
+                process.inputStream.bufferedReader().useLines { seq -> seq.forEach { lines.add(it) } }
+            } catch (_: Exception) { /* process destroyed: partial output is discarded below */ }
+        }, "verity-probe-reader").apply { isDaemon = true; start() }
+        if (!process.waitFor(1, java.util.concurrent.TimeUnit.SECONDS)) {
+            process.destroyForcibly()
+            reader.join(200)
+            Log.w("Verity", "'${cmd.joinToString(" ")}' did not finish within 1s; recorded as probe_unreadable")
+            Bounded.Unreadable
+        } else {
+            reader.join(500)
+            when {
+                reader.isAlive -> {
+                    // The drain did not finish: a truncated property map would read as "clean".
+                    Log.w("Verity", "'${cmd.joinToString(" ")}' output not fully read within 500ms; recorded as probe_unreadable")
+                    Bounded.Unreadable
+                }
+                process.exitValue() != 0 -> Bounded.NotFound   // e.g. `which su` -> not found. Not an error, not evidence.
+                else -> Bounded.Ok(ArrayList(lines))
+            }
+        }
+    } catch (e: Exception) {
+        Log.w("Verity", "'${cmd.joinToString(" ")}' failed: ${e.javaClass.simpleName}; recorded as probe_unreadable")
+        Bounded.Unreadable
     }
 
     private fun isEmulator(): Boolean {
@@ -507,12 +718,6 @@ object SecurityAssessmentCollector {
                 else -> "unknown"
             }
         } catch (e: Exception) { "unknown" }
-    }
-
-    private fun calculateIntegrityRisk(rooted: Boolean, emulator: Boolean, vpn: Boolean): Double {
-        var score = 0.0
-        if (rooted) score += 0.5; if (emulator) score += 0.3; if (vpn) score += 0.1
-        return score.coerceAtMost(1.0)
     }
 
     // ─── Forensic environment signals (iOS parity) ────────────────────────────────
