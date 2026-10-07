@@ -7,6 +7,26 @@
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
 
+    <!-- Package-visibility filter (Android 11+). Without these, PackageManager.getPackageInfo on a
+         root-manager package throws NameNotFoundException whether or not it is installed, so the
+         root-manager probe in SecurityAssessmentCollector could never fire. Merged into the host app. -->
+    <queries>
+        <package android:name="com.topjohnwu.magisk" />
+        <package android:name="eu.chainfire.supersu" />
+        <package android:name="com.koushikdutta.superuser" />
+        <package android:name="com.noshufou.android.su" />
+        <package android:name="com.thirdparty.superuser" />
+        <package android:name="com.yellowes.su" />
+        <package android:name="com.kingroot.kinguser" />
+        <package android:name="com.kingo.root" />
+        <package android:name="com.smedialink.oneclean" />
+        <package android:name="com.zhiqupk.root.global" />
+        <package android:name="me.weishu.kernelsu" />
+        <package android:name="io.github.vvb2060.magisk" />
+        <package android:name="com.kingouser.com" />
+        <package android:name="me.bmax.apatch" />
+    </queries>
+
     <application>
         <activity
             android:name=".VerityProSdkActivity"

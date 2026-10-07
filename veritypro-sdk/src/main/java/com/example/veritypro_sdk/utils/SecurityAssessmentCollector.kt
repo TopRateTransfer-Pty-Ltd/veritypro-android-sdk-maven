@@ -92,26 +92,34 @@ object SecurityAssessmentCollector {
             assessment.put("CollectedAt", java.time.Instant.now().toString())
 
             val emulator = isEmulator()
-            val rooted = checkRooted(context)
+            val rootProbe = probeRoot(context)
+            val bootProbe = probeBoot()
+            val frida = isFridaPresent()
             val debuggerAttached = android.os.Debug.isDebuggerConnected()
             val debuggable = isDebuggable(context)
             val vpnActive = isVpnActive(context)
             val signingValid = verifyCodeSigning(context)
             val screenRecording = isScreenBeingRecorded(context)
+            val verdict = DeviceSignalCodes.derive(
+                root = rootProbe, boot = bootProbe, emulator = emulator, vpnActive = vpnActive,
+                debuggerAttached = debuggerAttached, debuggable = debuggable, signingValid = signingValid,
+                frida = frida, screenRecording = screenRecording,
+            )
+            val rooted = verdict.isRooted
             val sensorManager = context.getSystemService(Context.SENSOR_SERVICE) as? SensorManager
             val hasAccel = sensorManager?.getDefaultSensor(Sensor.TYPE_ACCELEROMETER) != null
             val hasGyro = sensorManager?.getDefaultSensor(Sensor.TYPE_GYROSCOPE) != null
 
             // ─── 1. deviceIntegrity ───
-            val integrityDetections = JSONArray()
-            if (rooted) integrityDetections.put("root_detected")
-            if (emulator) integrityDetections.put("emulator")
-            if (vpnActive) integrityDetections.put("vpn_active")
-
+            // Codes are the contract (DeviceSignalCodes <-> backend DeviceSignalVocabulary). The
+            // explicit isRooted boolean is what the backend and the engine read first; the codes
+            // say WHY so an analyst sees "magisk_mount", not just "rooted".
             assessment.put("deviceIntegrity", JSONObject().apply {
-                put("isCompromised", rooted)
-                put("riskScore", calculateIntegrityRisk(rooted, emulator, vpnActive))
-                put("detections", integrityDetections)
+                put("isCompromised", verdict.isCompromised)
+                put("isRooted", verdict.isRooted)
+                put("bootloaderUnlocked", verdict.bootloaderUnlocked)
+                put("riskScore", verdict.integrityRiskScore)
+                put("detections", JSONArray(verdict.integrityDetections))
             })
 
             // ─── 2. deviceFingerprint ───
@@ -140,24 +148,19 @@ object SecurityAssessmentCollector {
             })
 
             // ─── 3. tamperingResult ───
-            val tamperDetections = JSONArray()
-            if (debuggerAttached) tamperDetections.put("debugger_attached")
-            if (debuggable) tamperDetections.put("debuggable_build")
-            if (!signingValid) tamperDetections.put("signature_mismatch")
-            if (rooted) tamperDetections.put("root_detected")
-
             assessment.put("tamperingResult", JSONObject().apply {
-                put("isTampered", debuggerAttached || rooted || !signingValid)
+                put("isTampered", verdict.isTampered)
                 put("debuggerAttached", debuggerAttached)
+                put("debuggableBuild", debuggable)
                 put("codeSigningValid", signingValid)
-                put("detections", tamperDetections)
+                put("detections", JSONArray(verdict.tamperDetections))
             })
 
             // ─── 4. injectionCheck ───
             assessment.put("injectionCheck", JSONObject().apply {
                 put("physicalCamera", context.packageManager.hasSystemFeature(PackageManager.FEATURE_CAMERA_ANY))
                 put("screenRecording", screenRecording)
-                put("environmentSecure", !debuggerAttached && !rooted && signingValid && !screenRecording)
+                put("environmentSecure", verdict.environmentSecure)
             })
 
             // ─── 5. auditLog ───
@@ -177,7 +180,7 @@ object SecurityAssessmentCollector {
             val hasPhysicalCamera = context.packageManager.hasSystemFeature(PackageManager.FEATURE_CAMERA_ANY)
             val networkType = getNetworkType(context)
             assessment.put("captureMetadata", JSONObject().apply {
-                put("sdkVersion", "android-2.0.0")
+                put("sdkVersion", "android-2.1.0")
                 put("isPhysicalCamera", hasPhysicalCamera)
                 put("networkType", networkType)
                 putOpt("captureAttempts", runtimeData?.captureAttempts)
@@ -231,7 +234,7 @@ object SecurityAssessmentCollector {
                 signingValid = signingValid,
                 physicalCamera = context.packageManager.hasSystemFeature(PackageManager.FEATURE_CAMERA_ANY),
                 screenRecording = screenRecording,
-                environmentSecure = !debuggerAttached && !rooted && signingValid && !screenRecording,
+                environmentSecure = verdict.environmentSecure,
                 hasAccel = hasAccel,
                 hasGyro = hasGyro,
                 captureAttempts = runtimeData?.captureAttempts,
@@ -389,37 +392,89 @@ object SecurityAssessmentCollector {
     // ─── Detection helpers (unchanged) ───────────────────────────────────────────
 
     /**
-     * Returns true when the device appears to be rooted / has su binaries.
+     * Returns true when the device appears to be rooted.
      * Public so that callers can gate verification on device integrity.
      */
-    fun checkRooted(context: Context): Boolean {
-        val suPaths = arrayOf(
-            "/system/app/Superuser.apk", "/sbin/su", "/system/bin/su",
-            "/system/xbin/su", "/data/local/xbin/su", "/data/local/bin/su",
-            "/system/sd/xbin/su", "/system/bin/failsafe/su", "/data/local/su", "/su/bin/su"
-        )
-        if (suPaths.any { File(it).exists() }) return true
-        if (Build.TAGS?.contains("test-keys") == true) return true
-        val rootPackages = arrayOf(
-            "com.topjohnwu.magisk", "eu.chainfire.supersu", "com.koushikdutta.superuser",
-            "com.noshufou.android.su", "com.thirdparty.superuser", "com.yellowes.su",
-            "com.kingroot.kinguser", "com.kingo.root", "com.smedialink.oneclean",
-            "com.zhiqupk.root.global"
-        )
+    fun checkRooted(context: Context): Boolean = probeRoot(context).any
+
+    private val suPaths = arrayOf(
+        "/system/app/Superuser.apk", "/sbin/su", "/system/bin/su",
+        "/system/xbin/su", "/data/local/xbin/su", "/data/local/bin/su",
+        "/system/sd/xbin/su", "/system/bin/failsafe/su", "/data/local/su", "/su/bin/su"
+    )
+
+    // Declared in the SDK manifest <queries> block: without that, getPackageInfo throws
+    // NameNotFoundException for every one of these on Android 11+ whether installed or not,
+    // which is why this probe was silently dead until 2026-10-07.
+    private val rootManagerPackages = arrayOf(
+        "com.topjohnwu.magisk", "eu.chainfire.supersu", "com.koushikdutta.superuser",
+        "com.noshufou.android.su", "com.thirdparty.superuser", "com.yellowes.su",
+        "com.kingroot.kinguser", "com.kingo.root", "com.smedialink.oneclean",
+        "com.zhiqupk.root.global", "me.weishu.kernelsu", "io.github.vvb2060.magisk",
+        "com.kingouser.com", "me.bmax.apatch"
+    )
+
+    /**
+     * Every root probe, each as "evidence found". Heuristic by nature: Magisk with DenyList
+     * unmounts itself from a denied process and hides su, so a clean result is "no evidence",
+     * not "proven clean". Hardware attestation (Play Integrity) is the only signal that
+     * survives that, and it is not part of this SDK yet.
+     */
+    internal fun probeRoot(context: Context): DeviceSignalCodes.RootProbe {
+        val su = suPaths.any { runCatching { File(it).exists() }.getOrDefault(false) } || whichSuFound()
+        val testKeys = Build.TAGS?.contains("test-keys") == true
         val pm = context.packageManager
-        for (pkg in rootPackages) {
-            try { pm.getPackageInfo(pkg, 0); return true }
-            catch (_: PackageManager.NameNotFoundException) {}
+        val manager = rootManagerPackages.any { pkg ->
+            try { pm.getPackageInfo(pkg, 0); true } catch (_: PackageManager.NameNotFoundException) { false } catch (_: Exception) { false }
         }
-        try {
-            val process = Runtime.getRuntime().exec(arrayOf("which", "su"))
-            val reader = BufferedReader(InputStreamReader(process.inputStream))
-            val result = reader.readLine()
-            reader.close(); process.destroy()
-            if (!result.isNullOrBlank()) return true
-        } catch (_: Exception) {}
-        return false
+        val mounts = readProcLines("/proc/self/mounts")
+        val magisk = DeviceSignalCodes.mountsLookRooted(mounts.asSequence())
+        val writable = DeviceSignalCodes.mountsShowWritableSystem(mounts.asSequence())
+        val roDebuggable = getProp("ro.debuggable") == "1"
+        val roSecureOff = getProp("ro.secure") == "0"
+        return DeviceSignalCodes.RootProbe(
+            suBinary = su, testKeys = testKeys, rootManagerApp = manager, magiskMount = magisk,
+            systemWritable = writable, roDebuggable = roDebuggable, roSecureOff = roSecureOff,
+        )
     }
+
+    internal fun probeBoot(): DeviceSignalCodes.BootProbe = DeviceSignalCodes.BootProbe(
+        verifiedBootState = getProp("ro.boot.verifiedbootstate"),
+        flashLocked = getProp("ro.boot.flash.locked"),
+        vbmetaDeviceState = getProp("ro.boot.vbmeta.device_state"),
+        buildType = getProp("ro.build.type") ?: Build.TYPE,
+    )
+
+    /** Frida: default server port open on loopback, or a gadget/agent mapped into this process. */
+    internal fun isFridaPresent(): Boolean {
+        val port = try {
+            java.net.Socket().use { s ->
+                s.connect(java.net.InetSocketAddress("127.0.0.1", 27042), 150)
+                true
+            }
+        } catch (_: Exception) { false }
+        if (port) return true
+        return DeviceSignalCodes.mapsShowFrida(readProcLines("/proc/self/maps").asSequence())
+    }
+
+    private fun whichSuFound(): Boolean = try {
+        val process = ProcessBuilder("which", "su").redirectErrorStream(true).start()
+        val line = process.inputStream.bufferedReader().use { it.readLine() }
+        if (!process.waitFor(1, java.util.concurrent.TimeUnit.SECONDS)) process.destroy()
+        !line.isNullOrBlank()
+    } catch (_: Exception) { false }
+
+    private fun readProcLines(path: String): List<String> = try {
+        File(path).bufferedReader().use { it.readLines() }
+    } catch (_: Exception) { emptyList() }
+
+    /** Read a system property via getprop. Null when absent, empty, or the call times out. */
+    private fun getProp(name: String): String? = try {
+        val process = ProcessBuilder("getprop", name).redirectErrorStream(true).start()
+        val line = process.inputStream.bufferedReader().use { it.readLine() }?.trim()
+        if (!process.waitFor(1, java.util.concurrent.TimeUnit.SECONDS)) process.destroy()
+        line?.takeIf { it.isNotEmpty() }
+    } catch (_: Exception) { null }
 
     private fun isEmulator(): Boolean {
         cachedIsEmulator?.let { return it }
@@ -507,12 +562,6 @@ object SecurityAssessmentCollector {
                 else -> "unknown"
             }
         } catch (e: Exception) { "unknown" }
-    }
-
-    private fun calculateIntegrityRisk(rooted: Boolean, emulator: Boolean, vpn: Boolean): Double {
-        var score = 0.0
-        if (rooted) score += 0.5; if (emulator) score += 0.3; if (vpn) score += 0.1
-        return score.coerceAtMost(1.0)
     }
 
     // ─── Forensic environment signals (iOS parity) ────────────────────────────────
