@@ -52,6 +52,9 @@ class CustomerMessagesTest {
             assertEquals(CustomerMessages.SERVICE_UNAVAILABLE, CustomerMessages.forEmptyError(status))
         }
         assertEquals(CustomerMessages.SERVICE_UNAVAILABLE, CustomerMessages.forEmptyError(401))
+        for (status in listOf(401, 404, 503)) {
+            assertEquals(CustomerMessages.SERVICE_UNAVAILABLE, CustomerMessages.forUnparsedError(status))
+        }
     }
 
     @Test

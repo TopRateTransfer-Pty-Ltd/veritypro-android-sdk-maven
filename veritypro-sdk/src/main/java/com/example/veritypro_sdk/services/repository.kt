@@ -81,10 +81,8 @@ class ApiRepository {
             // Not valid JSON — fall through to default
         }
 
-        return when (statusCode) {
-            401, 403 -> CustomerMessages.forAuthFailure(statusCode, detail = "unstructured body")
-            else -> "HTTP $statusCode error"
-        }
+        // Not a shape we understand (an nginx HTML page, plain text): same handling as an empty body.
+        return CustomerMessages.forUnparsedError(statusCode)
     }
 
     /**
@@ -302,11 +300,11 @@ class ApiRepository {
             }
         } catch (e: IOException) {
             Log.e("Verity", "getLivenessResult network error: ${e.message}")
-            Resource.Error("Network error: ${e.message}")
+            Resource.Error("No internet connection. Please check your network.")
         } catch (e: HttpException) {
             val body = e.response()?.errorBody()?.string()
             Log.e("Verity", "getLivenessResult HTTP status=${e.code()}")
-            Resource.Error("HTTP ${e.code()}: ${body ?: e.message()}")
+            Resource.Error(parseHttpError(e.code(), body))
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -402,11 +400,11 @@ class ApiRepository {
             }
         } catch (e: IOException) {
             Log.e("Verity", "beginLiveness network error: ${e.message}")
-            Resource.Error("Network error: ${e.message}")
+            Resource.Error("No internet connection. Please check your network.")
         } catch (e: HttpException) {
             val body = e.response()?.errorBody()?.string()
             Log.e("Verity", "beginLiveness HTTP status=${e.code()}")
-            Resource.Error("HTTP ${e.code()}: ${body ?: e.message()}")
+            Resource.Error(parseHttpError(e.code(), body))
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -459,7 +457,7 @@ class ApiRepository {
             } catch (e: HttpException) {
                 val code = e.code()
                 val errorBody = e.response()?.errorBody()?.string()
-                lastError = "HTTP $code Error: Unknown error"
+                lastError = CustomerMessages.forUnparsedError(code)
                 if (errorBody != null) {
                     try {
                         val json = JSONObject(errorBody)
@@ -556,7 +554,7 @@ class ApiRepository {
             val errorBody = e.response()?.errorBody()?.string()
             // Log the raw body so the real backend reason is visible (previously discarded).
             Log.e("Verity", "submitAddressDocument HTTP status=${e.code()}")
-            var errorMessage = "HTTP ${e.code()} Error"
+            var errorMessage = CustomerMessages.forUnparsedError(e.code())
             if (errorBody != null) {
                 try {
                     val json = JSONObject(errorBody)
@@ -734,7 +732,7 @@ class ApiRepository {
                     Resource.Error("EDD case not found. It may have been deleted or the ID is incorrect.")
                 }
                 else -> {
-                    var errorMessage = "HTTP $code Error: Unknown error"
+                    var errorMessage = CustomerMessages.forUnparsedError(code)
                     if (errorBody != null) {
                         try {
                             val json = JSONObject(errorBody)
@@ -775,7 +773,7 @@ class ApiRepository {
             Resource.Error("No internet connection. Please check your network.")
         } catch (e: HttpException) {
             val errorBody = e.response()?.errorBody()?.string()
-            var errorMessage = "HTTP ${e.code()} Error: Unknown error"
+            var errorMessage = CustomerMessages.forUnparsedError(e.code())
             if (errorBody != null) {
                 try {
                     val json = JSONObject(errorBody)
@@ -811,7 +809,7 @@ class ApiRepository {
             Resource.Error("No internet connection. Please check your network.")
         } catch (e: HttpException) {
             val errorBody = e.response()?.errorBody()?.string()
-            var errorMessage = "HTTP ${e.code()} Error: Unknown error"
+            var errorMessage = CustomerMessages.forUnparsedError(e.code())
             if (errorBody != null) {
                 try {
                     val json = JSONObject(errorBody)
@@ -854,9 +852,9 @@ class ApiRepository {
 
             when (code) {
                 401 -> Resource.Error("Session expired. Please restart the verification process.")
-                403 -> Resource.Error("EDD verification is not enabled for this integration. Contact support.")
+                403 -> Resource.Error(CustomerMessages.forEddAuthFailure(403, errorBody))
                 else -> {
-                    var errorMessage = "HTTP $code Error: Unknown error"
+                    var errorMessage = CustomerMessages.forUnparsedError(code)
                     if (errorBody != null) {
                         try {
                             val json = JSONObject(errorBody)
@@ -897,9 +895,9 @@ class ApiRepository {
             val errorBody = e.response()?.errorBody()?.string()
             when (code) {
                 401 -> Resource.Error("Session expired. Please restart the verification process.")
-                403 -> Resource.Error("EDD verification is not enabled for this integration. Contact support.")
+                403 -> Resource.Error(CustomerMessages.forEddAuthFailure(403, errorBody))
                 else -> {
-                    var errorMessage = "HTTP $code Error: Unknown error"
+                    var errorMessage = CustomerMessages.forUnparsedError(code)
                     if (errorBody != null) {
                         try {
                             val json = JSONObject(errorBody)

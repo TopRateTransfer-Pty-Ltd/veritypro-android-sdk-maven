@@ -29,9 +29,14 @@ object CustomerMessages {
      * Any status that came back with an empty body. 401/403 is the auth middleware; 404/429/5xx or
      * a proxy page is an outage, and the log must not call that a credential problem.
      */
-    fun forEmptyError(statusCode: Int): String {
-        if (statusCode == 401 || statusCode == 403) return forAuthFailure(statusCode, detail = "empty body")
-        Log.e("Verity", "HTTP $statusCode from verification API with an empty body")
+    fun forEmptyError(statusCode: Int): String = forUnreadableBody(statusCode, "empty body")
+
+    /** A body that is neither our JSON envelope nor ASP.NET validation JSON (proxy HTML, plain text). */
+    fun forUnparsedError(statusCode: Int): String = forUnreadableBody(statusCode, "unstructured body")
+
+    private fun forUnreadableBody(statusCode: Int, detail: String): String {
+        if (statusCode == 401 || statusCode == 403) return forAuthFailure(statusCode, detail)
+        Log.e("Verity", "HTTP $statusCode from verification API ($detail)")
         return SERVICE_UNAVAILABLE
     }
 
