@@ -585,11 +585,6 @@ object SecurityAssessmentCollector {
 
     private val PROP_LINE = Regex("""\[([^\]]+)\]: \[([^\]]*)\]""")
 
-    /**
-     * Run a tiny system command and return its first output line, or null. The process is
-     * given at most one second BEFORE anything is read, so a command that never prints cannot
-     * block the collector; a destroyed process yields null.
-     */
     /** Outcome of a bounded command: output, a clean non-zero exit (e.g. "not found"), or no answer. */
     internal sealed class Bounded {
         class Ok(val lines: List<String>) : Bounded()
@@ -598,7 +593,8 @@ object SecurityAssessmentCollector {
     }
 
     /**
-     * Runs a tiny command and returns its output lines, or null on failure/timeout. stdout is drained
+     * Runs a tiny command for at most one second. Ok(lines) on a zero exit, NotFound on a clean
+     * non-zero exit, Unreadable on timeout, a failed spawn or an unfinished drain. stdout is drained
      * on a reader thread WHILE the process runs: a bare `getprop` dump is routinely larger than the
      * 64 KB pipe buffer, and waiting before reading would block the child on a full pipe until the
      * timeout, which then read as "no properties" (review on #51).
