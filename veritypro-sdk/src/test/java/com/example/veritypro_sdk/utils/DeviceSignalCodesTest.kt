@@ -49,8 +49,6 @@ class DeviceSignalCodesTest {
             DeviceSignalCodes.RootProbe(rootManagerApp = true) to DeviceSignalCodes.ROOT_MANAGER_APP,
             DeviceSignalCodes.RootProbe(magiskMount = true) to DeviceSignalCodes.MAGISK_MOUNT,
             DeviceSignalCodes.RootProbe(systemWritable = true) to DeviceSignalCodes.SYSTEM_WRITABLE,
-            DeviceSignalCodes.RootProbe(roDebuggable = true) to DeviceSignalCodes.RO_DEBUGGABLE,
-            DeviceSignalCodes.RootProbe(roSecureOff = true) to DeviceSignalCodes.RO_SECURE_OFF,
         )
         for ((probe, code) in probes) {
             val v = DeviceSignalCodes.derive(
@@ -83,6 +81,22 @@ class DeviceSignalCodesTest {
             emulator = false, vpnActive = false, debuggerAttached = false, debuggable = false, signingValid = true, frida = false, screenRecording = false,
         )
         assertEquals(listOf(DeviceSignalCodes.VERIFIED_BOOT_NOT_GREEN, DeviceSignalCodes.USERDEBUG_BUILD), red.integrityDetections)
+        assertTrue(red.bootloaderUnlocked); assertFalse(red.isRooted)
+    }
+
+    @Test
+    fun stockEmulatorImageIsEmulatorNotRooted() {
+        // AVD images: ro.debuggable=1, ro.secure=0, verifiedbootstate orange. That is an emulator
+        // and an untrusted build state, never "rooted" (which would hard-fail emulator QA as root).
+        val v = DeviceSignalCodes.derive(
+            root = DeviceSignalCodes.RootProbe(),
+            boot = DeviceSignalCodes.BootProbe(verifiedBootState = "orange", buildType = "userdebug", roDebuggable = true, roSecureOff = true),
+            emulator = true, vpnActive = false, debuggerAttached = false, debuggable = true, signingValid = true, frida = false, screenRecording = false,
+        )
+        assertFalse(v.isRooted); assertFalse(v.isCompromised); assertTrue(v.bootloaderUnlocked)
+        assertEquals(listOf(DeviceSignalCodes.BOOTLOADER_UNLOCKED, DeviceSignalCodes.USERDEBUG_BUILD, DeviceSignalCodes.RO_DEBUGGABLE,
+            DeviceSignalCodes.RO_SECURE_OFF, DeviceSignalCodes.EMULATOR), v.integrityDetections)
+        assertFalse(v.integrityDetections.contains(DeviceSignalCodes.ROOT_DETECTED))
     }
 
     @Test

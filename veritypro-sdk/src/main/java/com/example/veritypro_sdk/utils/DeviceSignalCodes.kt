@@ -20,13 +20,16 @@ object DeviceSignalCodes {
     const val ROOT_MANAGER_APP = "root_manager_app"
     const val MAGISK_MOUNT = "magisk_mount"
     const val SYSTEM_WRITABLE = "system_writable"
-    const val RO_DEBUGGABLE = "ro_debuggable"
-    const val RO_SECURE_OFF = "ro_secure_off"
 
-    // deviceIntegrity.detections — device left the manufacturer's trusted state (Review, not root)
+    // deviceIntegrity.detections — device/build left the manufacturer's trusted state. Reported,
+    // routed to Review by the backend, but NOT root: every stock emulator image and every
+    // userdebug engineering build has ro.debuggable=1 / ro.secure=0, and calling those "rooted"
+    // would hard-fail emulator QA and mislabel dev devices.
     const val BOOTLOADER_UNLOCKED = "bootloader_unlocked"
     const val VERIFIED_BOOT_NOT_GREEN = "verified_boot_not_green"
     const val USERDEBUG_BUILD = "userdebug_build"
+    const val RO_DEBUGGABLE = "ro_debuggable"
+    const val RO_SECURE_OFF = "ro_secure_off"
 
     // deviceIntegrity.detections — environment
     const val EMULATOR = "emulator"
@@ -45,11 +48,9 @@ object DeviceSignalCodes {
         val rootManagerApp: Boolean = false,
         val magiskMount: Boolean = false,
         val systemWritable: Boolean = false,
-        val roDebuggable: Boolean = false,
-        val roSecureOff: Boolean = false,
     ) {
         val any: Boolean
-            get() = suBinary || testKeys || rootManagerApp || magiskMount || systemWritable || roDebuggable || roSecureOff
+            get() = suBinary || testKeys || rootManagerApp || magiskMount || systemWritable
     }
 
     /** Verified-boot / bootloader system properties. Null when the property is absent or unreadable. */
@@ -58,11 +59,14 @@ object DeviceSignalCodes {
         val flashLocked: String? = null,         // ro.boot.flash.locked: "1" locked, "0" unlocked
         val vbmetaDeviceState: String? = null,   // ro.boot.vbmeta.device_state: locked | unlocked
         val buildType: String? = null,           // ro.build.type: user | userdebug | eng
+        val roDebuggable: Boolean = false,       // ro.debuggable == "1"
+        val roSecureOff: Boolean = false,        // ro.secure == "0"
     )
 
     data class Verdict(
         val isRooted: Boolean,
         val isCompromised: Boolean,
+        /** Bootloader unlocked, verified boot not green, or a userdebug/eng/ro.debuggable build. */
         val bootloaderUnlocked: Boolean,
         val isTampered: Boolean,
         val environmentSecure: Boolean,
@@ -89,17 +93,17 @@ object DeviceSignalCodes {
         if (root.rootManagerApp) integrity += ROOT_MANAGER_APP
         if (root.magiskMount) integrity += MAGISK_MOUNT
         if (root.systemWritable) integrity += SYSTEM_WRITABLE
-        if (root.roDebuggable) integrity += RO_DEBUGGABLE
-        if (root.roSecureOff) integrity += RO_SECURE_OFF
 
-        val unlocked = boot.verifiedBootState.equals("orange", ignoreCase = true)
+        val bootloaderOpen = boot.verifiedBootState.equals("orange", ignoreCase = true)
                 || boot.flashLocked == "0"
                 || boot.vbmetaDeviceState.equals("unlocked", ignoreCase = true)
-        if (unlocked) integrity += BOOTLOADER_UNLOCKED
+        if (bootloaderOpen) integrity += BOOTLOADER_UNLOCKED
         if (boot.verifiedBootState.equals("red", ignoreCase = true)) integrity += VERIFIED_BOOT_NOT_GREEN
-        if (boot.buildType.equals("userdebug", ignoreCase = true) || boot.buildType.equals("eng", ignoreCase = true)) {
-            integrity += USERDEBUG_BUILD
-        }
+        val devBuild = boot.buildType.equals("userdebug", ignoreCase = true) || boot.buildType.equals("eng", ignoreCase = true)
+        if (devBuild) integrity += USERDEBUG_BUILD
+        if (boot.roDebuggable) integrity += RO_DEBUGGABLE
+        if (boot.roSecureOff) integrity += RO_SECURE_OFF
+        val unlocked = bootloaderOpen || boot.verifiedBootState.equals("red", ignoreCase = true) || devBuild || boot.roDebuggable || boot.roSecureOff
 
         if (emulator) integrity += EMULATOR
         if (vpnActive) integrity += VPN_ACTIVE

@@ -425,16 +425,23 @@ object SecurityAssessmentCollector {
         val testKeys = Build.TAGS?.contains("test-keys") == true
         val pm = context.packageManager
         val manager = rootManagerPackages.any { pkg ->
-            try { pm.getPackageInfo(pkg, 0); true } catch (_: PackageManager.NameNotFoundException) { false } catch (_: Exception) { false }
+            try {
+                pm.getPackageInfo(pkg, 0); true
+            } catch (_: PackageManager.NameNotFoundException) {
+                false
+            } catch (e: Exception) {
+                // A failing PackageManager query is not "not installed"; say so in the log rather
+                // than silently reading as clean.
+                Log.w("Verity", "root-manager probe failed for $pkg: ${e.javaClass.simpleName}")
+                false
+            }
         }
         val mounts = readProcLines("/proc/self/mounts")
         val magisk = DeviceSignalCodes.mountsLookRooted(mounts.asSequence())
         val writable = DeviceSignalCodes.mountsShowWritableSystem(mounts.asSequence())
-        val roDebuggable = getProp("ro.debuggable") == "1"
-        val roSecureOff = getProp("ro.secure") == "0"
         return DeviceSignalCodes.RootProbe(
             suBinary = su, testKeys = testKeys, rootManagerApp = manager, magiskMount = magisk,
-            systemWritable = writable, roDebuggable = roDebuggable, roSecureOff = roSecureOff,
+            systemWritable = writable,
         )
     }
 
@@ -443,37 +450,54 @@ object SecurityAssessmentCollector {
         flashLocked = getProp("ro.boot.flash.locked"),
         vbmetaDeviceState = getProp("ro.boot.vbmeta.device_state"),
         buildType = getProp("ro.build.type") ?: Build.TYPE,
+        roDebuggable = getProp("ro.debuggable") == "1",
+        roSecureOff = getProp("ro.secure") == "0",
     )
 
-    /** Frida: default server port open on loopback, or a gadget/agent mapped into this process. */
+    /**
+     * Frida: default server port open on loopback, or a gadget/agent mapped into this process.
+     * The socket probe runs on its own thread so it works from the main thread too (Android
+     * throws NetworkOnMainThreadException for a connect on the UI thread) and is bounded.
+     */
     internal fun isFridaPresent(): Boolean {
-        val port = try {
-            java.net.Socket().use { s ->
-                s.connect(java.net.InetSocketAddress("127.0.0.1", 27042), 150)
-                true
-            }
-        } catch (_: Exception) { false }
-        if (port) return true
+        var portOpen = false
+        val t = Thread {
+            portOpen = try {
+                java.net.Socket().use { s ->
+                    s.connect(java.net.InetSocketAddress("127.0.0.1", 27042), 150)
+                    true
+                }
+            } catch (_: Exception) { false }
+        }
+        t.isDaemon = true
+        t.start()
+        t.join(400)
+        if (portOpen) return true
         return DeviceSignalCodes.mapsShowFrida(readProcLines("/proc/self/maps").asSequence())
     }
 
-    private fun whichSuFound(): Boolean = try {
-        val process = ProcessBuilder("which", "su").redirectErrorStream(true).start()
-        val line = process.inputStream.bufferedReader().use { it.readLine() }
-        if (!process.waitFor(1, java.util.concurrent.TimeUnit.SECONDS)) process.destroy()
-        !line.isNullOrBlank()
-    } catch (_: Exception) { false }
+    private fun whichSuFound(): Boolean = !runBounded("which", "su").isNullOrBlank()
 
     private fun readProcLines(path: String): List<String> = try {
         File(path).bufferedReader().use { it.readLines() }
     } catch (_: Exception) { emptyList() }
 
     /** Read a system property via getprop. Null when absent, empty, or the call times out. */
-    private fun getProp(name: String): String? = try {
-        val process = ProcessBuilder("getprop", name).redirectErrorStream(true).start()
-        val line = process.inputStream.bufferedReader().use { it.readLine() }?.trim()
-        if (!process.waitFor(1, java.util.concurrent.TimeUnit.SECONDS)) process.destroy()
-        line?.takeIf { it.isNotEmpty() }
+    private fun getProp(name: String): String? = runBounded("getprop", name)
+
+    /**
+     * Run a tiny system command and return its first output line, or null. The process is
+     * given at most one second BEFORE anything is read, so a command that never prints cannot
+     * block the collector; a destroyed process yields null.
+     */
+    private fun runBounded(vararg cmd: String): String? = try {
+        val process = ProcessBuilder(*cmd).redirectErrorStream(true).start()
+        if (!process.waitFor(1, java.util.concurrent.TimeUnit.SECONDS)) {
+            process.destroy()
+            null
+        } else {
+            process.inputStream.bufferedReader().use { it.readLine() }?.trim()?.takeIf { it.isNotEmpty() }
+        }
     } catch (_: Exception) { null }
 
     private fun isEmulator(): Boolean {
