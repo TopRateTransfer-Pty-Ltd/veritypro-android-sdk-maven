@@ -93,9 +93,11 @@ object SecurityAssessmentCollector {
 
             val emulator = isEmulator()
             val probes = runProbes(context)
-            val rootProbe = probes.root
+            val rootProbe = if (probes.frida == null)
+                probes.root.copy(unreadableSources = probes.root.unreadableSources + "/proc/self/maps")
+            else probes.root
             val bootProbe = probes.boot
-            val frida = probes.frida
+            val frida = probes.frida == true
             val debuggerAttached = android.os.Debug.isDebuggerConnected()
             val debuggable = isDebuggable(context)
             val vpnActive = isVpnActive(context)
@@ -465,7 +467,8 @@ object SecurityAssessmentCollector {
     internal class ProbeResults(
         val root: DeviceSignalCodes.RootProbe,
         val boot: DeviceSignalCodes.BootProbe,
-        val frida: Boolean,
+        /** True = Frida evidence; false = none; null = /proc/self/maps unreadable and port closed. */
+        val frida: Boolean?,
     )
 
     /**
@@ -479,21 +482,22 @@ object SecurityAssessmentCollector {
         try {
             val rootF = pool.submit<DeviceSignalCodes.RootProbe> { probeRoot(context) }
             val bootF = pool.submit<DeviceSignalCodes.BootProbe> { probeBoot() }
-            val fridaF = pool.submit<Boolean> { isFridaPresent() }
+            val fridaF = pool.submit<Boolean?> { isFridaPresent() }
             val deadline = System.currentTimeMillis() + PROBE_DEADLINE_MS
             fun <T> await(name: String, f: java.util.concurrent.Future<T>, fallback: T): T = try {
                 f.get((deadline - System.currentTimeMillis()).coerceAtLeast(1), java.util.concurrent.TimeUnit.MILLISECONDS)
             } catch (e: java.util.concurrent.TimeoutException) {
-                Log.w("Verity", "device probe '$name' missed the ${PROBE_DEADLINE_MS}ms deadline; reported as no evidence")
+                Log.w("Verity", "device probe '$name' missed the ${PROBE_DEADLINE_MS}ms deadline; recorded as probe_unreadable")
                 f.cancel(true); fallback
             } catch (e: Exception) {
-                Log.w("Verity", "device probe '$name' failed: ${e.javaClass.simpleName}; reported as no evidence")
+                Log.w("Verity", "device probe '$name' failed: ${e.javaClass.simpleName}; recorded as probe_unreadable")
                 fallback
             }
+            // Fallbacks are UNREADABLE, never a clean default: a probe that did not answer is missing evidence.
             return ProbeResults(
-                root = await("root", rootF, DeviceSignalCodes.RootProbe()),
-                boot = await("boot", bootF, DeviceSignalCodes.BootProbe()),
-                frida = await("frida", fridaF, false),
+                root = await("root", rootF, DeviceSignalCodes.RootProbe(unreadableSources = listOf("root-probe"))),
+                boot = await("boot", bootF, DeviceSignalCodes.BootProbe(unreadable = true)),
+                frida = await("frida", fridaF, null),
             )
         } finally {
             pool.shutdownNow()
@@ -507,7 +511,7 @@ object SecurityAssessmentCollector {
      * The socket probe runs on its own thread so it works from the main thread too (Android
      * throws NetworkOnMainThreadException for a connect on the UI thread) and is bounded.
      */
-    internal fun isFridaPresent(): Boolean {
+    internal fun isFridaPresent(): Boolean? {
         var portOpen = false
         val t = Thread {
             portOpen = try {
@@ -521,7 +525,8 @@ object SecurityAssessmentCollector {
         t.start()
         t.join(400)
         if (portOpen) return true
-        val maps = readProcLines("/proc/self/maps") ?: return false  // logged by readProcLines
+        // Hidden /proc/self/maps is itself a hooking tell; null lets the caller record probe_unreadable.
+        val maps = readProcLines("/proc/self/maps") ?: return null
         return DeviceSignalCodes.mapsShowFrida(maps.asSequence())
     }
 
