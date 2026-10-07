@@ -92,9 +92,10 @@ object SecurityAssessmentCollector {
             assessment.put("CollectedAt", java.time.Instant.now().toString())
 
             val emulator = isEmulator()
-            val rootProbe = probeRoot(context)
-            val bootProbe = probeBoot()
-            val frida = isFridaPresent()
+            val probes = runProbes(context)
+            val rootProbe = probes.root
+            val bootProbe = probes.boot
+            val frida = probes.frida
             val debuggerAttached = android.os.Debug.isDebuggerConnected()
             val debuggable = isDebuggable(context)
             val vpnActive = isVpnActive(context)
@@ -180,7 +181,7 @@ object SecurityAssessmentCollector {
             val hasPhysicalCamera = context.packageManager.hasSystemFeature(PackageManager.FEATURE_CAMERA_ANY)
             val networkType = getNetworkType(context)
             assessment.put("captureMetadata", JSONObject().apply {
-                put("sdkVersion", "android-2.1.0")
+                put("sdkVersion", VeritySdkVersion.PAYLOAD)
                 put("isPhysicalCamera", hasPhysicalCamera)
                 put("networkType", networkType)
                 putOpt("captureAttempts", runtimeData?.captureAttempts)
@@ -445,14 +446,59 @@ object SecurityAssessmentCollector {
         )
     }
 
-    internal fun probeBoot(): DeviceSignalCodes.BootProbe = DeviceSignalCodes.BootProbe(
-        verifiedBootState = getProp("ro.boot.verifiedbootstate"),
-        flashLocked = getProp("ro.boot.flash.locked"),
-        vbmetaDeviceState = getProp("ro.boot.vbmeta.device_state"),
-        buildType = getProp("ro.build.type") ?: Build.TYPE,
-        roDebuggable = getProp("ro.debuggable") == "1",
-        roSecureOff = getProp("ro.secure") == "0",
+    internal fun probeBoot(): DeviceSignalCodes.BootProbe {
+        // One `getprop` process (no args prints every property) instead of six; parsed once.
+        val props = readAllProps()
+        return DeviceSignalCodes.BootProbe(
+            verifiedBootState = props["ro.boot.verifiedbootstate"],
+            flashLocked = props["ro.boot.flash.locked"],
+            vbmetaDeviceState = props["ro.boot.vbmeta.device_state"],
+            buildType = props["ro.build.type"] ?: Build.TYPE,
+            roDebuggable = props["ro.debuggable"] == "1",
+            roSecureOff = props["ro.secure"] == "0",
+        )
+    }
+
+    /** Raw results of the three probes that touch the filesystem, a subprocess or a socket. */
+    internal class ProbeResults(
+        val root: DeviceSignalCodes.RootProbe,
+        val boot: DeviceSignalCodes.BootProbe,
+        val frida: Boolean,
     )
+
+    /**
+     * Run probeRoot / probeBoot / isFridaPresent in parallel with ONE shared deadline, so the
+     * collector blocks its caller for at most [PROBE_DEADLINE_MS] no matter how many subprocesses
+     * are involved (the review on #51 measured ~7s worst case when they ran one after another).
+     * A probe that misses the deadline is logged and reads as "no evidence" for that probe only.
+     */
+    internal fun runProbes(context: Context): ProbeResults {
+        val pool = java.util.concurrent.Executors.newFixedThreadPool(3) { r -> Thread(r, "verity-probe").apply { isDaemon = true } }
+        try {
+            val rootF = pool.submit<DeviceSignalCodes.RootProbe> { probeRoot(context) }
+            val bootF = pool.submit<DeviceSignalCodes.BootProbe> { probeBoot() }
+            val fridaF = pool.submit<Boolean> { isFridaPresent() }
+            val deadline = System.currentTimeMillis() + PROBE_DEADLINE_MS
+            fun <T> await(name: String, f: java.util.concurrent.Future<T>, fallback: T): T = try {
+                f.get((deadline - System.currentTimeMillis()).coerceAtLeast(1), java.util.concurrent.TimeUnit.MILLISECONDS)
+            } catch (e: java.util.concurrent.TimeoutException) {
+                Log.w("Verity", "device probe '$name' missed the ${PROBE_DEADLINE_MS}ms deadline; reported as no evidence")
+                f.cancel(true); fallback
+            } catch (e: Exception) {
+                Log.w("Verity", "device probe '$name' failed: ${e.javaClass.simpleName}; reported as no evidence")
+                fallback
+            }
+            return ProbeResults(
+                root = await("root", rootF, DeviceSignalCodes.RootProbe()),
+                boot = await("boot", bootF, DeviceSignalCodes.BootProbe()),
+                frida = await("frida", fridaF, false),
+            )
+        } finally {
+            pool.shutdownNow()
+        }
+    }
+
+    private const val PROBE_DEADLINE_MS = 1500L
 
     /**
      * Frida: default server port open on loopback, or a gadget/agent mapped into this process.
@@ -480,25 +526,46 @@ object SecurityAssessmentCollector {
 
     private fun readProcLines(path: String): List<String> = try {
         File(path).bufferedReader().use { it.readLines() }
-    } catch (_: Exception) { emptyList() }
+    } catch (e: Exception) {
+        // An unreadable /proc file is not a clean device; say so rather than reading as "no evidence".
+        Log.w("Verity", "could not read $path: ${e.javaClass.simpleName}; mount/map probes report no evidence")
+        emptyList()
+    }
 
-    /** Read a system property via getprop. Null when absent, empty, or the call times out. */
-    private fun getProp(name: String): String? = runBounded("getprop", name)
+    /** `[ro.key]: [value]` lines from one bounded `getprop` run. Empty when the call times out. */
+    private fun readAllProps(): Map<String, String> {
+        val lines = runBoundedLines("getprop") ?: return emptyMap()
+        val out = HashMap<String, String>(lines.size)
+        for (line in lines) {
+            val m = PROP_LINE.matchEntire(line.trim()) ?: continue
+            out[m.groupValues[1]] = m.groupValues[2]
+        }
+        return out
+    }
+
+    private val PROP_LINE = Regex("""\[([^\]]+)\]: \[([^\]]*)\]""")
 
     /**
      * Run a tiny system command and return its first output line, or null. The process is
      * given at most one second BEFORE anything is read, so a command that never prints cannot
      * block the collector; a destroyed process yields null.
      */
-    private fun runBounded(vararg cmd: String): String? = try {
+    private fun runBounded(vararg cmd: String): String? =
+        runBoundedLines(*cmd)?.firstOrNull()?.trim()?.takeIf { it.isNotEmpty() }
+
+    private fun runBoundedLines(vararg cmd: String): List<String>? = try {
         val process = ProcessBuilder(*cmd).redirectErrorStream(true).start()
         if (!process.waitFor(1, java.util.concurrent.TimeUnit.SECONDS)) {
             process.destroy()
+            Log.w("Verity", "'${cmd.joinToString(" ")}' did not finish within 1s; reported as no evidence")
             null
         } else {
-            process.inputStream.bufferedReader().use { it.readLine() }?.trim()?.takeIf { it.isNotEmpty() }
+            process.inputStream.bufferedReader().use { it.readLines() }
         }
-    } catch (_: Exception) { null }
+    } catch (e: Exception) {
+        Log.w("Verity", "'${cmd.joinToString(" ")}' failed: ${e.javaClass.simpleName}; reported as no evidence")
+        null
+    }
 
     private fun isEmulator(): Boolean {
         cachedIsEmulator?.let { return it }

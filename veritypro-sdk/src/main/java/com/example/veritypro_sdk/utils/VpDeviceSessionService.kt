@@ -128,7 +128,7 @@ object VpDeviceSessionService {
 
         return JSONObject().apply {
             put("integration_id", integrationId)
-            put("sdk_version", "android-2.1.0")
+            put("sdk_version", VeritySdkVersion.PAYLOAD)
             put("signals", JSONObject().apply {
                 put("ua", "VerityProAndroid/${Build.VERSION.RELEASE} (${Build.MANUFACTURER} ${Build.MODEL})")
                 put("platform", "android")

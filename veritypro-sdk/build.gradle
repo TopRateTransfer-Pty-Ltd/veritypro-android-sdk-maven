@@ -182,7 +182,8 @@ afterEvaluate {
                 // 1.2.0: capture-quality release — scene-adaptive exposure, post-capture
                 // quality gate (exposure/blur/portrait/back-slot), EXIF rotation baked
                 // into pixels. GATED ON PHYSICAL-DEVICE QA before host apps adopt.
-                version = "1.4.0"
+                // 1.5.0: device-integrity signals (DeviceSignalCodes; payload contract android-2.1.0).
+                version = "1.5.0"
             }
         }
     }
