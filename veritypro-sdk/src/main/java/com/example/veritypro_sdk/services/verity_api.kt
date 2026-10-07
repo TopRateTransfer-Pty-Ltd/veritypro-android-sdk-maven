@@ -74,6 +74,13 @@ interface VerityApiService {
         @Header("Authorization") authorization: String? = null,
     ): StepUpBeginResponse
 
+    /** Dashboard branding for the keyed integration (404 = never configured). */
+    @GET("/kycintegration/branding/sdk")
+    suspend fun getSdkBranding(
+        @Header("x-api-key") apiKey: String,
+        @Header("Integrationid") integrationId: String
+    ): ApiResponse<SdkBranding>
+
     @GET("/kycintegration/country/get-country-document")
     suspend fun getCountryDocuments(
         @Header("x-api-key") apiKey: String,

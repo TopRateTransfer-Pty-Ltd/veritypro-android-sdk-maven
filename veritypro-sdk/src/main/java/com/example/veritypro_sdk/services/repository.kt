@@ -228,6 +228,25 @@ class ApiRepository {
         }
     }
 
+    /**
+     * Dashboard branding for the keyed integration. Success(null) means "not configured" (HTTP 404):
+     * the SDK keeps its defaults. Any other failure is an Error so the caller can log it; branding
+     * never blocks or fails a verification.
+     */
+    suspend fun getSdkBranding(apiKey: String, integrationId: String): Resource<SdkBranding?> {
+        return try {
+            val response = api.getSdkBranding(apiKey, integrationId)
+            Resource.Success(response.data)
+        } catch (e: HttpException) {
+            if (e.code() == 404) Resource.Success(null)
+            else Resource.Error("branding HTTP ${e.code()}")
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Resource.Error("branding ${e.javaClass.simpleName}")
+        }
+    }
+
     suspend fun getCountryDocuments(apiKey: String, integrationId: String, isO2Code: String): Resource<List<CountryDocumentItem>> {
         return try {
             val response = api.getCountryDocuments(apiKey, integrationId)
