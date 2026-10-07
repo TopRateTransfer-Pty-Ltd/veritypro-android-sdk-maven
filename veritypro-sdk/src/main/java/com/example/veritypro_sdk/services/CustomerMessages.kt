@@ -57,7 +57,7 @@ object CustomerMessages {
         return when (code) {
             "edd_not_provisioned" -> "EDD is not enabled for this integration (enable it in the VerityPro dashboard)"
             "integration_inactive" -> "the integration is inactive (re-activate it in the VerityPro dashboard)"
-            "" -> if (statusCode == 403) "EDD is not entitled for this integration" else "the credential sent to the EDD endpoint was not accepted (use the integration API key, not a bearer token from another issuer)"
+            "" -> if (message.isNotEmpty()) message else if (statusCode == 403) "EDD is not entitled for this integration" else "the credential sent to the EDD endpoint was not accepted (use the integration API key, not a bearer token from another issuer)"
             else -> if (message.isNotEmpty()) "error_code=$code: $message" else "error_code=$code"
         }
     }

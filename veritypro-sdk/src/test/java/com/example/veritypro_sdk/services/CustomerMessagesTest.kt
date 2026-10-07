@@ -66,5 +66,7 @@ class CustomerMessagesTest {
             CustomerMessages.eddIntegratorHint(403, """{"error_code":"edd_not_provisioned"}"""),
         )
         assertTrue(CustomerMessages.eddIntegratorHint(401, null).contains("credential"))
+        // No error_code but a message: the backend reason is what the integrator needs.
+        assertEquals("Integration ID not found in token", CustomerMessages.eddIntegratorHint(401, """{"message":"Integration ID not found in token"}"""))
     }
 }
