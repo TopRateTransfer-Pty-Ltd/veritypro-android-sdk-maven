@@ -93,11 +93,11 @@ object SecurityAssessmentCollector {
 
             val emulator = isEmulator()
             val probes = runProbes(context)
-            val rootProbe = if (probes.frida == null)
-                probes.root.copy(unreadableSources = probes.root.unreadableSources + "/proc/self/maps")
-            else probes.root
+            val fridaProbe = probes.frida ?: FridaProbe(found = false, unreadable = listOf("frida-probe"))
+            val rootProbe = if (fridaProbe.unreadable.isEmpty()) probes.root
+                else probes.root.copy(unreadableSources = probes.root.unreadableSources + fridaProbe.unreadable)
             val bootProbe = probes.boot
-            val frida = probes.frida == true
+            val frida = fridaProbe.found
             val debuggerAttached = android.os.Debug.isDebuggerConnected()
             val debuggable = isDebuggable(context)
             val vpnActive = isVpnActive(context)
@@ -467,9 +467,12 @@ object SecurityAssessmentCollector {
     internal class ProbeResults(
         val root: DeviceSignalCodes.RootProbe,
         val boot: DeviceSignalCodes.BootProbe,
-        /** True = Frida evidence; false = none; null = /proc/self/maps unreadable and port closed. */
-        val frida: Boolean?,
+        /** Null only when the probe itself missed the deadline or threw. */
+        val frida: FridaProbe?,
     )
+
+    /** Result of the Frida probe: evidence found, plus any source that could not be checked. */
+    internal class FridaProbe(val found: Boolean, val unreadable: List<String>)
 
     /**
      * Run probeRoot / probeBoot / isFridaPresent in parallel with ONE shared deadline, so the
@@ -482,7 +485,7 @@ object SecurityAssessmentCollector {
         try {
             val rootF = pool.submit<DeviceSignalCodes.RootProbe> { probeRoot(context) }
             val bootF = pool.submit<DeviceSignalCodes.BootProbe> { probeBoot() }
-            val fridaF = pool.submit<Boolean?> { isFridaPresent() }
+            val fridaF = pool.submit<FridaProbe> { isFridaPresent() }
             val deadline = System.currentTimeMillis() + PROBE_DEADLINE_MS
             fun <T> await(name: String, f: java.util.concurrent.Future<T>, fallback: T): T = try {
                 f.get((deadline - System.currentTimeMillis()).coerceAtLeast(1), java.util.concurrent.TimeUnit.MILLISECONDS)
@@ -497,37 +500,54 @@ object SecurityAssessmentCollector {
             return ProbeResults(
                 root = await("root", rootF, DeviceSignalCodes.RootProbe(unreadableSources = listOf("root-probe"))),
                 boot = await("boot", bootF, DeviceSignalCodes.BootProbe(unreadable = true)),
-                frida = await("frida", fridaF, null),
+                frida = await<FridaProbe?>("frida", fridaF, null),
             )
         } finally {
             pool.shutdownNow()
         }
     }
 
-    private const val PROBE_DEADLINE_MS = 1500L
+    /**
+     * Must cover the slowest single probe: `which su` / `getprop` are each bounded at 1000 ms waitFor +
+     * 500 ms drain, plus process spawn; with 1500 ms a successful slow probe was cancelled at the
+     * deadline and misreported as probe_unreadable (review on #51).
+     */
+    private const val PROBE_DEADLINE_MS = 2500L
 
     /**
      * Frida: default server port open on loopback, or a gadget/agent mapped into this process.
      * The socket probe runs on its own thread so it works from the main thread too (Android
      * throws NetworkOnMainThreadException for a connect on the UI thread) and is bounded.
      */
-    internal fun isFridaPresent(): Boolean? {
-        var portOpen = false
-        val t = Thread {
-            portOpen = try {
+    internal fun isFridaPresent(): FridaProbe {
+        // 0 = closed, 1 = open, -1 = not answered. Atomic: written on the probe thread, read after join.
+        val port = java.util.concurrent.atomic.AtomicInteger(-1)
+        val t = Thread({
+            port.set(try {
                 java.net.Socket().use { s ->
                     s.connect(java.net.InetSocketAddress("127.0.0.1", 27042), 150)
-                    true
+                    1
                 }
-            } catch (_: Exception) { false }
-        }
+            } catch (_: Exception) { 0 })
+        }, "verity-frida-port")
         t.isDaemon = true
         t.start()
         t.join(400)
-        if (portOpen) return true
-        // Hidden /proc/self/maps is itself a hooking tell; null lets the caller record probe_unreadable.
-        val maps = readProcLines("/proc/self/maps") ?: return null
-        return DeviceSignalCodes.mapsShowFrida(maps.asSequence())
+        val unreadable = ArrayList<String>(2)
+        when (port.get()) {
+            1 -> return FridaProbe(found = true, unreadable = emptyList())
+            -1 -> {
+                Log.w("Verity", "Frida port probe did not answer within 400ms; recorded as probe_unreadable")
+                unreadable += "frida-port"
+            }
+        }
+        // Hidden /proc/self/maps is itself a hooking tell; recorded, never read as "no Frida".
+        val maps = readProcLines("/proc/self/maps")
+        if (maps == null) {
+            unreadable += "/proc/self/maps"
+            return FridaProbe(found = false, unreadable = unreadable)
+        }
+        return FridaProbe(found = DeviceSignalCodes.mapsShowFrida(maps.asSequence()), unreadable = unreadable)
     }
 
     private fun whichSuFound(): Boolean = !runBounded("which", "su").isNullOrBlank()
