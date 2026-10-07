@@ -55,12 +55,16 @@ object BrandingResolver {
                 Log.w(TAG, "dashboard branding unavailable (${result.message}); using app config")
                 options.brandConfig
             }
-            is Resource.Success -> {
-                val merged = merge(options.brandConfig, result.data)
-                Log.d(TAG, "dashboard branding applied: logo=${merged?.logoUrl != null} colour=${merged?.primaryColor != null}")
-                merged
-            }
-            else -> options.brandConfig
+            is Resource.Success -> applied(options, result.data)
+            is Resource.CompletedSuccess -> applied(options, result.data)
+            // Not produced by getSdkBranding; listed so a new Resource subtype must be handled here.
+            is Resource.Loading -> options.brandConfig
         }
+    }
+
+    private fun applied(options: VerityOption, server: SdkBranding?): VpBrandConfig? {
+        val merged = merge(options.brandConfig, server)
+        Log.d(TAG, "dashboard branding applied: logo=${merged?.logoUrl != null} colour=${merged?.primaryColor != null}")
+        return merged
     }
 }
