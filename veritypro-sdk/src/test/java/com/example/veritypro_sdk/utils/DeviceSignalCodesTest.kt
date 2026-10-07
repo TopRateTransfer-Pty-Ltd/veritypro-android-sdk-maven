@@ -82,6 +82,13 @@ class DeviceSignalCodesTest {
         )
         assertEquals(listOf(DeviceSignalCodes.VERIFIED_BOOT_NOT_GREEN, DeviceSignalCodes.USERDEBUG_BUILD), red.integrityDetections)
         assertTrue(red.bootloaderUnlocked); assertFalse(red.isRooted)
+        val yellow = DeviceSignalCodes.derive(
+            root = DeviceSignalCodes.RootProbe(), boot = DeviceSignalCodes.BootProbe(verifiedBootState = "yellow", flashLocked = "1"),
+            emulator = false, vpnActive = false, debuggerAttached = false, debuggable = false, signingValid = true, frida = false, screenRecording = false,
+        )
+        // Custom-signed image on a locked bootloader is still not the manufacturer trusted state.
+        assertEquals(listOf(DeviceSignalCodes.VERIFIED_BOOT_NOT_GREEN), yellow.integrityDetections)
+        assertTrue(yellow.bootloaderUnlocked); assertFalse(yellow.isRooted)
     }
 
     @Test

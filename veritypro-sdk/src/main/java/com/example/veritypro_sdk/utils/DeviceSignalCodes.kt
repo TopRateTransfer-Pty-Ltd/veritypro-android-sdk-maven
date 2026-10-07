@@ -98,12 +98,15 @@ object DeviceSignalCodes {
                 || boot.flashLocked == "0"
                 || boot.vbmetaDeviceState.equals("unlocked", ignoreCase = true)
         if (bootloaderOpen) integrity += BOOTLOADER_UNLOCKED
-        if (boot.verifiedBootState.equals("red", ignoreCase = true)) integrity += VERIFIED_BOOT_NOT_GREEN
+        // yellow = booted with a custom-signed image (bootloader still locked); red = verification failed.
+        // Both leave the manufacturer trusted state. green = stock; orange is covered above.
+        val bootNotGreen = boot.verifiedBootState?.lowercase() in setOf("yellow", "red")
+        if (bootNotGreen) integrity += VERIFIED_BOOT_NOT_GREEN
         val devBuild = boot.buildType.equals("userdebug", ignoreCase = true) || boot.buildType.equals("eng", ignoreCase = true)
         if (devBuild) integrity += USERDEBUG_BUILD
         if (boot.roDebuggable) integrity += RO_DEBUGGABLE
         if (boot.roSecureOff) integrity += RO_SECURE_OFF
-        val unlocked = bootloaderOpen || boot.verifiedBootState.equals("red", ignoreCase = true) || devBuild || boot.roDebuggable || boot.roSecureOff
+        val unlocked = bootloaderOpen || bootNotGreen || devBuild || boot.roDebuggable || boot.roSecureOff
 
         if (emulator) integrity += EMULATOR
         if (vpnActive) integrity += VPN_ACTIVE

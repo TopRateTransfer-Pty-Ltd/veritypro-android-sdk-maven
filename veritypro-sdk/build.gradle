@@ -42,6 +42,14 @@ android {
         unitTests.returnDefaultValues = true
     }
 
+    packaging {
+        resources {
+            // The androidTest APK merges okhttp logging-interceptor 5.x and jspecify, which both ship
+            // META-INF/versions/9/OSGI-INF/MANIFEST.MF. Neither is read at runtime on Android.
+            excludes += ['META-INF/versions/9/OSGI-INF/MANIFEST.MF']
+        }
+    }
+
     publishing {
         singleVariant("release") {
             withSourcesJar()
