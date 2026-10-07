@@ -1,6 +1,7 @@
 package com.example.veritypro_sdk.services
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Assert.assertFalse
 import org.junit.Test
 
@@ -42,5 +43,25 @@ class CustomerMessagesTest {
                 assertFalse("'$s' contains '$w'", lower.contains(w))
             }
         }
+    }
+
+    @Test
+    fun emptyBodyNonAuthStatusIsNotReportedAsAuthFailure() {
+        // 404/429/5xx with an empty body are outages, not credential problems; same customer sentence.
+        for (status in listOf(404, 429, 500, 502, 503)) {
+            assertEquals(CustomerMessages.SERVICE_UNAVAILABLE, CustomerMessages.forEmptyError(status))
+        }
+        assertEquals(CustomerMessages.SERVICE_UNAVAILABLE, CustomerMessages.forEmptyError(401))
+    }
+
+    @Test
+    fun eddHintKeepsTheBackendMessageForUnknownCodes() {
+        val hint = CustomerMessages.eddIntegratorHint(403, """{"error_code":"plan_limit","message":"Monthly EDD quota exhausted"}""")
+        assertEquals("error_code=plan_limit: Monthly EDD quota exhausted", hint)
+        assertEquals(
+            "EDD is not enabled for this integration (enable it in the VerityPro dashboard)",
+            CustomerMessages.eddIntegratorHint(403, """{"error_code":"edd_not_provisioned"}"""),
+        )
+        assertTrue(CustomerMessages.eddIntegratorHint(401, null).contains("credential"))
     }
 }

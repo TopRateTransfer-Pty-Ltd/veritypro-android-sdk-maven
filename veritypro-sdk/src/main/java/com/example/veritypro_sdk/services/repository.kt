@@ -36,9 +36,9 @@ class ApiRepository {
      * structured JSON errors, and ASP.NET validation error format.
      */
     private fun parseHttpError(statusCode: Int, errorBody: String?): String {
-        // 401/403 with empty body — auth middleware rejected before reaching controller
+        // Empty body: 401/403 from the auth middleware, or a 404/429/5xx with nothing to parse.
         if (errorBody.isNullOrBlank()) {
-            return CustomerMessages.forAuthFailure(statusCode, detail = "empty body")
+            return CustomerMessages.forEmptyError(statusCode)
         }
 
         // Response bodies can contain identity data or credentials. Never log them.
