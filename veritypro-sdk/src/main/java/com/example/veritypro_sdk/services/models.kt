@@ -21,6 +21,18 @@ data class ApiError(
     val message: String
 )
 
+/**
+ * Dashboard branding served by GET /kycintegration/branding/sdk for the integration the API key
+ * authenticates. Every field is optional: a blank dashboard field arrives as null.
+ */
+data class SdkBranding(
+    val logoPrimaryUrl: String? = null,
+    val logoSecondaryUrl: String? = null,
+    val primaryColor: String? = null,
+    val secondaryColor: String? = null,
+    val fontFamily: String? = null,
+)
+
 sealed class Resource<out T> {
     data class Success<out T>(val data: T) : Resource<T>()
     data class Error(val message: String) : Resource<Nothing>()

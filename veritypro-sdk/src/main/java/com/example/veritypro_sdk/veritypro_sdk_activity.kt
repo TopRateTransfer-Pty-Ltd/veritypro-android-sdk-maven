@@ -19,6 +19,12 @@ import com.example.veritypro_sdk.utils.VerityVerificationError
 import com.example.veritypro_sdk.ui.theme.VerityProTheme
 import com.example.veritypro_sdk.ui.theme.ThemeMode
 import androidx.activity.OnBackPressedCallback
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import com.example.veritypro_sdk.utils.BrandingResolver
 
 class VerityProSdkActivity : AppCompatActivity() {
     private var options: VerityOption? = null
@@ -105,7 +111,12 @@ class VerityProSdkActivity : AppCompatActivity() {
         try {
             setContent {
                 val mode = runCatching { ThemeMode.valueOf(intent.getStringExtra("theme_mode") ?: "LIGHT") }.getOrDefault(ThemeMode.LIGHT)
-                VerityProTheme(mode = mode, brandConfig = options!!.brandConfig) {
+                // Dashboard branding (logo + primary colour) is fetched once and applied on top of the
+                // SDK defaults; anything the host app set in brandConfig keeps precedence. The screens
+                // render immediately with the app config and re-theme when the dashboard answers.
+                var brandConfig by remember { mutableStateOf(options!!.brandConfig) }
+                LaunchedEffect(Unit) { brandConfig = BrandingResolver.resolve(options!!) }
+                VerityProTheme(mode = mode, brandConfig = brandConfig) {
                 ProtoVerificationScreen(
                     options = options!!,
                     onIdentifiers = { engine, server, address ->
