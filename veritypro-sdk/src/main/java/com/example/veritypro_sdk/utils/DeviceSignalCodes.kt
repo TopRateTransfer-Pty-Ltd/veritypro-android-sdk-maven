@@ -31,6 +31,11 @@ object DeviceSignalCodes {
     const val RO_DEBUGGABLE = "ro_debuggable"
     const val RO_SECURE_OFF = "ro_secure_off"
 
+    // deviceIntegrity.detections — a probe source could not be read (/proc/self/mounts, /proc/self/maps,
+    // getprop). Informational: the device is NOT marked rooted, but the record says the evidence is
+    // missing instead of silently reading as clean.
+    const val PROBE_UNREADABLE = "probe_unreadable"
+
     // deviceIntegrity.detections — environment
     const val EMULATOR = "emulator"
     const val VPN_ACTIVE = "vpn_active"
@@ -48,6 +53,8 @@ object DeviceSignalCodes {
         val rootManagerApp: Boolean = false,
         val magiskMount: Boolean = false,
         val systemWritable: Boolean = false,
+        /** Probe sources that could not be read, e.g. "/proc/self/mounts". Reported as PROBE_UNREADABLE. */
+        val unreadableSources: List<String> = emptyList(),
     ) {
         val any: Boolean
             get() = suBinary || testKeys || rootManagerApp || magiskMount || systemWritable
@@ -61,6 +68,8 @@ object DeviceSignalCodes {
         val buildType: String? = null,           // ro.build.type: user | userdebug | eng
         val roDebuggable: Boolean = false,       // ro.debuggable == "1"
         val roSecureOff: Boolean = false,        // ro.secure == "0"
+        /** True when `getprop` could not be run or timed out, so every field above is unknown. */
+        val unreadable: Boolean = false,
     )
 
     data class Verdict(
@@ -108,6 +117,10 @@ object DeviceSignalCodes {
         if (boot.roSecureOff) integrity += RO_SECURE_OFF
         val unlocked = bootloaderOpen || bootNotGreen || devBuild || boot.roDebuggable || boot.roSecureOff
 
+        if (root.unreadableSources.isNotEmpty() || boot.unreadable) {
+            integrity += (listOf(PROBE_UNREADABLE) + root.unreadableSources + (if (boot.unreadable) listOf("getprop") else emptyList()))
+                .joinToString(":")
+        }
         if (emulator) integrity += EMULATOR
         if (vpnActive) integrity += VPN_ACTIVE
         if (frida) integrity += FRIDA_DETECTED

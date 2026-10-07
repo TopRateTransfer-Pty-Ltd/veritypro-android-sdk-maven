@@ -154,4 +154,16 @@ class DeviceSignalCodesTest {
         assertTrue(DeviceSignalCodes.mapsShowFrida(maps))
         assertFalse(DeviceSignalCodes.mapsShowFrida(maps.take(1)))
     }
+
+    @Test
+    fun unreadableProbeSourcesAreRecordedNotReadAsClean() {
+        val v = DeviceSignalCodes.derive(
+            root = DeviceSignalCodes.RootProbe(unreadableSources = listOf("/proc/self/mounts")),
+            boot = DeviceSignalCodes.BootProbe(unreadable = true),
+            emulator = false, vpnActive = false, debuggerAttached = false, debuggable = false,
+            signingValid = true, frida = false, screenRecording = false,
+        )
+        assertFalse(v.isRooted); assertFalse(v.isCompromised); assertFalse(v.bootloaderUnlocked)
+        assertEquals(listOf("probe_unreadable:/proc/self/mounts:getprop"), v.integrityDetections)
+    }
 }

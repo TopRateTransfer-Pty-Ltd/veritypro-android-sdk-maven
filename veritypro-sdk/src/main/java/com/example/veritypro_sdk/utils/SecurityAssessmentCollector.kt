@@ -438,11 +438,12 @@ object SecurityAssessmentCollector {
             }
         }
         val mounts = readProcLines("/proc/self/mounts")
-        val magisk = DeviceSignalCodes.mountsLookRooted(mounts.asSequence())
-        val writable = DeviceSignalCodes.mountsShowWritableSystem(mounts.asSequence())
+        val magisk = mounts != null && DeviceSignalCodes.mountsLookRooted(mounts.asSequence())
+        val writable = mounts != null && DeviceSignalCodes.mountsShowWritableSystem(mounts.asSequence())
         return DeviceSignalCodes.RootProbe(
             suBinary = su, testKeys = testKeys, rootManagerApp = manager, magiskMount = magisk,
             systemWritable = writable,
+            unreadableSources = if (mounts == null) listOf("/proc/self/mounts") else emptyList(),
         )
     }
 
@@ -450,12 +451,13 @@ object SecurityAssessmentCollector {
         // One `getprop` process (no args prints every property) instead of six; parsed once.
         val props = readAllProps()
         return DeviceSignalCodes.BootProbe(
-            verifiedBootState = props["ro.boot.verifiedbootstate"],
-            flashLocked = props["ro.boot.flash.locked"],
-            vbmetaDeviceState = props["ro.boot.vbmeta.device_state"],
-            buildType = props["ro.build.type"] ?: Build.TYPE,
-            roDebuggable = props["ro.debuggable"] == "1",
-            roSecureOff = props["ro.secure"] == "0",
+            verifiedBootState = props?.get("ro.boot.verifiedbootstate"),
+            flashLocked = props?.get("ro.boot.flash.locked"),
+            vbmetaDeviceState = props?.get("ro.boot.vbmeta.device_state"),
+            buildType = props?.get("ro.build.type") ?: Build.TYPE,
+            roDebuggable = props?.get("ro.debuggable") == "1",
+            roSecureOff = props?.get("ro.secure") == "0",
+            unreadable = props == null,
         )
     }
 
@@ -519,22 +521,23 @@ object SecurityAssessmentCollector {
         t.start()
         t.join(400)
         if (portOpen) return true
-        return DeviceSignalCodes.mapsShowFrida(readProcLines("/proc/self/maps").asSequence())
+        val maps = readProcLines("/proc/self/maps") ?: return false  // logged by readProcLines
+        return DeviceSignalCodes.mapsShowFrida(maps.asSequence())
     }
 
     private fun whichSuFound(): Boolean = !runBounded("which", "su").isNullOrBlank()
 
-    private fun readProcLines(path: String): List<String> = try {
+    /** Lines of a /proc file, or null when it cannot be read. Null is reported as PROBE_UNREADABLE by the caller. */
+    private fun readProcLines(path: String): List<String>? = try {
         File(path).bufferedReader().use { it.readLines() }
     } catch (e: Exception) {
-        // An unreadable /proc file is not a clean device; say so rather than reading as "no evidence".
-        Log.w("Verity", "could not read $path: ${e.javaClass.simpleName}; mount/map probes report no evidence")
-        emptyList()
+        Log.w("Verity", "could not read $path: ${e.javaClass.simpleName}; recorded as probe_unreadable")
+        null
     }
 
-    /** `[ro.key]: [value]` lines from one bounded `getprop` run. Empty when the call times out. */
-    private fun readAllProps(): Map<String, String> {
-        val lines = runBoundedLines("getprop") ?: return emptyMap()
+    /** `[ro.key]: [value]` lines from one bounded `getprop` run, or null when it failed or timed out. */
+    private fun readAllProps(): Map<String, String>? {
+        val lines = runBoundedLines("getprop") ?: return null
         val out = HashMap<String, String>(lines.size)
         for (line in lines) {
             val m = PROP_LINE.matchEntire(line.trim()) ?: continue
@@ -553,17 +556,31 @@ object SecurityAssessmentCollector {
     private fun runBounded(vararg cmd: String): String? =
         runBoundedLines(*cmd)?.firstOrNull()?.trim()?.takeIf { it.isNotEmpty() }
 
+    /**
+     * Runs a tiny command and returns its output lines, or null on failure/timeout. stdout is drained
+     * on a reader thread WHILE the process runs: a bare `getprop` dump is routinely larger than the
+     * 64 KB pipe buffer, and waiting before reading would block the child on a full pipe until the
+     * timeout, which then read as "no properties" (review on #51).
+     */
     private fun runBoundedLines(vararg cmd: String): List<String>? = try {
         val process = ProcessBuilder(*cmd).redirectErrorStream(true).start()
+        val lines = java.util.Collections.synchronizedList(ArrayList<String>())
+        val reader = Thread({
+            try {
+                process.inputStream.bufferedReader().useLines { seq -> seq.forEach { lines.add(it) } }
+            } catch (_: Exception) { /* process destroyed: partial output is discarded below */ }
+        }, "verity-probe-reader").apply { isDaemon = true; start() }
         if (!process.waitFor(1, java.util.concurrent.TimeUnit.SECONDS)) {
-            process.destroy()
-            Log.w("Verity", "'${cmd.joinToString(" ")}' did not finish within 1s; reported as no evidence")
+            process.destroyForcibly()
+            reader.join(200)
+            Log.w("Verity", "'${cmd.joinToString(" ")}' did not finish within 1s; recorded as probe_unreadable")
             null
         } else {
-            process.inputStream.bufferedReader().use { it.readLines() }
+            reader.join(500)
+            ArrayList(lines)
         }
     } catch (e: Exception) {
-        Log.w("Verity", "'${cmd.joinToString(" ")}' failed: ${e.javaClass.simpleName}; reported as no evidence")
+        Log.w("Verity", "'${cmd.joinToString(" ")}' failed: ${e.javaClass.simpleName}; recorded as probe_unreadable")
         null
     }
 
