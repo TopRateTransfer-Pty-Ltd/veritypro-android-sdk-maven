@@ -38,11 +38,7 @@ class ApiRepository {
     private fun parseHttpError(statusCode: Int, errorBody: String?): String {
         // 401/403 with empty body — auth middleware rejected before reaching controller
         if (errorBody.isNullOrBlank()) {
-            return when (statusCode) {
-                401 -> "Authentication failed. Please verify your API key is correct and active."
-                403 -> "Access denied. Your API key does not have permission for this operation."
-                else -> "HTTP $statusCode error"
-            }
+            return CustomerMessages.forAuthFailure(statusCode, detail = "empty body")
         }
 
         // Response bodies can contain identity data or credentials. Never log them.
@@ -86,41 +82,19 @@ class ApiRepository {
         }
 
         return when (statusCode) {
-            401 -> "Authentication failed. Please verify your API key is correct and active."
-            403 -> "Access denied. Your API key does not have permission for this operation."
+            401, 403 -> CustomerMessages.forAuthFailure(statusCode, detail = "unstructured body")
             else -> "HTTP $statusCode error"
         }
     }
 
     /**
-     * Parse structured error from EDD backend auth handler.
+     * Map an EDD 401/403 to what the CUSTOMER sees. The diagnosis (error_code, message) goes to
+     * logcat for the integrator; the screen only ever shows a plain sentence. Owner rule
+     * (2026-10-07): customers never see technical or back-end wording.
      * Expected JSON: {"error_code": "edd_not_provisioned"|"integration_inactive", "message": "..."}
      */
-    private fun parseEddAuthError(statusCode: Int, errorBody: String?): String {
-        if (errorBody != null) {
-            try {
-                val json = JSONObject(errorBody)
-                val errorCode = json.optString("error_code", "")
-                return when (errorCode) {
-                    "edd_not_provisioned" ->
-                        "EDD is not enabled for this integration. Please enable EDD in the VerityPro dashboard and try again."
-                    "integration_inactive" ->
-                        "This integration is inactive. Please re-activate it in the VerityPro dashboard."
-                    else -> {
-                        val msg = json.optString("message", "")
-                        if (msg.isNotEmpty()) msg
-                        else "Authentication failed. Please verify your API key and ensure EDD is enabled."
-                    }
-                }
-            } catch (_: Exception) {
-                // Not valid JSON — fall through
-            }
-        }
-        return if (statusCode == 403)
-            "EDD verification is not enabled for this integration. Contact support."
-        else
-            "Authentication failed. Please verify your API key and ensure EDD is enabled for this integration."
-    }
+    private fun parseEddAuthError(statusCode: Int, errorBody: String?): String =
+        CustomerMessages.forEddAuthFailure(statusCode, errorBody)
 
     suspend fun createKyc(data: VerityOption): Resource<SessionData> {
         return try {
