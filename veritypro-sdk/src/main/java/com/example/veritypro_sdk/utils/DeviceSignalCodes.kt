@@ -6,8 +6,10 @@ package com.example.veritypro_sdk.utils
  * booleans the backend reads (`isRooted`, `isCompromised`, `isTampered`).
  *
  * Shared contract with the backend (`DeviceSignalVocabulary` in Veritypro-KYC-Integration):
- * every string emitted here is listed there. The backend fails CLOSED on a string it does not
- * know, so adding a code here means adding it there in the same change.
+ * every CODE emitted here is listed there. A detection is `code` or `code:detail` (for example
+ * `probe_unreadable:/proc/self/mounts`); the backend keys on the part before the first colon
+ * (`DeviceSignalVocabulary.Normalise`) and fails CLOSED on a code it does not know, so adding a
+ * code here means adding it there first (probe_unreadable: KYC-Integration #405).
  *
  * Kept free of Android framework types so the rule is unit-testable on the JVM; the probes
  * that need a Context live in [SecurityAssessmentCollector].

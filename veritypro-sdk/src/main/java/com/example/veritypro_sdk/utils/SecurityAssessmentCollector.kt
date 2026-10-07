@@ -563,7 +563,10 @@ object SecurityAssessmentCollector {
      * timeout, which then read as "no properties" (review on #51).
      */
     private fun runBoundedLines(vararg cmd: String): List<String>? = try {
-        val process = ProcessBuilder(*cmd).redirectErrorStream(true).start()
+        // stdout only: stderr text ("not found", a permission message) must never read as output.
+        val process = ProcessBuilder(*cmd).start()
+        Thread({ try { process.errorStream.use { it.skip(Long.MAX_VALUE) } } catch (_: Exception) {} }, "verity-probe-stderr")
+            .apply { isDaemon = true; start() }
         val lines = java.util.Collections.synchronizedList(ArrayList<String>())
         val reader = Thread({
             try {
@@ -577,7 +580,15 @@ object SecurityAssessmentCollector {
             null
         } else {
             reader.join(500)
-            ArrayList(lines)
+            when {
+                reader.isAlive -> {
+                    // The drain did not finish: a truncated property map would read as "clean".
+                    Log.w("Verity", "'${cmd.joinToString(" ")}' output not fully read within 500ms; recorded as probe_unreadable")
+                    null
+                }
+                process.exitValue() != 0 -> null   // e.g. `which su` -> not found. Not an error, not evidence.
+                else -> ArrayList(lines)
+            }
         }
     } catch (e: Exception) {
         Log.w("Verity", "'${cmd.joinToString(" ")}' failed: ${e.javaClass.simpleName}; recorded as probe_unreadable")
