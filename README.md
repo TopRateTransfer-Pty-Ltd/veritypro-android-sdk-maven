@@ -157,7 +157,7 @@ You choose the flow with `VerityOption.mode`, a string holding a `VerityMode` na
 | `BIOMETRIC` | Document capture, then liveness selfie | Default. |
 | `LIVENESS_ONLY` | Liveness selfie only | Pass `previousEngineSessionId` from an earlier document verification. |
 | `ADDRESS` | Address entry and address document upload | |
-| `EDD` | EDD income details and document upload | Optional `eddProfile`, `authToken`, `city`, `stateOrProvince`, `postalCode`, `country`, `subjectId`. |
+| `EDD` | EDD income details and document upload (Basic EDD) | Optional `eddProfile`, `eddAssessmentId` (from your server's `trigger-edd` call: skips the income screen and attaches the document to that assessment), `authToken`, `city`, `stateOrProvince`, `postalCode`, `country`, `subjectId`. |
 | `COMBINED` | Document, liveness, address and EDD | |
 | `SERVER_DRIVEN` | Module sequence comes from the backend `/v2/sessions` API | Pass `serverSessionId` to resume a session you created server-side. |
 | `STEP_UP_AUTH` | Liveness against an enrolled template | Use `createStepUpIntent` (below). |
