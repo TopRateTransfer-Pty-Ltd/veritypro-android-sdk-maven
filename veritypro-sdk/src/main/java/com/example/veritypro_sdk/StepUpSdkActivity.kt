@@ -46,6 +46,7 @@ import com.example.veritypro_sdk.ui.prototype.ProtoPrimaryButton
 import com.example.veritypro_sdk.ui.prototype.ProtoTopBar
 import com.example.veritypro_sdk.utils.StepUpResult
 import com.example.veritypro_sdk.utils.VerityResult
+import com.example.veritypro_sdk.utils.VerityErrorCode
 import com.example.veritypro_sdk.utils.VerityVerificationError
 import com.example.veritypro_sdk.utils.NativeOperations
 import androidx.activity.OnBackPressedCallback
@@ -151,7 +152,10 @@ class StepUpSdkActivity : AppCompatActivity() {
             similarityScore = if (payload.containsKey("similarityScore")) payload.getDouble("similarityScore") else null,
             attemptCount = if (payload.containsKey("attemptCount")) payload.getInt("attemptCount") else null,
             maxAttempts = if (payload.containsKey("maxAttempts")) payload.getInt("maxAttempts") else null,
-            error = if (result is StepUpResult.Error) VerityVerificationError("UNKNOWN", result.message) else null)
+            error = if (result is StepUpResult.Error) VerityVerificationError(
+                result.code, result.message,
+                recoverable = result.code == VerityErrorCode.LIVENESS_NETWORK_SLOW.name,
+            ) else null)
         val data = Intent().apply {
             putExtra("verity_result", typed)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -210,6 +214,7 @@ class StepUpSdkActivity : AppCompatActivity() {
                 putString("type", "Error")
                 r.challengeId?.let { putString("challengeId", it) }
                 putString("message", r.message)
+                putString("code", r.code)
             }
         }
     }
@@ -352,7 +357,7 @@ private fun StepUpFlowScreen(
             region = p.region,
             credentials = p.credentials,
             onComplete = { completeLiveness(p.awsSessionId) },
-            onError = { onResult(StepUpResult.Error(challengeId, "liveness_error: $it")) },
+            onError = { code, message -> onResult(StepUpResult.Error(challengeId, "liveness_error: $message", code = code)) },
         )
         is StepUpPhase.Analyzing -> StepUpProcessingScreen("Confirming\nit's you")
         is StepUpPhase.Done -> { /* unreachable — onResult exits activity */ }
@@ -495,13 +500,13 @@ private fun StepUpLivenessScreen(
     region: String,
     credentials: BeginLivenessCredentials?,
     onComplete: () -> Unit,
-    onError: (String) -> Unit,
+    onError: (code: String, message: String) -> Unit,
 ) {
     val credentialsProvider = remember(credentials) {
         credentials?.let { LivenessCredentialsProvider(it) }
     }
     if (credentialsProvider == null) {
-        LaunchedEffect(Unit) { onError("Couldn't start the liveness check. Please try again.") }
+        LaunchedEffect(Unit) { onError(VerityErrorCode.UNKNOWN.name, "Couldn't start the liveness check. Please try again.") }
         return
     }
     val handled = remember { mutableStateOf(false) }
@@ -521,12 +526,30 @@ private fun StepUpLivenessScreen(
                         // Amplify wraps the real failure (WebSocket, signing, serialization...) in
                         // ex.throwable; "An unknown error occurred" alone is undiagnosable on a device.
                         Log.e("VerityStepUp", "FaceLivenessDetector onError: ${describeLivenessError(ex)}", ex.throwable)
-                        onError(describeLivenessError(ex))
+                        onError(livenessErrorCode(ex), describeLivenessError(ex))
                     }
                 },
             )
         }
     }
+}
+
+/**
+ * LIVENESS_NETWORK_SLOW when the cause chain holds a socket timeout/close: Amplify streams 640x480 VP8 at
+ * ~0.6 Mbps (LivenessCoordinator.TARGET_ENCODE_BITRATE) over an OkHttp WebSocket with the default 10 s write
+ * timeout, neither configurable, so a weak uplink fails here. Everything else stays UNKNOWN.
+ */
+internal fun livenessErrorCode(ex: com.amplifyframework.ui.liveness.model.FaceLivenessDetectionException): String {
+    var cause: Throwable? = ex.throwable
+    var depth = 0
+    while (cause != null && depth < 8) {
+        if (cause is java.net.SocketTimeoutException || cause is java.net.SocketException) {
+            return VerityErrorCode.LIVENESS_NETWORK_SLOW.name
+        }
+        cause = cause.cause?.takeIf { it !== cause }
+        depth++
+    }
+    return VerityErrorCode.UNKNOWN.name
 }
 
 /** "<ExceptionClass>: <message> | recovery=<suggestion> | cause=<Class>: <message> | cause=..." (max 4 causes). */

@@ -159,6 +159,7 @@ class VerityPro(
                 "Error" -> StepUpResult.Error(
                     challengeId = bundle.getString("challengeId"),
                     message = bundle.getString("message") ?: "unknown_error",
+                    code = bundle.getString("code") ?: "UNKNOWN",
                 )
                 else -> null
             }
