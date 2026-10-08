@@ -516,9 +516,29 @@ private fun StepUpLivenessScreen(
                     if (!handled.value) { handled.value = true; onComplete() }
                 },
                 onError = { ex ->
-                    if (!handled.value) { handled.value = true; onError(ex.message ?: "Liveness failed.") }
+                    if (!handled.value) {
+                        handled.value = true
+                        // Amplify wraps the real failure (WebSocket, signing, serialization...) in
+                        // ex.throwable; "An unknown error occurred" alone is undiagnosable on a device.
+                        Log.e("VerityStepUp", "FaceLivenessDetector onError: ${describeLivenessError(ex)}", ex.throwable)
+                        onError(describeLivenessError(ex))
+                    }
                 },
             )
         }
     }
+}
+
+/** "<ExceptionClass>: <message> | recovery=<suggestion> | cause=<Class>: <message> | cause=..." (max 4 causes). */
+internal fun describeLivenessError(ex: com.amplifyframework.ui.liveness.model.FaceLivenessDetectionException): String {
+    val parts = mutableListOf("${ex.javaClass.simpleName}: ${ex.message}")
+    ex.recoverySuggestion.takeIf { it.isNotBlank() }?.let { parts += "recovery=$it" }
+    var cause: Throwable? = ex.throwable
+    var depth = 0
+    while (cause != null && depth < 4) {
+        parts += "cause=${cause.javaClass.name}: ${cause.message}"
+        cause = cause.cause?.takeIf { it !== cause }
+        depth++
+    }
+    return parts.joinToString(" | ")
 }
