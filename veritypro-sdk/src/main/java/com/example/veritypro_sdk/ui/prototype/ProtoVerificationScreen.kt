@@ -897,7 +897,8 @@ fun ProtoVerificationScreen(
                         vm.attachAndSubmitBasicEdd(assessmentId, file, options.apiKey)
                     }
                 },
-                onBack = { if (serverAssessmentId != null) onExit() else stage = ProtoStage.EddIncome },
+                // Same as the income screen's Back: return to the start, never close a multi-module flow.
+                onBack = { stage = if (serverAssessmentId != null) ProtoStage.Welcome else ProtoStage.EddIncome },
             )
         }
 
