@@ -33,6 +33,8 @@ enum class VerityErrorCode {
     IDEMPOTENCY_CONFLICT,
     LIVENESS_TIMEOUT,
     LIVENESS_FAILED,
+    /** The liveness video could not be uploaded fast enough (uplink below ~0.6 Mbps): retry on better signal or Wi-Fi. */
+    LIVENESS_NETWORK_SLOW,
     FACE_MISMATCH,
     NETWORK_INTERRUPTED,
     NETWORK_UNAVAILABLE,

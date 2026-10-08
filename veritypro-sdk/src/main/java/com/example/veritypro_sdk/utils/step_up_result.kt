@@ -53,5 +53,7 @@ sealed class StepUpResult {
         val challengeId: String?,
         val message: String,
         val cause: Throwable? = null,
+        /** VerityErrorCode name the host app can switch on. */
+        val code: String = "UNKNOWN",
     ) : StepUpResult()
 }
