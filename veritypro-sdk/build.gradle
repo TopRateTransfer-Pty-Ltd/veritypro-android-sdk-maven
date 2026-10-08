@@ -183,7 +183,9 @@ afterEvaluate {
                 // quality gate (exposure/blur/portrait/back-slot), EXIF rotation baked
                 // into pixels. GATED ON PHYSICAL-DEVICE QA before host apps adopt.
                 // 1.5.0: device-integrity signals (DeviceSignalCodes; payload contract android-2.1.0).
-                version = "1.6.0"
+                // 1.6.0: dashboard branding applied automatically.
+                // 1.7.0: eddAssessmentId (server-started Basic EDD: skip the income screen).
+                version = "1.7.0"
             }
         }
     }
