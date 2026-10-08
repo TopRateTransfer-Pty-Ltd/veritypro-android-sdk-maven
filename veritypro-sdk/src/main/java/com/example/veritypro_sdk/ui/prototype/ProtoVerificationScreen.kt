@@ -225,7 +225,6 @@ fun ProtoVerificationScreen(
     val livenessRegion by vm.livenessRegion.collectAsState()
     val livenessCredentials by vm.livenessCredentials.collectAsState()
     val addressState by vm.addressState.collectAsState()
-    val eddState by vm.eddState.collectAsState()
     val basicEddState by vm.basicEddState.collectAsState()
     var addressStreet by remember { mutableStateOf(options.streetAddress ?: "") }
     var livenessApproved by remember { mutableStateOf(false) }
@@ -833,15 +832,21 @@ fun ProtoVerificationScreen(
                     )
                 },
                 onBack = { stage = ProtoStage.Welcome },
+                initialEmployer = options.eddProfile?.get("employerName").orEmpty(),
+                initialIncome = options.eddProfile?.get("declaredMonthlyIncome").orEmpty(),
             )
         }
 
         ProtoStage.EddUpload -> {
             // EDD: upload an income document that carries the source-of-funds information.
             // EDD doc types (backend enum): 0 = Bank Statement, 1 = Pay Slip, 2 = Tax Return.
+            // Basic EDD only: the document is attached to the assessment created on the income step and
+            // the assessment is submitted. No Full EDD case is created (owner 2026-10-08).
+            val basicEddUpload by vm.basicEddUploadState.collectAsState()
+            val eddAssessmentId = (basicEddState as? Resource.Success)?.data?.assessmentId
             var phase by remember { mutableStateOf("idle") }
-            LaunchedEffect(eddState) {
-                when (eddState) {
+            LaunchedEffect(basicEddUpload) {
+                when (basicEddUpload) {
                     is Resource.Loading -> phase = "submitting"
                     is Resource.Success<*> -> if (phase == "submitting") advanceModule(pendingStepData)
                     else -> {}
@@ -854,13 +859,12 @@ fun ProtoVerificationScreen(
                 docTypes = listOf("Pay slip" to 1, "Bank statement" to 0, "Tax return" to 2),
                 accent = Proto.Indigo,
                 step = null,
-                submitting = eddState is Resource.Loading,
-                errorMsg = (eddState as? Resource.Error)?.message?.ifBlank { "Couldn't submit. Please try again." },
+                submitting = basicEddUpload is Resource.Loading,
+                errorMsg = if (eddAssessmentId == null) "Your income details were not saved. Go back and submit them again."
+                    else (basicEddUpload as? Resource.Error)?.message?.ifBlank { "Couldn't submit. Please try again." },
                 onSubmit = { type, file ->
+                    val assessmentId = eddAssessmentId ?: return@ProtoUploadScreen
                     phase = "submitting"
-                    // Subject = the KYC session when present; otherwise the integration id (EDD-only
-                    // products have no KYC session).
-                    val subject = options.subjectId?.takeIf { it.isNotBlank() } ?: options.vendorData
                     if (serverDriven) {
                         // SERVER-DRIVEN: build the step-complete payload the web sends for EDD
                         // ({ SecurityAssessmentJson, PlatformUsed, IpLocation, DocumentType }) from the
@@ -875,15 +879,17 @@ fun ProtoVerificationScreen(
                                 com.example.veritypro_sdk.utils.SecurityAssessmentCollector.collectJson(context)
                             }.getOrNull().orEmpty()
                             pendingStepData = mapOf(
+                                // Links the session's EDD step to this Basic assessment.
+                                "EddAssessmentId" to assessmentId,
                                 "SecurityAssessmentJson" to securityJson,
                                 "PlatformUsed" to "android",
                                 "IpLocation" to ipLocation,
                                 "DocumentType" to type.toString(),
                             )
-                            vm.submitEddDocument(subject, "${options.firstName} ${options.lastName}", file, type, options.apiKey, context)
+                            vm.attachAndSubmitBasicEdd(assessmentId, file, options.apiKey)
                         }
                     } else {
-                        vm.submitEddDocument(subject, "${options.firstName} ${options.lastName}", file, type, options.apiKey, context)
+                        vm.attachAndSubmitBasicEdd(assessmentId, file, options.apiKey)
                     }
                 },
                 onBack = { stage = ProtoStage.EddIncome },
@@ -956,7 +962,7 @@ fun ProtoVerificationScreen(
                         else if (flowOk)
                             com.example.veritypro_sdk.utils.VerityResult.submitted(
                                 engineSessionId().takeIf { it.isNotBlank() }, completedModules,
-                                driver.serverSessionId(), (eddState as? Resource.Success)?.data?.caseId,
+                                driver.serverSessionId(),
                             )
                         else
                             com.example.veritypro_sdk.utils.VerityResult(

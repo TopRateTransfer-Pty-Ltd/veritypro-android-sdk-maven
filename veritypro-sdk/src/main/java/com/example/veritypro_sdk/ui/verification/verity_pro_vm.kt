@@ -266,39 +266,15 @@ class VerityProViewModel(
     }
 
     // ========================================================================
-    // EDD STATE
+    // EDD STATE — Basic EDD only. The legacy POST /edd/api/edd/cases upload (submitEddDocument)
+    // was removed 2026-10-08: it created a Full EDD case, which the SDK must never do.
     // ========================================================================
-
-    private val _eddState = MutableStateFlow<Resource<EddCaseResponse>?>(null)
-    val eddState: StateFlow<Resource<EddCaseResponse>?> = _eddState
-
-    fun submitEddDocument(
-        subjectId: String,
-        subjectName: String,
-        file: File,
-        documentType: Int,
-        apiKey: String,
-        context: android.content.Context? = null
-    ) {
-        viewModelScope.launch {
-            _eddState.value = Resource.Loading("Submitting EDD document...")
-            val config = storedOptions
-            if (subjectId.isBlank()) {
-                _eddState.value = Resource.Error("A customer subject reference is required for EDD.")
-                return@launch
-            }
-            val result = repository.createEddCase(subjectId, subjectName, file, documentType, apiKey, context,
-                integrationId = config?.integrationId, city = config?.city, stateOrProvince = config?.stateOrProvince,
-                postalCode = config?.postalCode, authToken = config?.authToken, country = config?.country,
-                profile = config?.eddProfile)
-            _eddState.value = result
-        }
-    }
 
     /**
      * CREATE a Basic EDD assessment (POST /edd/api/v1/edd/basic/assessments) carrying the
-     * income/employer details collected in the EDD flow. Additive to the legacy
-     * [submitEddDocument] path (POST /edd/api/edd/cases) — both may run for a single EDD step.
+     * income/employer details collected in the EDD flow. The income document is then attached and the
+     * assessment submitted by [attachAndSubmitBasicEdd]. The SDK EDD flow is Basic EDD only (owner
+     * 2026-10-08): it never creates a Full EDD case — Full EDD belongs to TM / Case Management.
      */
     private val _basicEddState = MutableStateFlow<Resource<BasicEddAssessmentCreated>?>(null)
     val basicEddState: StateFlow<Resource<BasicEddAssessmentCreated>?> = _basicEddState
@@ -324,6 +300,41 @@ class VerityProViewModel(
                 ),
             )
             _basicEddState.value = result
+        }
+    }
+
+    private val _basicEddUploadState = MutableStateFlow<Resource<String>?>(null)
+    /** Result of attaching the income document and submitting the Basic assessment; Success carries its id. */
+    val basicEddUploadState: StateFlow<Resource<String>?> = _basicEddUploadState
+
+    /** The (assessment, file) pair already attached, so a retry after a failed submit does not attach it twice. */
+    private var basicEddAttached: Pair<String, String>? = null
+
+    /**
+     * Attach the income-evidence document to the Basic assessment, then submit it
+     * (POST .../assessments/{id}/documents, then .../{id}/submit → 202, processed asynchronously).
+     * Replaces the legacy POST /edd/api/edd/cases upload, which created a Full EDD case beside the
+     * Basic assessment and left the assessment waiting for documents forever (staging 2026-10-08:
+     * Full case 022f7d7a + Basic assessment 608353f4 for one EDD step).
+     */
+    fun attachAndSubmitBasicEdd(assessmentId: String, file: File, apiKey: String) {
+        if (_basicEddUploadState.value is Resource.Loading) return
+        viewModelScope.launch {
+            _basicEddUploadState.value = Resource.Loading("Submitting EDD document...")
+            val integrationId = storedOptions?.integrationId
+            val key = assessmentId to file.absolutePath
+            if (basicEddAttached != key) {
+                val attached = repository.attachBasicEddDocument(assessmentId, file, apiKey, integrationId)
+                if (attached is Resource.Error) {
+                    _basicEddUploadState.value = Resource.Error(attached.message ?: "Couldn't upload the document. Please try again.")
+                    return@launch
+                }
+                basicEddAttached = key
+            }
+            _basicEddUploadState.value = when (val submitted = repository.submitBasicEddAssessment(assessmentId, apiKey, integrationId)) {
+                is Resource.Error -> Resource.Error(submitted.message ?: "Couldn't submit. Please try again.")
+                else -> Resource.Success(assessmentId)
+            }
         }
     }
 

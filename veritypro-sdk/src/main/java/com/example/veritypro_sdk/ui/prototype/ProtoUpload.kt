@@ -232,9 +232,12 @@ fun ProtoEddIncomeScreen(
     errorMsg: String?,
     onSubmit: (employerName: String, declaredMonthlyIncome: String) -> Unit,
     onBack: () -> Unit,
+    /** Pre-filled from the integrator's EDD profile (employerName / declaredMonthlyIncome); editable. */
+    initialEmployer: String = "",
+    initialIncome: String = "",
 ) {
-    var employer by remember { mutableStateOf("") }
-    var income by remember { mutableStateOf("") }
+    var employer by remember { mutableStateOf(initialEmployer) }
+    var income by remember { mutableStateOf(initialIncome) }
     val incomeValid = (parseDeclaredIncome(income) ?: 0.0) > 0.0
 
     Column(Modifier.fillMaxSize().background(Proto.Canvas).verticalScroll(rememberScrollState())) {
