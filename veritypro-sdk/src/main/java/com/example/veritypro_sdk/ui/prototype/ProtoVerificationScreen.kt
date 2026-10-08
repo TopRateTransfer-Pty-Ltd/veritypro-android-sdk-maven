@@ -60,7 +60,7 @@ import com.example.veritypro_sdk.utils.VerityMode
 import com.example.veritypro_sdk.utils.VerityOption
 import kotlinx.coroutines.launch
 
-private enum class ProtoStage { Welcome, Connecting, ChooseId, CameraAccess, BeforeShoot, Capture, DocPreview, PairChecking, AddressEntry, SelfieIntro, LightingWarning, Liveness, AddressUpload, EddIncome, EddUpload, Submitting, AllComplete, Error }
+internal enum class ProtoStage { Welcome, Connecting, ChooseId, CameraAccess, BeforeShoot, Capture, DocPreview, PairChecking, AddressEntry, SelfieIntro, LightingWarning, Liveness, AddressUpload, EddIncome, EddUpload, Submitting, AllComplete, Error }
 
 // Ordered active modules for this product (document → biometric → address → edd).
 // internal (not private) so the co-located [ClientFlowDriver] can reuse it as its start() computation.
@@ -80,10 +80,14 @@ internal fun protoModuleOrder(options: VerityOption): List<String> {
 }
 
 // The stage that starts a given module.
-private fun stageForModule(module: String): ProtoStage = when (module) {
+// [serverEddAssessmentId]: the integrator's server already started the Basic EDD assessment
+// (trigger-edd, owner 2026-10-08 option a) with the customer's profile, so the income screen is
+// skipped and the document goes straight to that assessment.
+internal fun stageForModule(module: String, serverEddAssessmentId: String? = null): ProtoStage = when (module) {
     "BIOMETRIC" -> ProtoStage.SelfieIntro
     "ADDRESS" -> ProtoStage.AddressEntry   // enter address → create session → upload proof
-    "EDD" -> ProtoStage.EddIncome           // income/employer → then upload income-evidence doc
+    "EDD" -> if (serverEddAssessmentId.isNullOrBlank()) ProtoStage.EddIncome  // income/employer → then upload
+             else ProtoStage.EddUpload
     else -> ProtoStage.ChooseId // DOCUMENT
 }
 
@@ -376,7 +380,7 @@ fun ProtoVerificationScreen(
             // Report the session id for document-bearing runs so a later liveness step-up can reuse it.
             val sid = vm.getSessionId()
             if (moduleQueue.contains("DOCUMENT") && sid.isNotBlank()) onSessionEstablished(sid)
-            stage = stageForModule(first)
+            stage = stageForModule(first, options.eddAssessmentId)
         }
     }
 
@@ -399,7 +403,7 @@ fun ProtoVerificationScreen(
                     // current-module lookup stay correct across both drivers.
                     val at = moduleQueue.indexOf(next)
                     moduleIndex = if (at >= 0) at else moduleIndex + 1
-                    stage = stageForModule(next)
+                    stage = stageForModule(next, options.eddAssessmentId)
                 }
             } catch (e: Exception) {
                 driverError = e.message ?: "Something went wrong."
@@ -444,7 +448,7 @@ fun ProtoVerificationScreen(
                             // has no completed document yet. It fires only AFTER the DOCUMENT step's
                             // evidence uploads successfully (below), so a persisted prior session is a
                             // valid returning-user base with a real portrait (not an in-progress/failed one).
-                            stage = stageForModule(first)
+                            stage = stageForModule(first, options.eddAssessmentId)
                         } catch (e: Exception) {
                             driverError = e.message ?: "Couldn't start verification."
                             stage = ProtoStage.Error
@@ -466,7 +470,7 @@ fun ProtoVerificationScreen(
                     // any entitlement error at the right step, not a spurious KYC error.
                     val first = queue.first()
                     stage = if (first == "DOCUMENT" || first == "BIOMETRIC") ProtoStage.Connecting
-                            else stageForModule(first)
+                            else stageForModule(first, options.eddAssessmentId)
                 }
             },
             onPrivacy = {},
@@ -843,7 +847,8 @@ fun ProtoVerificationScreen(
             // Basic EDD only: the document is attached to the assessment created on the income step and
             // the assessment is submitted. No Full EDD case is created (owner 2026-10-08).
             val basicEddUpload by vm.basicEddUploadState.collectAsState()
-            val eddAssessmentId = (basicEddState as? Resource.Success)?.data?.assessmentId
+            val serverAssessmentId = options.eddAssessmentId?.takeIf { it.isNotBlank() }
+            val eddAssessmentId = serverAssessmentId ?: (basicEddState as? Resource.Success)?.data?.assessmentId
             var phase by remember { mutableStateOf("idle") }
             LaunchedEffect(basicEddUpload) {
                 when (basicEddUpload) {
@@ -892,7 +897,7 @@ fun ProtoVerificationScreen(
                         vm.attachAndSubmitBasicEdd(assessmentId, file, options.apiKey)
                     }
                 },
-                onBack = { stage = ProtoStage.EddIncome },
+                onBack = { if (serverAssessmentId != null) onExit() else stage = ProtoStage.EddIncome },
             )
         }
 

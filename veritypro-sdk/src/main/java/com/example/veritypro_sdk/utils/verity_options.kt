@@ -148,6 +148,11 @@ data class VerityOption(
     val subjectId: String? = null,
     val country: String? = null,
     val eddProfile: Map<String, String>? = null,
+    /**
+     * Basic EDD assessment already started by the integrator's server (trigger-edd returns its id).
+     * When set, the SDK skips the income screen and attaches the document to this assessment.
+     */
+    val eddAssessmentId: String? = null,
 ) : Parcelable {
     /** Resolved [VerityMode] from the serialized [mode] string. */
     val verityMode: VerityMode
