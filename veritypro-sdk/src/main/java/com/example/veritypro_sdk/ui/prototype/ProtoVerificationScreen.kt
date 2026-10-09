@@ -60,7 +60,7 @@ import com.example.veritypro_sdk.utils.VerityMode
 import com.example.veritypro_sdk.utils.VerityOption
 import kotlinx.coroutines.launch
 
-internal enum class ProtoStage { Welcome, Connecting, ChooseId, CameraAccess, BeforeShoot, Capture, DocPreview, PairChecking, AddressEntry, SelfieIntro, LightingWarning, Liveness, AddressUpload, EddIncome, EddUpload, Submitting, AllComplete, Error }
+internal enum class ProtoStage { Welcome, Connecting, ChooseId, CameraAccess, BeforeShoot, Capture, DocPreview, PairChecking, AddressEntry, SelfieIntro, LightingWarning, Liveness, LivenessFailed, AddressUpload, EddIncome, EddUpload, Submitting, AllComplete, Error }
 
 // Ordered active modules for this product (document → biometric → address → edd).
 // internal (not private) so the co-located [ClientFlowDriver] can reuse it as its start() computation.
@@ -253,6 +253,8 @@ fun ProtoVerificationScreen(
     var frontVideo by remember { mutableStateOf<String?>(null) }
     var backVideo by remember { mutableStateOf<String?>(null) }
     var livenessId by remember { mutableStateOf<String?>(null) }
+    // Customer-facing reason the last liveness attempt did not finish; shown by ProtoStage.LivenessFailed.
+    var livenessProblem by remember { mutableStateOf("") }
     var moduleQueue by remember { mutableStateOf<List<String>>(emptyList()) }
     var moduleIndex by remember { mutableStateOf(0) }
     var completedModules by remember { mutableStateOf<List<String>>(emptyList()) }
@@ -725,10 +727,10 @@ fun ProtoVerificationScreen(
                                 if (!ok) {
                                     // SERVER: never post /steps/BIOMETRIC/complete for a failed liveness
                                     // result — that would advance the flow with an unverified selfie.
-                                    // Go back to the selfie intro so the user can retry WITHOUT losing the
-                                    // captured document (ProtoStage.Error's onRetry reset the whole flow to
-                                    // Welcome and discarded the front/back images).
-                                    stage = ProtoStage.SelfieIntro
+                                    // Say so, then retry from the selfie intro WITHOUT losing the captured
+                                    // document (ProtoStage.Error's onRetry resets the whole flow to Welcome).
+                                    livenessProblem = "We couldn't confirm your selfie. Face the camera in good, even light and try again."
+                                    stage = ProtoStage.LivenessFailed
                                 } else {
                                     // CLIENT mode unchanged: advance regardless; the final submit carries
                                     // livenessApproved and the backend decisions on it.
@@ -736,7 +738,16 @@ fun ProtoVerificationScreen(
                                 }
                             }
                         },
-                        onError = { stage = ProtoStage.SelfieIntro },
+                        onError = { code, _ ->
+                            if (code == LIVENESS_USER_CANCELLED) {
+                                stage = ProtoStage.SelfieIntro
+                            } else {
+                                // Never bounce silently back to the selfie intro: the customer has just done
+                                // the challenge and needs to know why it has to be repeated.
+                                livenessProblem = livenessProblemCopy(code)
+                                stage = ProtoStage.LivenessFailed
+                            }
+                        },
                     )
                 }
             }
@@ -750,6 +761,15 @@ fun ProtoVerificationScreen(
             )
             else -> ProtoProcessingScreen("BIOMETRIC · LIVENESS", "Starting the\nliveness check", "One moment…", Proto.Teal)
         }
+
+        ProtoStage.LivenessFailed -> ProtoErrorScreen(
+            kicker = "BIOMETRIC",
+            title = "Selfie check didn't finish",
+            message = livenessProblem,
+            // The captured document stays in memory; only the selfie is repeated.
+            onRetry = { stage = ProtoStage.SelfieIntro },
+            onExit = onExit,
+        )
 
         ProtoStage.AddressEntry -> {
             // Capture the address locally. Create the service session only with proof ready.
@@ -1142,4 +1162,11 @@ private fun ProtoErrorScreen(
             textAlign = androidx.compose.ui.text.style.TextAlign.Center,
         )
     }
+}
+
+/** Plain-language reason for a liveness attempt that did not finish (never vendor or HTTP text). */
+internal fun livenessProblemCopy(code: String): String = when (code) {
+    com.example.veritypro_sdk.utils.VerityErrorCode.LIVENESS_NETWORK_SLOW.name ->
+        "Your internet connection is too slow for the selfie check. Move to a stronger Wi-Fi or mobile signal, then try again."
+    else -> "The selfie check didn't finish. Please try again."
 }
