@@ -4,9 +4,15 @@ name: Android CI
 # injected via env — app/build.gradle reads them into BuildConfig. Nothing is hard-coded/committed.
 on:
   push:
-    branches: [ "**" ]
+    branches: [ android_fix ]
   pull_request:
   workflow_dispatch:
+
+# Cost control (2026-10-10): run on PRs and on pushes to the default branch only — a push to a PR
+# branch used to run twice (push + pull_request). A newer push cancels the superseded run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
