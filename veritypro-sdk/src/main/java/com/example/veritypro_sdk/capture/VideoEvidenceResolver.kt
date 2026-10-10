@@ -101,7 +101,13 @@ object VideoEvidenceResolver {
 /** Builds the stored [SideCapture]: hashes the still and clip and runs the advisory. Does file I/O. */
 object SideCaptureAssembler {
     fun assemble(raw: RawSideCapture): SideCapture {
-        val still = CaptureFiles.describeStill(raw.stillPath, raw.stillSavedAtMs)
+        val still = try {
+            CaptureFiles.describeStill(raw.stillPath, raw.stillSavedAtMs)
+        } catch (e: Exception) {
+            // The side is lost; its clip will never be uploaded, so it must not stay on disk (review #61).
+            raw.recording.filePath?.let { runCatching { File(it).delete() } }
+            throw e
+        }
         val video = VideoEvidenceResolver.resolve(raw.recording, raw.shutterAtMs, raw.stillSavedAtMs)
         if (video.status != VideoStatus.RECORDED) {
             // Never leave a clip on disk that we are not going to upload or account for.

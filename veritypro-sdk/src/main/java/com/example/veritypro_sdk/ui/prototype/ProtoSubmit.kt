@@ -38,6 +38,10 @@ internal data class CaptureUploadParts(
     val metadataJson: String,
 )
 
+/** A still's bytes no longer match the sha256 recorded at capture (review #61). */
+internal class StillChangedAfterCapture(val side: CaptureSide) :
+    IllegalStateException("Still $side changed after capture")
+
 internal fun buildCaptureUploadParts(
     store: CaptureAttemptStore,
     docTypeInt: Int,
@@ -46,16 +50,13 @@ internal fun buildCaptureUploadParts(
 ): CaptureUploadParts {
     val sides = store.captured()
     // The metadata must describe the exact bytes that are uploaded, so the stills are hashed again
-    // here. The files are uniquely named per attempt/side/retake and never rewritten, so a
-    // mismatch would be a defect; the uploaded bytes' hash is what gets reported.
-    val verified: List<SideCapture> = sides.map { s ->
-        val f = File(s.still.path)
-        val actual = hashFile(f)
-        if (actual != s.still.sha256) {
-            Log.e("ProtoSubmit", "Still ${s.side} changed after capture; reporting the uploaded bytes' hash")
-            s.copy(still = s.still.copy(sha256 = actual))
-        } else s
+    // here. The files are uniquely named per attempt/side/retake and never rewritten, so a mismatch
+    // means the still changed after capture. Refuse the upload (recapture) rather than re-stamp the
+    // hash: re-stamping would hide the change from the server.
+    sides.forEach { s ->
+        if (hashFile(File(s.still.path)) != s.still.sha256) throw StillChangedAfterCapture(s.side)
     }
+    val verified: List<SideCapture> = sides
     val metadata = CaptureMetadataBuilder.build(
         attemptId = store.attemptId,
         sdkVersion = sdkVersion,
@@ -113,6 +114,9 @@ suspend fun protoSubmitVerification(
 
     val parts = try {
         withContext(Dispatchers.IO) { buildCaptureUploadParts(vm.documentCapture, docTypeInt, BuildConfig.SDK_VERSION) }
+    } catch (e: StillChangedAfterCapture) {
+        Log.e("ProtoSubmit", "Refusing upload: ${e.message}", e)
+        return KycUploadOutcome.RecaptureRequired("Your document photo changed after it was taken. Please retake it.")
     } catch (e: Exception) {
         Log.e("ProtoSubmit", "Could not prepare the capture upload: ${e.javaClass.simpleName}: ${e.message}", e)
         return KycUploadOutcome.Failed("Your document photos could not be prepared. Please retake them.")

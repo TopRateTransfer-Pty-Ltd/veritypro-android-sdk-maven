@@ -11,6 +11,7 @@ import com.example.veritypro_sdk.capture.VideoStatus
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
 
@@ -83,11 +84,23 @@ class CaptureUploadPartsTest {
         val store = CaptureAttemptStore(deleteFile = {})
         val f = tmp("f")
         record(store, CaptureSide.FRONT, f, null, VideoStatus.NOT_REQUESTED)
-        f.writeBytes(byteArrayOf(9, 9, 9)) // simulate the file changing after capture
 
         val parts = buildCaptureUploadParts(store, 2, "1.8.0")
 
         val reported = JSONObject(parts.metadataJson).getJSONArray("sides").getJSONObject(0).getJSONObject("image").getString("sha256")
         assertEquals(CaptureFiles.sha256(f), reported)
+    }
+
+    @Test
+    fun `a still that changed after capture is refused, not re-stamped (review 61)`() {
+        val store = CaptureAttemptStore(deleteFile = {})
+        val f = tmp("f")
+        record(store, CaptureSide.FRONT, f, null, VideoStatus.NOT_REQUESTED)
+        f.writeBytes(byteArrayOf(9, 9, 9)) // the file changes after capture
+
+        val thrown = runCatching { buildCaptureUploadParts(store, 2, "1.8.0") }.exceptionOrNull()
+
+        assertTrue(thrown is StillChangedAfterCapture)
+        assertEquals(CaptureSide.FRONT, (thrown as StillChangedAfterCapture).side)
     }
 }
