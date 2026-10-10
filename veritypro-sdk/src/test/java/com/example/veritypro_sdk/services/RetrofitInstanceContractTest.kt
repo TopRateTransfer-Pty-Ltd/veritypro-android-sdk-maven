@@ -37,19 +37,4 @@ class RetrofitInstanceContractTest {
         }
     }
 
-    @Test
-    fun `docai is unusable until a session configures it`() {
-        // A fresh process has no DocAI origin; reaching for it must fail, not fall back to a host.
-        val field = MLRetrofitInstance::class.java.getDeclaredField("mlBaseUrl").apply { isAccessible = true }
-        val previous = field.get(MLRetrofitInstance)
-        try {
-            synchronized(MLRetrofitInstance) {
-                field.set(MLRetrofitInstance, null)
-                MLRetrofitInstance::class.java.getDeclaredField("mlApiService").apply { isAccessible = true }.set(MLRetrofitInstance, null)
-            }
-            assertThrows(IllegalStateException::class.java) { MLRetrofitInstance.api }
-        } finally {
-            field.set(MLRetrofitInstance, previous)
-        }
-    }
 }

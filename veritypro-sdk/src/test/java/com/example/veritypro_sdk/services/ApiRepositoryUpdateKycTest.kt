@@ -20,6 +20,8 @@
 package com.example.veritypro_sdk.services
 
 import io.mockk.coEvery
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.ResponseBody.Companion.toResponseBody
 import io.mockk.every
 import io.mockk.mockkObject
 import io.mockk.unmockkObject
@@ -70,7 +72,13 @@ class ApiRepositoryUpdateKycTest {
         DocumentVideo = null
     )
 
+    /** The envelope arrives as the JSON body of an HTTP 2xx reply, as the backend sends it. */
     private fun stubUpdateKyc(response: ApiResponse<String>) {
+        val json = com.google.gson.Gson().toJson(response)
+        stubRaw(retrofit2.Response.success(200, json.toResponseBody("application/json".toMediaType())))
+    }
+
+    private fun stubRaw(response: retrofit2.Response<okhttp3.ResponseBody>) {
         coEvery {
             mockApi.updateKyc(
                 SessionId = any(),
@@ -86,10 +94,16 @@ class ApiRepositoryUpdateKycTest {
                 SecurityAssessmentJson = any(),
                 PortraitVideo = any(),
                 DocumentVideo = any(),
+                DocumentBackVideo = any(),
+                CaptureAttemptId = any(),
+                CaptureMetadataJson = any(),
                 apiKey = any()
             )
         } returns response
     }
+
+    private fun httpError(code: Int, body: String) =
+        retrofit2.Response.error<okhttp3.ResponseBody>(code, body.toResponseBody("application/json".toMediaType()))
 
     // ── BUG-409 fix ───────────────────────────────────────────────────────────
 
@@ -210,5 +224,79 @@ class ApiRepositoryUpdateKycTest {
         val result = repository.updateKyc(makePayload(), "api-key")
 
         assertTrue("Expected Error, was $result", result is Resource.Error)
+    }
+
+    // ── veritypro.capture.v1 response contract (CONTRACT.md section 2) ───────
+
+    @Test
+    fun `201 with captureStatus maps to Submitted carrying the contract fields`() = runTest {
+        stubRaw(retrofit2.Response.success(201,
+            """{"statusCode":201,"statusMessage":"ok","data":null,"captureStatus":"CAPTURE_ACCEPTED","captureAttemptId":"a-1","duplicate":true}"""
+                .toResponseBody("application/json".toMediaType())))
+        val out = repository.submitKyc(makePayload(), "k") as KycUploadOutcome.Submitted
+        assertEquals("CAPTURE_ACCEPTED", out.captureStatus)
+        assertEquals("a-1", out.captureAttemptId)
+        assertTrue(out.duplicate)
+    }
+
+    @Test
+    fun `201 from an old backend without captureStatus is still Submitted`() = runTest {
+        stubUpdateKyc(ApiResponse(statusCode = 201, statusMessage = "KYC Verification updated successfully"))
+        val out = repository.submitKyc(makePayload(), "k") as KycUploadOutcome.Submitted
+        assertEquals(null, out.captureStatus)
+    }
+
+    @Test
+    fun `201 whose data is an object does not break parsing`() = runTest {
+        stubRaw(retrofit2.Response.success(201,
+            """{"statusCode":201,"statusMessage":"ok","data":{"captureStatus":"CAPTURE_ACCEPTED","captureAttemptId":"a-2","duplicate":false}}"""
+                .toResponseBody("application/json".toMediaType())))
+        val out = repository.submitKyc(makePayload(), "k") as KycUploadOutcome.Submitted
+        assertEquals("a-2", out.captureAttemptId)
+    }
+
+    @Test
+    fun `HTTP 400 RECAPTURE_REQUIRED maps to RecaptureRequired with the reason`() = runTest {
+        stubRaw(httpError(400, """{"captureStatus":"RECAPTURE_REQUIRED","reason":"Back image unreadable"}"""))
+        val out = repository.submitKyc(makePayload(), "k")
+        assertEquals(KycUploadOutcome.RecaptureRequired("Back image unreadable"), out)
+    }
+
+    @Test
+    fun `HTTP 503 TECHNICAL_UNAVAILABLE maps to TechnicalUnavailable`() = runTest {
+        stubRaw(httpError(503, """{"captureStatus":"TECHNICAL_UNAVAILABLE","reason":"engine down"}"""))
+        assertEquals(KycUploadOutcome.TechnicalUnavailable("engine down"), repository.submitKyc(makePayload(), "k"))
+    }
+
+    @Test
+    fun `HTTP 400 without captureStatus keeps the old error behaviour`() = runTest {
+        stubRaw(httpError(400, """{"statusCode":400,"statusMessage":"Invalid file upload","data":["DocumentFront: bad type"]}"""))
+        val out = repository.submitKyc(makePayload(), "k")
+        assertEquals(KycUploadOutcome.Failed("DocumentFront: bad type"), out)
+    }
+
+    @Test
+    fun `HTTP 503 without captureStatus is a plain failure, never a retryable TECHNICAL_UNAVAILABLE`() = runTest {
+        stubRaw(httpError(503, ""))
+        assertTrue(repository.submitKyc(makePayload(), "k") is KycUploadOutcome.Failed)
+    }
+
+    @Test
+    fun `captureStatus on the wrong HTTP code is not trusted`() = runTest {
+        stubRaw(httpError(500, """{"captureStatus":"TECHNICAL_UNAVAILABLE"}"""))
+        assertTrue(repository.submitKyc(makePayload(), "k") is KycUploadOutcome.Failed)
+    }
+
+    @Test
+    fun `raw HTTP 409 upload_duplicate stays a success`() = runTest {
+        stubRaw(httpError(409, """{"error":{"message":"upload_duplicate"}}"""))
+        val out = repository.submitKyc(makePayload(), "k") as KycUploadOutcome.Submitted
+        assertTrue(out.duplicate)
+    }
+
+    @Test
+    fun `legacy updateKyc maps RecaptureRequired to Error, never success`() = runTest {
+        stubRaw(httpError(400, """{"captureStatus":"RECAPTURE_REQUIRED","reason":"r"}"""))
+        assertTrue(repository.updateKyc(makePayload(), "k") is Resource.Error)
     }
 }

@@ -122,77 +122,92 @@ class ApiRepository {
         }
     }
 
+    /** Legacy shape of [submitKyc] for existing callers: submitted = CompletedSuccess, otherwise Error. */
     suspend fun updateKyc(
         data: VerificationRequestMultipart,
         apiKey: String
-    ): Resource<String> {
+    ): Resource<String> = submitKyc(data, apiKey).toResource()
+
+    /**
+     * POST update-kyc-verification and map the reply to a [KycUploadOutcome]
+     * (CONTRACT.md section 2). One call, no retry here; see
+     * [KycUploadResponseMapper.submitWithBoundedRetry] for the 503 retry.
+     */
+    suspend fun submitKyc(
+        data: VerificationRequestMultipart,
+        apiKey: String
+    ): KycUploadOutcome {
         return try {
-            Log.d("Verity", "Submitting KYC data")
-            Log.d("Verity", "ApiRepository.updateKyc: starting, session=${data.SessionId}")
+            Log.d("Verity", "ApiRepository.submitKyc: starting, session=${data.SessionId}, attempt=${data.CaptureAttemptId}")
 
             if ((data.DocumentFront == null) && (data.DocumentBack == null)) {
                 Log.w("Verity", "No document multipart parts supplied")
             }
 
-
-
-            val response: ApiResponse<String> =
-                api.updateKyc(
-                    SessionId = data.SessionId.toRequestBody(),
-                    DocumentType = data.DocumentType.toString().toRequestBody(),
-                    PlatformUsed = data.PlatformUsed.toRequestBody(),
-                    IpAddress = data.IpAddress.toRequestBody(),
-                    IpLocation = data.IpLocation.toRequestBody(),
-                    DeviceAndBrowser = data.DeviceAndBrowser.toRequestBody(),
-                    PortraitPicture = data.PortraitPicture,
-                    DocumentFront = data.DocumentFront,
-                    DocumentBack = data.DocumentBack,
-                    LivenessId = data.LivenessId.toRequestBody(),
-                    SecurityAssessmentJson = data.SecurityAssessmentJson?.toRequestBody(),
-                    PortraitVideo = data.PortraitVideo,
-                    DocumentVideo = data.DocumentVideo,
-                    apiKey = apiKey
-                )
-
-            if (response.statusCode == 201) {
-                Log.d("Verity", "Submitted KYC data")
-                Resource.CompletedSuccess(response.statusMessage)
-            } else if (response.statusCode == 409 && response.error?.message == "upload_duplicate") {
-                // The first updateKyc call succeeded server-side (session → Submitted) but
-                // the client never received the 201 (timeout / network drop). A retry correctly
-                // gets 409 because the session is already Submitted. Treat as success so the
-                // flow can advance to the result screen without stranding the user.
-                Log.w("Verity", "updateKyc 409 upload_duplicate — session already submitted, advancing as success")
-                Resource.CompletedSuccess("KYC Verification already submitted")
-            } else {
-                Log.e("Verity", "updateKyc rejected status=${response.statusCode}")
-                Resource.Error(response.error?.message ?: "Unable to validate")
-            }
+            val response = api.updateKyc(
+                SessionId = data.SessionId.toRequestBody(),
+                DocumentType = data.DocumentType.toString().toRequestBody(),
+                PlatformUsed = data.PlatformUsed.toRequestBody(),
+                IpAddress = data.IpAddress.toRequestBody(),
+                IpLocation = data.IpLocation.toRequestBody(),
+                DeviceAndBrowser = data.DeviceAndBrowser.toRequestBody(),
+                PortraitPicture = data.PortraitPicture,
+                DocumentFront = data.DocumentFront,
+                DocumentBack = data.DocumentBack,
+                LivenessId = data.LivenessId.toRequestBody(),
+                SecurityAssessmentJson = data.SecurityAssessmentJson?.toRequestBody(),
+                PortraitVideo = data.PortraitVideo,
+                DocumentVideo = data.DocumentVideo,
+                DocumentBackVideo = data.DocumentBackVideo,
+                CaptureAttemptId = data.CaptureAttemptId?.toRequestBody(),
+                CaptureMetadataJson = data.CaptureMetadataJson?.toRequestBody(),
+                apiKey = apiKey
+            )
+            mapUpdateKycResponse(response.code(), response.isSuccessful,
+                if (response.isSuccessful) response.body()?.string() else response.errorBody()?.string())
         } catch (e: IOException) {
             Log.e("Verity", "IO error during KYC upload", e)
             val msg = e.message ?: ""
-            return if (msg.contains("ENOENT") || msg.contains("No such file")) {
-                Resource.Error("Required image file is missing. Please retake the document photo.")
+            if (msg.contains("ENOENT") || msg.contains("No such file")) {
+                KycUploadOutcome.Failed("Required image file is missing. Please retake the document photo.")
             } else {
-                Resource.Error("Network error. Please check your connection.")
+                KycUploadOutcome.Failed("Network error. Please check your connection.")
             }
-        } catch (e: HttpException) {
-            val errorBody = e.response()?.errorBody()?.string()
-            // Safety net: if the gateway ever forwards the raw HTTP 409, treat
-            // upload_duplicate the same as above (session already submitted).
-            if (e.code() == 409 && errorBody?.contains("upload_duplicate") == true) {
-                Log.w("Verity", "updateKyc HTTP 409 upload_duplicate — advancing as success")
-                return Resource.CompletedSuccess("KYC Verification already submitted")
-            }
-            val errorMessage = parseHttpError(e.code(), errorBody)
-            Log.e("Verity", "updateKyc HTTP status=${e.code()}")
-            Resource.Error(errorMessage)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             Log.e("Verity", "Failed to connect to server: ${e.message}")
-            Resource.Error("Failed to connect to server: ${e.message}")
+            KycUploadOutcome.Failed("Failed to connect to server: ${e.message}")
         }
+    }
+
+    /** Pure mapping of an update-kyc-verification HTTP reply; bodies are never logged. */
+    internal fun mapUpdateKycResponse(httpCode: Int, successful: Boolean, body: String?): KycUploadOutcome {
+        val fields = KycUploadResponseMapper.captureFields(body)
+        if (successful) {
+            val json = runCatching { JSONObject(body ?: "") }.getOrNull()
+            val envelopeCode = json?.optInt("statusCode", httpCode) ?: httpCode
+            val statusMessage = json?.optString("statusMessage", "")?.takeIf { it.isNotEmpty() && it != "null" } ?: ""
+            val errorMessage = json?.optJSONObject("error")?.optString("message", "")?.takeIf { it.isNotEmpty() }
+            val outcome = KycUploadResponseMapper.fromSuccess(envelopeCode, statusMessage, errorMessage, fields)
+            when (outcome) {
+                is KycUploadOutcome.Submitted -> Log.d("Verity", "Submitted KYC data (captureStatus=${outcome.captureStatus}, duplicate=${outcome.duplicate})")
+                else -> Log.e("Verity", "updateKyc rejected status=$envelopeCode outcome=${outcome.javaClass.simpleName}")
+            }
+            return outcome
+        }
+        KycUploadResponseMapper.fromHttpError(httpCode, body)?.let {
+            Log.w("Verity", "updateKyc HTTP $httpCode -> ${it.javaClass.simpleName}")
+            return it
+        }
+        // Old backend / other errors: unchanged behaviour. A raw 409 upload_duplicate means the
+        // session was already submitted (first 201 lost in transit), so it advances as success.
+        if (httpCode == 409 && body?.contains("upload_duplicate") == true) {
+            Log.w("Verity", "updateKyc HTTP 409 upload_duplicate — advancing as success")
+            return KycUploadOutcome.Submitted("KYC Verification already submitted", fields.captureStatus, fields.captureAttemptId, duplicate = true)
+        }
+        Log.e("Verity", "updateKyc HTTP status=$httpCode")
+        return KycUploadOutcome.Failed(parseHttpError(httpCode, body))
     }
 
 

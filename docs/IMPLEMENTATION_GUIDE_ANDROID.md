@@ -1,5 +1,10 @@
 # VerityPro Android SDK - Implementation Guide
 
+> **RETIRED (2026-10-10).** This guide describes the DocAI (`verity-doc-ml`) capture gate, which the SDK
+> no longer calls. Document capture now uploads original stills and per-side videos to KYC-Integration
+> with `CaptureAttemptId` + `CaptureMetadataJson` (schema `veritypro.capture.v1`); see `CHANGELOG.md`.
+> Kept for history only — do not implement from it.
+
 ## Backend Configuration
 ```kotlin
 const val BASE_URL = "http://localhost:8001"

@@ -25,7 +25,14 @@ data class VerificationRequestMultipart(
     val IpLocation: String,
     val SecurityAssessmentJson: String? = null,
     val PortraitVideo: MultipartBody.Part? = null,
-    val DocumentVideo: MultipartBody.Part? = null
+    /** FRONT-side document video (name unchanged so old backends keep working). */
+    val DocumentVideo: MultipartBody.Part? = null,
+    /** BACK-side document video (veritypro.capture.v1). */
+    val DocumentBackVideo: MultipartBody.Part? = null,
+    /** UUID v4, one per document submission; the server's idempotency key. */
+    val CaptureAttemptId: String? = null,
+    /** JSON, schema veritypro.capture.v1 (see CaptureMetadataBuilder). */
+    val CaptureMetadataJson: String? = null,
 )
 
 fun File.toMultipartBodyPart(partName: String): MultipartBody.Part =
