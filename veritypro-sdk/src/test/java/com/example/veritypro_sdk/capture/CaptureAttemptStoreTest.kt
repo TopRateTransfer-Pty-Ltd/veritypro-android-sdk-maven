@@ -55,6 +55,8 @@ class CaptureAttemptStoreTest {
         assertFalse(accepted)
         assertNull(s.side(CaptureSide.BACK))
         assertTrue("the stale clip file is deleted", "lic_b.mp4" in deleted)
+        // review #61: the stale still is never stored, so it must be deleted here too
+        assertTrue("the stale still file is deleted", "lic_b.jpg" in deleted)
     }
 
     @Test

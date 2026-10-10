@@ -126,6 +126,7 @@ class CaptureAttemptStore(
         if (capture.attemptId != attemptId) {
             Log.w(TAG, "Dropping ${capture.side} capture from stale attempt ${capture.attemptId} (current $attemptId)")
             capture.video.path?.let(deleteFile)
+            deleteFile(capture.still.path) // the store never holds it, so nothing else would clean it up
             return false
         }
         sides[capture.side]?.let { previous ->
