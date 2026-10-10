@@ -3,13 +3,12 @@ name: Android CI
 # Builds the demo app + SDK. Secrets (incl. the Google Places key for address autocomplete) are
 # injected via env — app/build.gradle reads them into BuildConfig. Nothing is hard-coded/committed.
 on:
-  push:
-    branches: [ android_fix ]
-  pull_request:
+  # Manual-only (owner, 2026-10-11): SDKs are checked and built locally, not on GitHub Actions.
+  # Before opening or merging a PR, run locally and post the result on the PR:
+  #     ./gradlew :veritypro-sdk:testDebugUnitTest :verity-device-sdk:testDebugUnitTest :veritypro-sdk:assembleRelease
+  # Run this workflow by hand (Actions -> Run workflow) only when a local run is not possible.
   workflow_dispatch:
 
-# Cost control (2026-10-10): run on PRs and on pushes to the default branch only — a push to a PR
-# branch used to run twice (push + pull_request). A newer push cancels the superseded run.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
