@@ -1,6 +1,5 @@
 package com.example.veritypro_sdk.ui.verification
 
-import android.graphics.Bitmap
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -13,17 +12,11 @@ import com.example.veritypro_sdk.services.BeginLivenessData
 import com.example.veritypro_sdk.services.EddCaseResponse
 import com.example.veritypro_sdk.services.LivenessResultResponse
 import com.example.veritypro_sdk.services.CountryDocumentItem
-import com.example.veritypro_sdk.services.MLDecision
-import com.example.veritypro_sdk.services.MLDocumentType
-import com.example.veritypro_sdk.services.MLNextAction
-import com.example.veritypro_sdk.services.MLPredictResponse
-import com.example.veritypro_sdk.services.MLRepository
-import com.example.veritypro_sdk.services.MLRetrofitInstance
 import com.example.veritypro_sdk.services.VerityEndpoint
-import com.example.veritypro_sdk.services.MLVerifyBurstResponse
 import com.example.veritypro_sdk.services.Resource
+import com.example.veritypro_sdk.services.KycUploadOutcome
+import com.example.veritypro_sdk.capture.CaptureAttemptStore
 import com.example.veritypro_sdk.services.SessionData
-import com.example.veritypro_sdk.services.sanitizeMLHint
 import com.example.veritypro_sdk.services.VerificationRequestMultipart
 import com.example.veritypro_sdk.utils.VerificationFlowRouter
 import com.example.veritypro_sdk.utils.VerificationModule
@@ -39,10 +32,8 @@ import com.example.veritypro_sdk.utils.withCurrentLocation
 
 class VerityProViewModel(
     repository: ApiRepository? = null,
-    mlRepository: MLRepository? = null
 ) : ViewModel() {
     private val repository: ApiRepository = repository ?: ApiRepository()
-    private val mlRepository: MLRepository = mlRepository ?: MLRepository()
     private var apiKey: String = ""
     private var captureRuntime = CaptureRuntimeData()
     fun captureRuntimeData(): CaptureRuntimeData = captureRuntime
@@ -69,8 +60,6 @@ class VerityProViewModel(
         // No config, no call: there is no built-in host, so a session without an API origin stops here.
         val origin = VerityEndpoint.requireApiOrigin(options.apiBaseUrl)
         repository.configureBaseUrl(origin)
-        // DocAI lives on the same origin as the API; doc-ml calls must not go to another host.
-        MLRetrofitInstance.configureForApiBaseUrl(origin)
     }
 
     private val _kycState = MutableStateFlow<Resource<Any>>(Resource.Loading("Initializing KYC Verification"))
@@ -129,20 +118,12 @@ class VerityProViewModel(
     }
 
     // ========================================================================
-    // ML BACKEND STATE
+    // COUNTRY DOCUMENTS
     // ========================================================================
 
     private val _countryDocumentsState = MutableStateFlow<Resource<List<CountryDocumentItem>>>(Resource.Loading("Loading documents"))
     val countryDocumentsState: StateFlow<Resource<List<CountryDocumentItem>>> = _countryDocumentsState
 
-    private val _mlPredictState = MutableStateFlow<Resource<MLPredictResponse>?>(null)
-    val mlPredictState: StateFlow<Resource<MLPredictResponse>?> = _mlPredictState
-
-    private val _mlVerifyBurstState = MutableStateFlow<Resource<MLVerifyBurstResponse>?>(null)
-    val mlVerifyBurstState: StateFlow<Resource<MLVerifyBurstResponse>?> = _mlVerifyBurstState
-
-    private val _mlBackendAvailable = MutableStateFlow<Boolean?>(null)
-    val mlBackendAvailable: StateFlow<Boolean?> = _mlBackendAvailable
 
     // ========================================================================
     // VERIFICATION FLOW ROUTER
@@ -443,13 +424,26 @@ class VerityProViewModel(
      * intermediate Loading emission when the state flips quickly, which strands the caller on the
      * submitting screen forever. Still updates [kycState] for any other observers.
      */
-    suspend fun submitKycAwait(data: VerificationRequestMultipart): Resource<String> {
+    suspend fun submitKycAwait(data: VerificationRequestMultipart): Resource<String> =
+        submitKycOutcomeAwait(data).toResource()
+
+    /**
+     * Like [submitKycAwait] but keeps the capture-contract outcome (RECAPTURE_REQUIRED,
+     * TECHNICAL_UNAVAILABLE) so the caller can act on it. One HTTP call; no retry here.
+     */
+    suspend fun submitKycOutcomeAwait(data: VerificationRequestMultipart): KycUploadOutcome {
         Log.d("Verity", "submitKycAwait - session=${data.SessionId}, front=${data.DocumentFront != null}, back=${data.DocumentBack != null}")
         _kycState.value = Resource.Loading("Submitting KYC Verification")
-        val result = repository.updateKyc(data, apiKey)
-        _kycState.value = result
-        return result
+        val outcome = repository.submitKyc(data, apiKey)
+        _kycState.value = outcome.toResource()
+        return outcome
     }
+
+    /**
+     * The document capture attempt (veritypro.capture.v1). Lives here so it survives
+     * configuration changes; the flow starts a new attempt whenever document capture restarts.
+     */
+    val documentCapture: CaptureAttemptStore = CaptureAttemptStore()
 
     fun resetLivenessState() {
         _awsSessionId.value = null
@@ -583,236 +577,6 @@ class VerityProViewModel(
             val result = repository.getCountryDocuments(apiKey, integrationId, isO2Code)
             _countryDocumentsState.value = result
         }
-    }
-
-    // ========================================================================
-    // ML BACKEND METHODS
-    // ========================================================================
-
-    /**
-     * Configure ML backend URL
-     */
-    fun configureMLBackend(baseUrl: String) {
-        MLRetrofitInstance.configure(baseUrl)
-        Log.d("VerityProVM", "ML backend configured: $baseUrl")
-    }
-
-    /**
-     * Check if ML backend is available
-     */
-    fun checkMLBackendHealth() {
-        viewModelScope.launch {
-            val result = mlRepository.healthCheck()
-            _mlBackendAvailable.value = when (result) {
-                is Resource.Success -> result.data.modelsLoaded
-                else -> false
-            }
-            Log.d("VerityProVM", "ML backend available: ${_mlBackendAvailable.value}")
-        }
-    }
-
-    /**
-     * Predict document from file using ML backend
-     *
-     * @param imageFile Image file to analyze
-     * @param documentType SDK document type (1=ID, 2=Passport, 3=License)
-     * @param isBackSide Whether this is the back side of the document
-     * @param onResult Callback with prediction result
-     */
-    fun mlPredictDocument(
-        imageFile: File,
-        documentType: Int,
-        isBackSide: Boolean = false,
-        onResult: (docOk: Boolean, hint: String, confidence: Float, reason: String?) -> Unit
-    ) {
-        viewModelScope.launch {
-            _mlPredictState.value = Resource.Loading("Verifying document...")
-
-            val docTypeExpected = MLDocumentType.fromSdkType(documentType)
-            val sideExpected = if (isBackSide) "BACK" else "FRONT"
-
-            val result = mlRepository.predict(
-                sessionId = currentSessionId.ifEmpty { "android-${System.currentTimeMillis()}" },
-                imageFile = imageFile,
-                docTypeExpected = docTypeExpected,
-                sideExpected = sideExpected
-            )
-
-            _mlPredictState.value = result
-
-            when (result) {
-                is Resource.Success -> {
-                    val response = result.data
-                    val confidence = response.confidence ?: 0f
-                    // sanitizeMLHint turns the service's raw tokens
-                    // ("Wrong document type. Expected DRIVERS_LICENSE, detected
-                    // PASSPORT.") into the words the customer sees on the
-                    // picker. It existed but was never called, because no
-                    // screen rendered the hint.
-                    onResult(
-                        response.docOk,
-                        sanitizeMLHint(response.hint),
-                        confidence,
-                        response.reason,
-                    )
-                }
-                is Resource.Error -> {
-                    onResult(false, result.message, 0f, null)
-                }
-                else -> {
-                    onResult(false, "Unknown error", 0f, null)
-                }
-            }
-        }
-    }
-
-    /**
-     * Predict document from bitmap using ML backend
-     */
-    fun mlPredictDocumentBitmap(
-        bitmap: Bitmap,
-        documentType: Int,
-        isBackSide: Boolean = false,
-        onResult: (docOk: Boolean, hint: String, confidence: Float, reason: String?) -> Unit
-    ) {
-        viewModelScope.launch {
-            _mlPredictState.value = Resource.Loading("Verifying document...")
-
-            val docTypeExpected = MLDocumentType.fromSdkType(documentType)
-            val sideExpected = if (isBackSide) "BACK" else "FRONT"
-
-            val result = mlRepository.predict(
-                sessionId = currentSessionId.ifEmpty { "android-${System.currentTimeMillis()}" },
-                bitmap = bitmap,
-                docTypeExpected = docTypeExpected,
-                sideExpected = sideExpected
-            )
-
-            _mlPredictState.value = result
-
-            when (result) {
-                is Resource.Success -> {
-                    val response = result.data
-                    val confidence = response.confidence ?: 0f
-                    // sanitizeMLHint turns the service's raw tokens
-                    // ("Wrong document type. Expected DRIVERS_LICENSE, detected
-                    // PASSPORT.") into the words the customer sees on the
-                    // picker. It existed but was never called, because no
-                    // screen rendered the hint.
-                    onResult(
-                        response.docOk,
-                        sanitizeMLHint(response.hint),
-                        confidence,
-                        response.reason,
-                    )
-                }
-                is Resource.Error -> {
-                    onResult(false, result.message, 0f, null)
-                }
-                else -> {
-                    onResult(false, "Unknown error", 0f, null)
-                }
-            }
-        }
-    }
-
-    /**
-     * Verify document authenticity using burst of frames (anti-spoofing)
-     *
-     * @param frames List of image files (6-12 recommended)
-     * @param documentType SDK document type
-     * @param isBackSide Whether this is the back side
-     * @param onResult Callback with (isReal, hint, spoofScore)
-     */
-    fun mlVerifyBurst(
-        frames: List<File>,
-        documentType: Int,
-        isBackSide: Boolean = false,
-        onResult: (Boolean, String, Float) -> Unit
-    ) {
-        viewModelScope.launch {
-            _mlVerifyBurstState.value = Resource.Loading("Verifying authenticity...")
-
-            val docTypeExpected = MLDocumentType.fromSdkType(documentType)
-            val sideExpected = if (isBackSide) "BACK" else "FRONT"
-
-            val result = mlRepository.verifyBurst(
-                sessionId = currentSessionId.ifEmpty { "android-${System.currentTimeMillis()}" },
-                frames = frames,
-                docTypeExpected = docTypeExpected,
-                sideExpected = sideExpected
-            )
-
-            _mlVerifyBurstState.value = result
-
-            when (result) {
-                is Resource.Success -> {
-                    val response = result.data
-                    val isReal = response.decision == MLDecision.PASS
-                    onResult(isReal, response.hint, response.spoof.score)
-                }
-                is Resource.Error -> {
-                    onResult(false, result.message, 1f)
-                }
-                else -> {
-                    onResult(false, "Unknown error", 1f)
-                }
-            }
-        }
-    }
-
-    /**
-     * Verify document authenticity using burst of bitmaps
-     */
-    fun mlVerifyBurstBitmaps(
-        bitmaps: List<Bitmap>,
-        documentType: Int,
-        isBackSide: Boolean = false,
-        onResult: (Boolean, String, Float) -> Unit
-    ) {
-        viewModelScope.launch {
-            _mlVerifyBurstState.value = Resource.Loading("Verifying authenticity...")
-
-            val docTypeExpected = MLDocumentType.fromSdkType(documentType)
-            val sideExpected = if (isBackSide) "BACK" else "FRONT"
-
-            val result = mlRepository.verifyBurstBitmaps(
-                sessionId = currentSessionId.ifEmpty { "android-${System.currentTimeMillis()}" },
-                bitmaps = bitmaps,
-                docTypeExpected = docTypeExpected,
-                sideExpected = sideExpected
-            )
-
-            _mlVerifyBurstState.value = result
-
-            when (result) {
-                is Resource.Success -> {
-                    val response = result.data
-                    val isReal = response.decision == MLDecision.PASS
-                    onResult(isReal, response.hint, response.spoof.score)
-                }
-                is Resource.Error -> {
-                    onResult(false, result.message, 1f)
-                }
-                else -> {
-                    onResult(false, "Unknown error", 1f)
-                }
-            }
-        }
-    }
-
-    /**
-     * Reset ML prediction state
-     */
-    fun resetMLPredictState() {
-        _mlPredictState.value = null
-    }
-
-    /**
-     * Reset ML verify burst state
-     */
-    fun resetMLVerifyBurstState() {
-        _mlVerifyBurstState.value = null
     }
 
     /**

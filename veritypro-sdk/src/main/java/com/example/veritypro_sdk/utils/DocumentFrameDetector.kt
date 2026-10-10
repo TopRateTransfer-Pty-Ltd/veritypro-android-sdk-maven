@@ -33,8 +33,9 @@ object DocumentFrameDetector {
     private const val TARGET_W = 160
 
     // Permissive first-pass thresholds — calibrated from shadow-mode logs.
-    // A miss here only delays the lock a tick; verify-burst remains the
-    // accept/reject authority.
+    // NOTE: this detector has no caller. It was designed to sit in front of the
+    // DocAI burst check, which the SDK no longer calls; nothing downstream on the
+    // device backs it up, so it must not be wired in as an accept/reject gate.
     private const val MIN_BOUNDARY_SCORE = 0.14
     private const val MIN_INTERIOR_DETAIL = 60.0
     private const val MIN_INTERIOR_LUMA = 25
@@ -141,8 +142,8 @@ object DocumentFrameDetector {
             Result(present, boundaryScore, interiorDetail, interiorLuma)
         } catch (e: Exception) {
             Log.w(TAG, "analyse failed: ${e.message}")
-            // Fail open — a detector error must never hard-block the lock;
-            // downstream gates and verify-burst still stand.
+            // Fail open — a detector error must never hard-block the lock.
+            // (No on-device check follows it; the server judges the uploaded photo.)
             Result(true, 0.0, 0.0, 128)
         }
     }

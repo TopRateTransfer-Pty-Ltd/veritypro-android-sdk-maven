@@ -43,9 +43,6 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        // DocAI follows the session's apiBaseUrl (BuildConfig.API_BASE_URL) — `<origin>/docai`.
-        // For a local doc-ml server, call MLRetrofitInstance.configure("http://<lan-ip>:8001/") here.
-
         setContent {
             VerityproandroidTheme {
                 // A surface container using the 'background' color from the theme

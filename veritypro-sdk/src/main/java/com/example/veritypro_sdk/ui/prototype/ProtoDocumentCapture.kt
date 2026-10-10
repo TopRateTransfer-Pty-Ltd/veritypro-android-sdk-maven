@@ -3,36 +3,21 @@ package com.example.veritypro_sdk.ui.prototype
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Matrix
-import android.media.ExifInterface
-import android.os.Build
 import android.util.Log
 import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
 import androidx.camera.view.PreviewView
-import androidx.compose.animation.core.CubicBezierEasing
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.ui.draw.blur
-import androidx.compose.foundation.layout.BoxWithConstraints
-import androidx.compose.foundation.layout.offset
-import androidx.compose.foundation.border
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.aspectRatio
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -43,18 +28,6 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import com.example.veritypro_sdk.services.MLCaptureState
-import com.example.veritypro_sdk.services.MLDeviceSignals
-import com.example.veritypro_sdk.services.MLDocumentType
-import com.example.veritypro_sdk.services.MLReason
-import com.example.veritypro_sdk.services.MLV2Repository
-import com.example.veritypro_sdk.services.Resource
-import com.example.veritypro_sdk.ui.verification.V2CaptureConfig
-import com.example.veritypro_sdk.ui.verification.VerityProViewModel
-import com.example.veritypro_sdk.utils.DocumentVideoTier
-import com.example.veritypro_sdk.utils.VerityVideoModule
-import com.example.veritypro_sdk.utils.VerityVideoRecorder
-import kotlinx.coroutines.delay
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -68,44 +41,40 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.example.veritypro_sdk.capture.CaptureTag
+import com.example.veritypro_sdk.capture.ExifOrientation
+import com.example.veritypro_sdk.capture.QualityAdvisory
+import com.example.veritypro_sdk.capture.RawSideCapture
+import com.example.veritypro_sdk.capture.RecordingTimeline
+import com.example.veritypro_sdk.capture.VideoBinding
+import com.example.veritypro_sdk.capture.VideoEvidence
 import com.example.veritypro_sdk.utils.CameraUtils
+import com.example.veritypro_sdk.utils.VerityVideoModule
+import com.example.veritypro_sdk.utils.VerityVideoRecorder
+import kotlinx.coroutines.delay
 import java.io.File
 
 /**
- * Number of PAD frames handed to capture-verify. The server analyses exactly three (first, middle,
- * last — verity-doc-ml verify_burst) and needs at least three DISTINCT frames, so a 4th and 5th were
- * uploaded and discarded. Must match iOS (ProtoDocumentCaptureScreen recentPadFrames).
+ * How long the camera may take to start streaming before the screen reports a camera error
+ * instead of "STARTING CAMERA…".
  */
-private const val PAD_TARGET = 3
+private const val CAMERA_STALL_TIMEOUT_MS = 8_000L
 
 /**
- * How long the camera may stream without producing an anti-spoof signal before the screen
- * reports a camera error instead of "STARTING CAMERA…". Generous enough that a slow HAL
- * filling the PAD ring is never mistaken for a failure.
- */
-private const val SIGNAL_STALL_TIMEOUT_MS = 8_000L
-
-/**
- * Decode a captured JPEG and rotate it upright per its EXIF orientation. CameraX ImageCapture saves
- * the frame in the sensor's native orientation with an EXIF tag rather than baking rotation into the
- * pixels; BitmapFactory ignores that tag. iOS's UIImage(data:) honours EXIF, so we replicate it here
- * to render the same upright document in the preview. Returns null if the file can't be decoded.
+ * Decode a captured JPEG for DISPLAY and rotate it upright per its EXIF orientation. CameraX
+ * writes the sensor-oriented frame with an EXIF tag; BitmapFactory ignores it. The uploaded file
+ * is never touched — this bitmap is only the on-screen preview. Returns null if it can't decode.
  */
 private fun decodeUprightBitmap(path: String): Bitmap? {
     val raw = BitmapFactory.decodeFile(path) ?: return null
     val degrees = try {
-        when (ExifInterface(path).getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)) {
-            ExifInterface.ORIENTATION_ROTATE_90 -> 90f
-            ExifInterface.ORIENTATION_ROTATE_180 -> 180f
-            ExifInterface.ORIENTATION_ROTATE_270 -> 270f
-            else -> 0f
-        }
+        ExifOrientation.degrees(path)
     } catch (e: Exception) {
-        Log.w("ProtoDocPreview", "EXIF read failed, using raw orientation: ${e.message}")
-        0f
+        Log.w("ProtoDocPreview", "EXIF read failed, showing raw orientation: ${e.message}")
+        0
     }
-    if (degrees == 0f) return raw
-    val m = Matrix().apply { postRotate(degrees) }
+    if (degrees == 0) return raw
+    val m = Matrix().apply { postRotate(degrees.toFloat()) }
     return Bitmap.createBitmap(raw, 0, 0, raw.width, raw.height, m, true).also {
         if (it !== raw) raw.recycle()
     }
@@ -113,42 +82,38 @@ private fun decodeUprightBitmap(path: String): Bitmap? {
 
 /**
  * Screen 5 — live document capture (CameraX), rendered neo-brutalist.
- * Reuses the SDK camera plumbing (CameraUtils.createSmartImageCapture / bindSmartCamera) and
- * saves the JPEG to cache, handing the path back via [onCaptured] for preview + ML verification.
  *
- * iOS parity: the live camera stays visible the entire time (no freeze overlay) — only the guidance
- * text and shutter switch to "CAPTURING…" / "…". PAD anti-spoof frames are collected continuously by
- * a bound ImageAnalysis ring buffer (mirroring the iOS AVCaptureVideoDataOutput ring), so the shutter
- * tap snapshots the last [PAD_TARGET] real frames instantly and fires the still with no polling delay.
+ * Produces one [RawSideCapture] for [tag]: the original JPEG plus a [RecordingTimeline] of this
+ * side's own clip. Hardware decides how the clip is made (CameraUtils.DocumentCaptureStrategy):
+ *  - CONCURRENT (FULL / LEVEL_3): Preview + ImageCapture + VideoCapture; the still is taken while
+ *    the clip records, then the clip stops.
+ *  - SEQUENTIAL (LIMITED / LEGACY): phase 1 records Preview + VideoCapture only; the shutter stops
+ *    the clip and rebinds Preview + ImageCapture at full resolution for the still.
+ *
+ * The clip is supporting evidence only. Nothing here treats a recording as an anti-spoof pass:
+ * the shutter opens once the camera streams, and a missing or failed clip is reported as such
+ * (VideoEvidenceResolver), never silently dropped.
  */
 @Composable
 fun ProtoDocumentCaptureScreen(
     docLabel: String,
     sideLabel: String,
+    tag: CaptureTag,
     frameAspect: Float = 1.586f,
-    onCaptured: (String, List<Bitmap>, String?) -> Unit,
+    /** Shown above the guidance pill, e.g. after a photo could not be saved. */
+    notice: String? = null,
+    onCaptured: (RawSideCapture) -> Unit,
     onClose: () -> Unit,
     onMotionCollected: (com.example.veritypro_sdk.utils.CaptureRuntimeData) -> Unit = {},
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val stopMotion = com.example.veritypro_sdk.utils.rememberCaptureMotion(onCollected = onMotionCollected)
-    // Video recording — SD tier (480p, 800 kbps, 8 MiB cap) for the document compliance clip.
-    // Taking the still photo WHILE video is recording avoids the video-stop → rebind → settle
-    // cycle (~1 second on TCL T442M) — the camera never needs to rebind between video and still.
     val videoRecorder = remember { VerityVideoRecorder(context) }
     val videoTier = remember { CameraUtils.getDocumentVideoTier(context) }
     val videoCapture = remember { videoRecorder.buildVideoCapture(videoTier) }
-    var videoBound by remember { mutableStateOf(false) }
-    val recordingStarted = remember { mutableStateOf(false) }
-
-    // CONCURRENT on FULL/LEVEL_3 hardware; SEQUENTIAL (record the clip first, then take the
-    // still as a separate capture) everywhere else — see CameraUtils.DocumentCaptureStrategy.
-    // Sequential is how Veriff's native SDKs produce a `-pre-video` alongside a full-quality
-    // still; trying to do both in one session on LIMITED hardware collapses the JPEG.
     val strategy = remember { CameraUtils.getDocumentCaptureStrategy(context) }
     val sequential = strategy == CameraUtils.DocumentCaptureStrategy.SEQUENTIAL
-    // Held so the sequential path can rebind this same PreviewView for the still phase.
     var previewViewRef by remember { mutableStateOf<PreviewView?>(null) }
 
     // Concurrent binds ImageCapture alongside video, so it is capped at RECORD size. Sequential
@@ -159,161 +124,182 @@ fun ProtoDocumentCaptureScreen(
     var capturing by remember { mutableStateOf(false) }
     var cameraReady by remember { mutableStateOf(false) }
     var shootTriggered by remember { mutableStateOf(false) }
-    var pendingPads by remember { mutableStateOf<List<Bitmap>>(emptyList()) }
-    // PAD frame ring buffer: populated on FULL hardware (Preview + VideoCapture + ImageAnalysis
-    // can coexist); on LIMITED hardware (TCL T442M) CameraUtils skips ImageAnalysis when
-    // VideoCapture is bound, so padRing stays empty. V1 fallback in preview handles that case.
-    val padRing = remember { ArrayDeque<Bitmap>() }
-    val padLock = remember { Any() }
-    var padCount by remember { mutableIntStateOf(0) }
-    // Shoot as soon as the camera is streaming — video provides the anti-spoof signal when
-    // PAD frames cannot be collected alongside VideoCapture on LIMITED hardware.
-    val readyToShoot = cameraReady && (padCount >= PAD_TARGET || videoBound)
-
-    // Safety net. This gate needs an anti-spoof signal — PAD frames or the session video —
-    // and that requirement is deliberate: capturing without one is not a thing we silently
-    // allow. But when NEITHER can be obtained, the screen must say so rather than sit on
-    // "STARTING CAMERA…" with a dead shutter forever, which is what shipped.
-    // Field case (TCL T442M, Sept 2026): IMAGE_QUALITY_GUARD dropped VideoCapture because the
-    // JPEG collapsed, while the PAD collector had been skipped precisely BECAUSE video was
-    // going to be bound — so both terms were false permanently and the preview streamed
-    // happily behind an overlay the user could never clear. iOS and the hosted web page both
-    // surface a camera error here; Android had no such path.
-    // Set when a bind CALL fails outright. The timeout below is the catch-all; this is the
-    // immediate, unambiguous signal so the user is not made to wait 8s for a known failure.
     var bindFailed by remember { mutableStateOf(false) }
-
-    // Incremented on every restart so the recording effect is guaranteed a fresh key — see the
-    // LaunchedEffect below. Mirrors captureCoord.generation, which does the same job for callbacks.
+    var videoBound by remember { mutableStateOf(false) }
+    // Sequential only: phase 1 (video) failed to bind, so a still-only camera was bound instead.
+    var stillOnly by remember { mutableStateOf(false) }
+    // Incremented to re-run the recording effect for a fresh clip (see restart paths below).
     var attemptGen by remember { mutableIntStateOf(0) }
 
-    var signalStalled by remember { mutableStateOf(false) }
-    // Deliberately NOT gated on cameraReady. Gating it there was a defect: if phase 1 fails to
-    // bind at all, the preview never streams, cameraReady stays false, and the detector would
-    // never arm — reproducing the exact eternal spinner this whole change exists to remove,
-    // just one code path over.
+    // The shutter needs a streaming camera — nothing else. Video is not an anti-spoof signal.
+    val readyToShoot = cameraReady && !bindFailed
+
+    var cameraStalled by remember { mutableStateOf(false) }
     LaunchedEffect(readyToShoot) {
-        signalStalled = false
+        cameraStalled = false
         if (!readyToShoot) {
-            delay(SIGNAL_STALL_TIMEOUT_MS)
-            // Re-read through the snapshot: if either signal arrived while we waited, the
-            // effect has already been cancelled and relaunched, so reaching here means it
-            // genuinely never came.
+            delay(CAMERA_STALL_TIMEOUT_MS)
             Log.e(
                 "ProtoDocCapture",
-                "Capture gate stalled after ${SIGNAL_STALL_TIMEOUT_MS}ms " +
-                    "(cameraReady=$cameraReady, padCount=$padCount, videoBound=$videoBound, " +
-                    "strategy=$strategy, bindFailed=$bindFailed) — surfacing camera error",
+                "Camera did not start after ${CAMERA_STALL_TIMEOUT_MS}ms " +
+                    "(cameraReady=$cameraReady, strategy=$strategy, bindFailed=$bindFailed) — surfacing camera error",
             )
-            signalStalled = true
-        }
-    }
-
-    // Coordinate photo + video: onCaptured fires only when both are finalized.
-    val captureCoord = remember {
-        object {
-            var photoPath: String? = null
-            var videoPath: String? = null
-            var photoReady = false
-            var videoReady = false
-            var capturedPads: List<Bitmap> = emptyList()
-            var notify: ((String, List<Bitmap>, String?) -> Unit)? = null
-
-            /**
-             * Which attempt the currently-accumulating pair belongs to. Clearing fields is NOT
-             * sufficient on its own: `stopRecording()` only REQUESTS finalisation, so attempt A's
-             * `onStopped` can land after a failed phase 2 has already reset for attempt B — and
-             * B's photo would then pair with A's video and submit it as evidence of B.
-             * Every callback carries the generation it was issued under and is dropped if stale.
-             */
-            var generation = 0
-
-            fun onPhoto(gen: Int, path: String, pads: List<Bitmap>) {
-                if (gen != generation) {
-                    Log.w("ProtoDocCapture", "Dropping photo from stale attempt $gen (current $generation)")
-                    return
-                }
-                photoPath = path; capturedPads = pads; photoReady = true; check()
-            }
-            fun onVideo(gen: Int, file: java.io.File?) {
-                if (gen != generation) {
-                    Log.w("ProtoDocCapture", "Dropping video from stale attempt $gen (current $generation)")
-                    return
-                }
-                videoPath = file?.absolutePath; videoReady = true; check()
-            }
-            /**
-             * Abandon a half-finished attempt and start a new generation, so any callback still
-             * in flight from the old one is ignored rather than contaminating the new pair.
-             */
-            fun reset() {
-                generation++
-                photoPath = null; videoPath = null
-                photoReady = false; videoReady = false
-                capturedPads = emptyList()
-            }
-            private fun check() {
-                if (photoReady && videoReady) notify?.invoke(photoPath!!, capturedPads, videoPath)
-            }
-        }
-    }
-    captureCoord.notify = onCaptured
-
-    DisposableEffect(Unit) {
-        onDispose {
-            synchronized(padLock) { padRing.forEach { it.recycle() }; padRing.clear() }
-            videoRecorder.stopRecording()
-        }
-    }
-
-    // Start recording once the camera is streaming and VideoCapture was successfully bound.
-    //
-    // Keyed on attemptGen as well as the two flags. Relying on the flags alone was unsound for a
-    // retry: restartPhaseOneAfterFailure sets them false and the rebind callback sets them true
-    // again, and if both writes land in one recomposition Compose observes no change, the effect
-    // never re-runs, and the shutter re-opens with NO recording running. Bumping a generation
-    // guarantees a distinct key every attempt.
-    LaunchedEffect(cameraReady, videoBound, attemptGen) {
-        if (cameraReady && videoBound && !recordingStarted.value) {
-            recordingStarted.value = true
-            // Bind the callback to THIS attempt so a late onStopped cannot be credited to a later one.
-            val gen = captureCoord.generation
-            videoRecorder.startRecording(
-                videoCapture = videoCapture,
-                module = VerityVideoModule.DOCUMENT,
-                sessionId = "proto_${sideLabel.lowercase()}",
-                tier = videoTier,
-                onStopped = { file -> captureCoord.onVideo(gen, file) },
-            )
+            cameraStalled = true
         }
     }
 
     /**
-     * Return a failed SEQUENTIAL attempt to phase 1 so a retry records a FRESH clip.
-     *
-     * Phase 2 stops the recording and rebinds the camera for stills. If it then fails, the
-     * screen is left bound for stills with videoBound still true — so the readiness gate
-     * re-opens and the next shutter press would capture a photo with no recording running,
-     * and with the abandoned attempt's video still sitting in the coordinator.
+     * Pairs this side's still with this side's clip. Every callback carries the generation it was
+     * issued under and is dropped when stale: `stopRecording()` only REQUESTS finalisation, so an
+     * abandoned clip's Finalize can land after a restart and must not pair with the new still.
      */
+    val coord = remember {
+        object {
+            var generation = 0
+            var binding: VideoBinding = VideoBinding.NOT_REQUESTED
+            var bindFailureReason: String? = null
+            var recordingRequested = false
+            var filePath: String? = null
+            var startedAtMs: Long? = null
+            var startFailure: String? = null
+            var endedAtMs: Long? = null
+            var finalizeError: String? = null
+            var videoDone = false
+            /** One delivery per generation, however the still and clip callbacks interleave. */
+            var delivered = false
+
+            var shutterAtMs = 0L
+            var stillPath: String? = null
+            var stillSavedAtMs = 0L
+            /** Generation whose clip is being stopped so a fresh one can start for the next shot. */
+            var restartWhenGenFinalizes: Int? = null
+            var onRestartReady: (() -> Unit)? = null
+            var notify: ((RawSideCapture) -> Unit)? = null
+
+            fun timeline() = RecordingTimeline(
+                binding = binding, filePath = filePath, startedAtMs = startedAtMs, startFailure = startFailure,
+                endedAtMs = endedAtMs, finalizeError = finalizeError, bindFailureReason = bindFailureReason,
+            )
+
+            /** Abandon the current pairing; in-flight callbacks from it are ignored from now on. */
+            fun reset() {
+                generation++
+                recordingRequested = false
+                filePath = null; startedAtMs = null; startFailure = null
+                endedAtMs = null; finalizeError = null; videoDone = false; delivered = false
+                stillPath = null; shutterAtMs = 0L; stillSavedAtMs = 0L
+            }
+
+            fun onStill(gen: Int, path: String, savedAt: Long) {
+                if (gen != generation) {
+                    Log.w("ProtoDocCapture", "Dropping still from stale generation $gen (current $generation)")
+                    return
+                }
+                stillPath = path; stillSavedAtMs = savedAt; check()
+            }
+
+            fun onVideoStarted(gen: Int, at: Long) {
+                if (gen == generation) startedAtMs = at
+            }
+
+            fun onVideoFinalized(gen: Int, file: File, at: Long, error: String?) {
+                if (gen != generation) {
+                    Log.w("ProtoDocCapture", "Discarding clip from stale generation $gen (current $generation)")
+                    runCatching { file.delete() }
+                    if (restartWhenGenFinalizes == gen) {
+                        restartWhenGenFinalizes = null
+                        onRestartReady?.invoke()
+                    }
+                    return
+                }
+                filePath = file.absolutePath; endedAtMs = at; finalizeError = error
+                if (stillPath == null) {
+                    // Finalised before any still exists: the clip ended on its own (duration or
+                    // size cap, encoder error). Kept as a fact; the resolver decides it is
+                    // ENDED_BEFORE_STILL because endedAt < shutterAt.
+                    Log.w("ProtoDocCapture", "Clip finalised before the still (error=$error)")
+                }
+                videoDone = true; check()
+            }
+
+            fun onVideoStartFailed(gen: Int, reason: String, permissionDenied: Boolean) {
+                if (gen != generation) return
+                if (permissionDenied) { binding = VideoBinding.PERMISSION_DENIED; bindFailureReason = reason }
+                startFailure = reason
+                videoDone = true; check()
+            }
+
+            /** No clip is coming for this generation (none requested, or binding is not BOUND). */
+            fun noVideoForThisShot() { if (!videoDone) { videoDone = true; check() } }
+
+            private fun check() {
+                val path = stillPath ?: return
+                if (!videoDone || delivered) return
+                delivered = true
+                val raw = RawSideCapture(
+                    tag = tag, stillPath = path, shutterAtMs = shutterAtMs, stillSavedAtMs = stillSavedAtMs,
+                    recording = timeline(),
+                )
+                Log.i(
+                    "ProtoDocCapture",
+                    "Side ready: ${tag.side} retake=${tag.retakeIndex} strategy=$strategy binding=$binding " +
+                        "started=${startedAtMs != null} ended=${endedAtMs != null} error=$finalizeError startFailure=$startFailure",
+                )
+                notify?.invoke(raw)
+            }
+        }
+    }
+    coord.notify = onCaptured
+
+    DisposableEffect(Unit) {
+        onDispose { videoRecorder.stopRecording() }
+    }
+
+    fun startClip() {
+        coord.recordingRequested = true
+        val gen = coord.generation
+        videoRecorder.startRecording(
+            videoCapture = videoCapture,
+            module = VerityVideoModule.DOCUMENT,
+            sessionId = "proto_${tag.side.name.lowercase()}_r${tag.retakeIndex}",
+            tier = videoTier,
+            listener = object : VerityVideoRecorder.Listener {
+                override fun onStarted(atMs: Long) = coord.onVideoStarted(gen, atMs)
+                override fun onFinalized(file: File, atMs: Long, error: String?) = coord.onVideoFinalized(gen, file, atMs, error)
+                override fun onStartFailed(reason: String, permissionDenied: Boolean) =
+                    coord.onVideoStartFailed(gen, reason, permissionDenied)
+            },
+        )
+    }
+
+    // Start this shot's clip once the camera streams with VideoCapture bound. Keyed on attemptGen
+    // so a restart always re-runs even if the flags coalesce in one recomposition.
+    LaunchedEffect(cameraReady, videoBound, attemptGen) {
+        if (cameraReady && videoBound && coord.binding == VideoBinding.BOUND && !coord.recordingRequested) {
+            Log.i("ProtoDocCapture", "Starting ${tag.side} clip (strategy=$strategy, tier=$videoTier, gen=${coord.generation})")
+            startClip()
+        }
+    }
+
+    /** Sequential: send a failed phase 2 back to phase 1 so the retry records a FRESH clip. */
     fun restartPhaseOneAfterFailure() {
         val pv = previewViewRef
         if (pv == null) {
             bindFailed = true
             return
         }
-        captureCoord.reset()   // bumps generation — in-flight callbacks from this attempt are dropped
-        attemptGen++           // guarantees the recording effect re-runs even if flags coalesce
+        coord.reset()
+        attemptGen++
         videoBound = false
         cameraReady = false
-        recordingStarted.value = false
         shootTriggered = false
         capturing = false
         CameraUtils.bindVideoRecording(
             context, lifecycleOwner, pv, videoCapture,
             onReady = {
+                coord.binding = VideoBinding.BOUND
                 videoBound = true
-                cameraReady = true // LaunchedEffect(cameraReady, videoBound) restarts recording
+                cameraReady = true
             },
             onError = { msg ->
                 Log.e("ProtoDocCapture", "Phase 1 restart failed: $msg")
@@ -324,42 +310,64 @@ fun ProtoDocumentCaptureScreen(
     }
 
     /**
-     * Take the JPEG. [videoAlreadyStopped] is true on the sequential path, where the clip was
-     * finalised before this rebind — stopping it again here would double-fire onVideo.
+     * Concurrent: the still failed while the clip was recording. That clip no longer brackets a
+     * still, so it is abandoned and a fresh clip starts for the next shot (stale risk b).
      */
+    fun restartClipAfterPhotoFailure() {
+        val oldGen = coord.generation
+        val hadClip = coord.recordingRequested && coord.startFailure == null && coord.endedAtMs == null
+        coord.reset()
+        shootTriggered = false
+        capturing = false
+        if (coord.binding != VideoBinding.BOUND) return
+        if (hadClip) {
+            coord.restartWhenGenFinalizes = oldGen
+            coord.onRestartReady = { attemptGen++ }
+            videoRecorder.stopRecording()
+        } else {
+            attemptGen++
+        }
+    }
+
     fun capturePhoto(videoAlreadyStopped: Boolean) {
-        // Pin the attempt at issue time so a photo that lands after a restart is discarded
-        // rather than paired with the new attempt's video.
-        val gen = captureCoord.generation
-        val file = File(context.cacheDir, "proto_doc_${sideLabel.lowercase()}.jpg")
+        val gen = coord.generation
+        val file = File(
+            context.cacheDir,
+            "proto_doc_${tag.attemptId.take(8)}_${tag.side.name.lowercase()}_r${tag.retakeIndex}.jpg",
+        )
         val opts = ImageCapture.OutputFileOptions.Builder(file).build()
         imageCapture.takePicture(
             opts, ContextCompat.getMainExecutor(context),
             object : ImageCapture.OnImageSavedCallback {
                 override fun onImageSaved(result: ImageCapture.OutputFileResults) {
+                    val savedAt = System.currentTimeMillis()
                     stopMotion()
                     Log.i(
                         "ProtoDocCapture",
                         "Still saved at ${imageCapture.resolutionInfo?.resolution} " +
                             "(strategy=$strategy, videoAlreadyStopped=$videoAlreadyStopped)",
                     )
-                    captureCoord.onPhoto(gen, file.absolutePath, pendingPads)
+                    coord.onStill(gen, file.absolutePath, savedAt)
                     when {
-                        videoAlreadyStopped -> Unit // onVideo already delivered by onStopped
-                        videoBound -> videoRecorder.stopRecording() // triggers onVideo via onStopped
-                        else -> captureCoord.onVideo(gen, null) // no video — complete immediately
+                        videoAlreadyStopped -> Unit // the clip was stopped at the shutter; Finalize delivers it
+                        coord.binding == VideoBinding.BOUND && coord.recordingRequested && !coord.videoDone ->
+                            videoRecorder.stopRecording() // Finalize -> coord.onVideoFinalized
+                        else -> coord.noVideoForThisShot()
                     }
                 }
+
                 override fun onError(exc: ImageCaptureException) {
                     Log.e("ProtoDocCapture", "takePicture failed: ${exc.imageCaptureError}", exc)
-                    if (videoAlreadyStopped) {
-                        // Sequential: the clip is already spent, so a retry needs a new one.
-                        restartPhaseOneAfterFailure()
-                        return
+                    runCatching { file.delete() }
+                    if (sequential && !stillOnly) {
+                        restartPhaseOneAfterFailure() // the clip is already spent; record a new one
+                    } else if (!sequential) {
+                        restartClipAfterPhotoFailure()
+                    } else {
+                        coord.reset()
+                        capturing = false
+                        shootTriggered = false
                     }
-                    if (videoBound) videoRecorder.stopRecording()
-                    capturing = false
-                    shootTriggered = false
                 }
             },
         )
@@ -368,18 +376,17 @@ fun ProtoDocumentCaptureScreen(
     fun shootStill() {
         if (shootTriggered) return
         shootTriggered = true
+        coord.shutterAtMs = System.currentTimeMillis()
 
-        if (!sequential) {
-            // Take the still FIRST (while video is still recording) — avoids any rebind/settle
-            // delay. After the JPEG is saved, stop the video; onStopped fires asynchronously and
-            // triggers onCaptured once both the photo and video file are ready.
+        if (!sequential || stillOnly) {
+            // Concurrent: take the still WHILE the clip records; it is stopped after the JPEG saves.
             capturePhoto(videoAlreadyStopped = false)
             return
         }
 
-        // PHASE 2 — finalise the clip, then rebind still-only at full resolution and shoot.
-        // Order matters: the recording must be stopped BEFORE ImageCapture is bound, otherwise
-        // we recreate the very concurrent combination this device cannot serve.
+        // SEQUENTIAL PHASE 2 — finalise the clip, then rebind still-only at full resolution.
+        // The recording must stop BEFORE ImageCapture is bound or we recreate the very
+        // concurrent combination this device cannot serve.
         val pv = previewViewRef
         if (pv == null) {
             Log.e("ProtoDocCapture", "Sequential shutter: no PreviewView — aborting")
@@ -387,10 +394,10 @@ fun ProtoDocumentCaptureScreen(
             shootTriggered = false
             return
         }
-        if (recordingStarted.value) {
-            videoRecorder.stopRecording() // onStopped → captureCoord.onVideo(gen, file)
-        } else {
-            captureCoord.onVideo(captureCoord.generation, null)
+        if (coord.recordingRequested && !coord.videoDone) {
+            videoRecorder.stopRecording() // Finalize -> coord.onVideoFinalized
+        } else if (!coord.videoDone) {
+            coord.noVideoForThisShot()
         }
         CameraUtils.bindSmartCamera(
             context, lifecycleOwner, pv, imageCapture,
@@ -399,8 +406,6 @@ fun ProtoDocumentCaptureScreen(
             onCameraReady = { capturePhoto(videoAlreadyStopped = true) },
             onCameraError = { msg ->
                 Log.e("ProtoDocCapture", "Sequential phase 2 bind failed: $msg")
-                // The clip was stopped before this bind, so returning the user to a live
-                // shutter without re-recording would submit a photo with no document video.
                 restartPhaseOneAfterFailure()
             },
         )
@@ -419,36 +424,46 @@ fun ProtoDocumentCaptureScreen(
                     }
                 }.also { pv ->
                     previewViewRef = pv
+                    Log.i("ProtoDocCapture", "Document video strategy=$strategy tier=$videoTier side=${tag.side}")
                     if (sequential) {
-                        // PHASE 1 — record only. No ImageCapture is bound, so the clip records
-                        // at full quality and cannot collapse the still. The shutter goes live
-                        // as soon as this succeeds, because the recording IS the anti-spoof
-                        // signal the readiness gate is waiting for.
+                        // PHASE 1 — record only. No ImageCapture is bound, so the clip cannot
+                        // collapse the still.
                         CameraUtils.bindVideoRecording(
                             ctx, lifecycleOwner, pv, videoCapture,
                             onReady = {
+                                coord.binding = VideoBinding.BOUND
                                 videoBound = true
                                 cameraReady = true
                             },
                             onError = { msg ->
-                                Log.e("ProtoDocCapture", "Sequential phase 1 bind failed: $msg")
+                                Log.e("ProtoDocCapture", "Sequential phase 1 bind failed: $msg — binding still-only")
+                                coord.binding = VideoBinding.BIND_FAILED
+                                coord.bindFailureReason = VideoEvidence.REASON_BIND_FAILED
                                 videoBound = false
-                                // Without this the preview never streams, so cameraReady stays
-                                // false and the user would sit on "STARTING CAMERA…" forever.
-                                bindFailed = true
+                                stillOnly = true
+                                CameraUtils.bindSmartCamera(
+                                    ctx, lifecycleOwner, pv, imageCapture,
+                                    videoCapture = null,
+                                    useViewPort = false,
+                                    onCameraError = { err ->
+                                        Log.e("ProtoDocCapture", "Still-only bind failed too: $err")
+                                        bindFailed = true
+                                    },
+                                )
                             },
                         )
                     } else {
                         CameraUtils.bindSmartCamera(
                             ctx, lifecycleOwner, pv, imageCapture,
                             videoCapture = videoCapture,
-                            onVideoCaptureBound = { bound -> videoBound = bound },
-                            frameCollector = { bmp ->
-                                synchronized(padLock) {
-                                    padRing.addLast(bmp)
-                                    while (padRing.size > 8) padRing.removeFirst().recycle()
-                                    padCount = padRing.size
-                                }
+                            onVideoCaptureBound = { bound ->
+                                coord.binding = if (bound) VideoBinding.BOUND else VideoBinding.UNSUPPORTED
+                                if (!bound) coord.bindFailureReason = VideoEvidence.REASON_IMAGE_QUALITY_GUARD
+                                videoBound = bound
+                            },
+                            onCameraError = { msg ->
+                                Log.e("ProtoDocCapture", "Concurrent bind failed: $msg")
+                                bindFailed = true
                             },
                             // No viewport crop: keep the still at the sensor's native 4:3 like iOS `.photo`.
                             useViewPort = false,
@@ -458,7 +473,7 @@ fun ProtoDocumentCaptureScreen(
             },
         )
 
-        // Top bar — ✕ close + document · side mono label.
+        // Top bar — close + document · side mono label.
         Row(
             Modifier.fillMaxWidth().background(Color(0xCC120037)).padding(horizontal = 20.dp, vertical = 14.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -469,13 +484,19 @@ fun ProtoDocumentCaptureScreen(
             MonoLabel("${docLabel.uppercase()} · ${sideLabel.uppercase()}", Color.White, size = 12)
         }
 
-        // Bottom: guidance pill + shutter button — matches iOS layout exactly.
+        // Bottom: guidance pill + shutter button — matches iOS layout.
         Box(Modifier.fillMaxSize().padding(bottom = 40.dp), contentAlignment = Alignment.BottomCenter) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                if (notice != null) {
+                    Box(Modifier.background(Color(0xE6171717)).padding(horizontal = 14.dp, vertical = 8.dp)) {
+                        Text(notice, color = Color.White, fontFamily = ProtoDisplay, fontSize = 13.sp, textAlign = TextAlign.Center)
+                    }
+                    Spacer(Modifier.height(10.dp))
+                }
                 Box(Modifier.background(Color(0xB3171717)).padding(horizontal = 14.dp, vertical = 8.dp)) {
                     MonoLabel(
                         when {
-                            bindFailed || signalStalled -> "CAMERA UNAVAILABLE · CLOSE AND RETRY"
+                            bindFailed || cameraStalled -> "CAMERA UNAVAILABLE · CLOSE AND RETRY"
                             !readyToShoot -> "STARTING CAMERA…"
                             capturing     -> "CAPTURING…"
                             else          -> "FIT YOUR ${sideLabel.uppercase()} IN VIEW · HOLD STEADY"
@@ -496,23 +517,7 @@ fun ProtoDocumentCaptureScreen(
                         textAlign = TextAlign.Center,
                         modifier = Modifier.fillMaxWidth().protoClick {
                             if (readyToShoot && !capturing) {
-                                // Snapshot the last PAD_TARGET already-collected frames (iOS parity) and
-                                // copy them so the ring buffer can keep evicting/recycling independently.
-                                // No delays, no previewView.bitmap polling — the frames already exist.
-                                val pads = synchronized(padLock) {
-                                    padRing.toList().takeLast(PAD_TARGET)
-                                        .map { it.copy(Bitmap.Config.ARGB_8888, false) }
-                                }
-                                if (!videoBound && pads.size < MLV2Repository.MIN_PAD_FRAMES) {
-                                    // No video recording AND insufficient PAD frames — stay live.
-                                    // When video IS recording, PAD frames are not required (the
-                                    // compliance clip provides the anti-spoof signal instead).
-                                    Log.w("ProtoDocCapture", "Shutter: ${pads.size} PAD frames, no video — ignoring")
-                                    return@protoClick
-                                }
                                 capturing = true
-                                pendingPads = pads
-                                // Camera is already in Preview+ImageCapture mode — shoot immediately.
                                 shootStill()
                             }
                         }.padding(vertical = 18.dp),
@@ -524,113 +529,24 @@ fun ProtoDocumentCaptureScreen(
 }
 
 /**
- * Screen 6 — check your photo (captured preview + REAL ML verdict).
- * Every capture runs mlPredictDocument (presence/type/side) then mlVerifyBurst (anti-spoof);
- * "Looks good" is gated on the ML pass — fail-closed, per KYC rules.
+ * Screen 6 — check your photo.
+ *
+ * No network call and no verdict. "Looks good" is enabled as soon as the still exists; "Retake" is
+ * always available. The [advisory] (blur / glare / exposure, UNCALIBRATED) may show a hint and
+ * never blocks. The document is checked by the server after upload.
  */
 @Composable
 fun ProtoDocumentPreviewScreen(
-    vm: VerityProViewModel,
     imagePath: String,
-    docTypeInt: Int,
-    isBack: Boolean,
-    padFrames: List<Bitmap>,
-    autoRetake: Boolean = true,
+    advisory: QualityAdvisory,
     frameAspect: Float = 1.586f,
     onLooksGood: () -> Unit,
     onRetake: () -> Unit,
     onChangeDocumentType: (() -> Unit)? = null,
 ) {
-    // EXIF-aware decode: ImageCapture writes the sensor-oriented JPEG with an EXIF orientation tag
-    // (pixels are NOT rotated). BitmapFactory ignores EXIF, so without this the portrait document
-    // would render as a rotated/landscape crop — the "preview not like iOS" mismatch. iOS
-    // UIImage(data:) respects EXIF, so we rotate to upright to match it.
     val bmp = remember(imagePath) { decodeUprightBitmap(imagePath) }
-    // outcome: null = checking, "PASS" (accept), "RETRY" (recoverable — auto-retake),
-    // "REJECT" (terminal spoof/tamper — manual only, no auto-loop).
-    var outcome by remember(imagePath) { mutableStateOf<String?>(null) }
-    var hint by remember(imagePath) { mutableStateOf("Checking your photo…") }
-    // The backend's machine-readable reason for a rejection. TYPE_MISMATCH is
-    // the one no amount of re-shooting can fix — the customer is holding a
-    // different document from the one they picked.
-    var reasonCode by remember(imagePath) { mutableStateOf<String?>(null) }
-
-    LaunchedEffect(imagePath) {
-        outcome = null; hint = "Checking your photo…"; reasonCode = null
-        val file = File(imagePath)
-        if (V2CaptureConfig.useV2CaptureVerify && padFrames.size >= MLV2Repository.MIN_PAD_FRAMES) {
-            // ── V2 device-first path: POST /docai/v2/kyc/doc/capture-verify ──
-            // Requires PAD frames for temporal anti-spoof. Falls through to V1 when PAD frames
-            // are unavailable (e.g. VideoCapture is bound and ImageAnalysis could not coexist).
-            val primary = BitmapFactory.decodeFile(imagePath)
-            if (primary == null) {
-                outcome = "RETRY"; hint = "Not enough frames captured. Hold steady."
-                return@LaunchedEffect
-            }
-            val side = if (isBack) "BACK" else "FRONT"
-            // STABLE session id across FRONT and BACK (side is a separate field) so the server can
-            // pair-check both sides under one key. Fall back to a per-doc id if no KYC session yet.
-            val captureSession = vm.getSessionId().ifBlank { "proto-$docTypeInt" }
-            val res = MLV2Repository().captureVerify(
-                captureSessionId = captureSession,
-                side = side,
-                docTypeExpected = MLDocumentType.fromSdkType(docTypeInt),
-                primary = primary,
-                padFrames = padFrames,
-                deviceSignals = MLDeviceSignals(captureMode = "MANUAL", deviceModel = Build.MODEL),
-            )
-            when (res) {
-                is Resource.Success -> when {
-                    res.data.state == MLCaptureState.VERIFIED -> { outcome = "PASS"; hint = "Document verified" }
-                    res.data.state == MLCaptureState.MANUAL_REVIEW -> { outcome = "PASS"; hint = "Submitted for review" }
-                    res.data.state == MLCaptureState.RETRY -> {
-                        reasonCode = res.data.reasonCode
-                        outcome = "RETRY"; hint = res.data.retry?.hint ?: "Please retake."
-                    }
-                    // SERVICE_ERROR = ML backend fault, not a model decision — treat as retryable.
-                    res.data.reasonCode == "SERVICE_ERROR" -> { outcome = "RETRY"; hint = "Service temporarily unavailable. Please retake." }
-                    else -> { outcome = "REJECT"; hint = "Not accepted (${res.data.reasonCode})." }
-                }
-                is Resource.Error -> { outcome = "RETRY"; hint = res.message }
-                else -> {}
-            }
-        } else if (isBack) {
-            // v1 BACK: anti-spoof only (front-oriented predict doesn't apply to the back).
-            vm.mlVerifyBurst(listOf(file), docTypeInt, isBackSide = true) { isReal, vHint, _ ->
-                outcome = if (isReal) "PASS" else "RETRY"
-                hint = if (isReal) "Back captured" else vHint.ifBlank { "Retake the back of your document." }
-            }
-        } else {
-            // v1 FRONT: presence / type / side, then anti-spoof.
-            vm.mlPredictDocument(file, docTypeInt, isBackSide = false) { docOk, pHint, _, reason ->
-                if (!docOk) {
-                    reasonCode = reason
-                    outcome = "RETRY"; hint = pHint.ifBlank { "Couldn't read the document clearly." }
-                } else {
-                    vm.mlVerifyBurst(listOf(file), docTypeInt, isBackSide = false) { isReal, vHint, _ ->
-                        outcome = if (isReal) "PASS" else "RETRY"
-                        hint = if (isReal) "Clear and readable" else vHint.ifBlank { "Verification failed." }
-                    }
-                }
-            }
-        }
-    }
-
-    // A wrong-document rejection is not recoverable by re-shooting: the customer
-    // picked "Driver's License" and is holding a passport, and every retake will
-    // come back TYPE_MISMATCH. Auto-retaking it just bounced them between the
-    // camera and this screen with no explanation until the attempt cap ran out.
-    val isWrongDocument = reasonCode == MLReason.TYPE_MISMATCH
-
-    // AUTO-RETAKE: a recoverable failure (RETRY) sends the user straight back to the camera after a
-    // brief hint. Terminal REJECT (spoof/tamper) stays manual so a hard fail doesn't loop.
-    LaunchedEffect(outcome, autoRetake, isWrongDocument) {
-        if (outcome == "RETRY" && autoRetake && !isWrongDocument) {
-            // Long enough to read the reason now that one is actually shown.
-            delay(2600)
-            onRetake()
-        }
-    }
+    val stillExists = remember(imagePath) { File(imagePath).let { it.exists() && it.length() > 0 } }
+    val hint = advisory.hint()
 
     Column(Modifier.fillMaxSize().background(Proto.Canvas)) {
         ProtoTopBar(step = null, onBack = onRetake)
@@ -643,14 +559,9 @@ fun ProtoDocumentPreviewScreen(
             Text("Is everything clear and readable?", color = Proto.Sub, fontFamily = ProtoDisplay, fontSize = 15.sp)
             Spacer(Modifier.height(18.dp))
             BrutalBox {
-                // iOS parity: the image uses its INTRINSIC aspect (ContentScale.Fit), not a forced
-                // frameAspect crop — the whole captured document shows, and the box height follows the
-                // photo. fillMaxWidth bounds maxWidth so the scan-line offset stays finite.
-                val imgAspect = if (bmp != null && bmp.height > 0) {
-                    bmp.width.toFloat() / bmp.height.toFloat()
-                } else {
-                    frameAspect
-                }
+                // The image keeps its intrinsic aspect (ContentScale.Fit): the whole captured
+                // document shows and the box height follows the photo.
+                val imgAspect = if (bmp != null && bmp.height > 0) bmp.width.toFloat() / bmp.height.toFloat() else frameAspect
                 BoxWithConstraints(Modifier.fillMaxWidth()) {
                     val imgHeight = maxWidth / imgAspect
                     Box(Modifier.fillMaxWidth().height(imgHeight)) {
@@ -664,78 +575,30 @@ fun ProtoDocumentPreviewScreen(
                         } else {
                             Box(Modifier.fillMaxSize().background(Color(0xFFEEF0F4)))
                         }
-                        if (outcome == null) {
-                            Box(Modifier.matchParentSize().background(Color(0x47000000)))
-                            val scanT = rememberInfiniteTransition(label = "scan")
-                            // iOS uses .easeInOut(0.9).repeatForever(autoreverses: true); the standard
-                            // cubic-bezier ease-in-out is (0.42, 0, 0.58, 1).
-                            val frac by scanT.animateFloat(
-                                initialValue = 0f, targetValue = 1f,
-                                animationSpec = infiniteRepeatable(
-                                    tween(900, easing = CubicBezierEasing(0.42f, 0f, 0.58f, 1f)),
-                                    RepeatMode.Reverse,
-                                ),
-                                label = "scanf",
-                            )
-                            val scanY = (imgHeight - 3.dp) * frac
-                            // Soft GoldenFizz glow behind the crisp scan line (iOS radius-6, .8 alpha).
-                            Box(
-                                Modifier.fillMaxWidth().height(3.dp).offset(y = scanY)
-                                    .blur(6.dp).background(Proto.GoldenFizz.copy(alpha = 0.8f)),
-                            )
-                            Box(
-                                Modifier.fillMaxWidth().height(3.dp).offset(y = scanY)
-                                    .background(Proto.GoldenFizz),
-                            )
-                            Box(Modifier.matchParentSize(), contentAlignment = Alignment.Center) {
-                                Box(Modifier.background(Color(0xCC171717)).padding(horizontal = 12.dp, vertical = 6.dp)) {
-                                    MonoLabel("SCANNING · VERIFYING", Color.White, size = 11)
-                                }
-                            }
-                        }
                     }
                 }
             }
-            // VERDICT TEXT. This used to be omitted ("the SCANNING overlay conveys
-            // processing; PASS is signalled by the enabled button"), which left a
-            // REJECTED capture with nothing on screen at all: the service returned
-            // "Wrong document type. Expected DRIVERS_LICENSE, detected PASSPORT."
-            // and the screen threw it away, flashed, and bounced back to the camera.
-            // The customer saw the capture screen reset over and over and was never
-            // told they were holding the wrong document.
-            if (outcome != null && outcome != "PASS") {
-                Spacer(Modifier.height(14.dp))
+            Spacer(Modifier.height(14.dp))
+            MonoLabel(if (stillExists) "PHOTO CAPTURED" else "PHOTO NOT SAVED · PLEASE RETAKE", Proto.Ink, size = 11)
+            if (hint != null) {
+                Spacer(Modifier.height(10.dp))
                 Text(
-                    hint,
-                    color = if (outcome == "REJECT") Proto.Danger else Proto.Ink,
-                    fontFamily = ProtoDisplay,
-                    fontSize = 15.sp,
-                    fontWeight = FontWeight.Bold,
-                    lineHeight = 20.sp,
+                    hint, color = Proto.Ink, fontFamily = ProtoDisplay, fontSize = 15.sp,
+                    fontWeight = FontWeight.Bold, lineHeight = 20.sp,
                 )
             }
         }
         Column(Modifier.padding(24.dp)) {
-            if (outcome == "RETRY" && isWrongDocument && onChangeDocumentType != null) {
-                // Retaking cannot pass this check — send them back to the picker.
-                ProtoPrimaryButton("Choose a different ID", onClick = onChangeDocumentType)
-                Spacer(Modifier.height(10.dp))
+            ProtoPrimaryButton("Looks good", enabled = stillExists, onClick = onLooksGood)
+            Spacer(Modifier.height(10.dp))
+            Text(
+                "Retake", color = Proto.Sub, fontFamily = ProtoDisplay, fontSize = 14.sp, fontWeight = FontWeight.Bold,
+                modifier = Modifier.fillMaxWidth().protoClick(onRetake).padding(12.dp), textAlign = TextAlign.Center,
+            )
+            if (onChangeDocumentType != null) {
                 Text(
-                    "Retake anyway",
-                    color = Proto.Sub, fontFamily = ProtoDisplay, fontSize = 14.sp,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.fillMaxWidth().protoClick(onRetake).padding(12.dp),
-                    textAlign = TextAlign.Center,
-                )
-            } else if (outcome == "RETRY") {
-                // Auto-retaking; offer an immediate manual retake too.
-                ProtoPrimaryButton("Retake now", background = Proto.Ink, onClick = onRetake)
-            } else {
-                ProtoPrimaryButton("Looks good", enabled = outcome == "PASS", onClick = onLooksGood)
-                Spacer(Modifier.height(10.dp))
-                Text(
-                    "Retake", color = Proto.Sub, fontFamily = ProtoDisplay, fontSize = 14.sp, fontWeight = FontWeight.Bold,
-                    modifier = Modifier.fillMaxWidth().protoClick(onRetake).padding(12.dp), textAlign = TextAlign.Center,
+                    "Choose a different ID", color = Proto.Sub, fontFamily = ProtoDisplay, fontSize = 13.sp,
+                    modifier = Modifier.fillMaxWidth().protoClick(onChangeDocumentType).padding(8.dp), textAlign = TextAlign.Center,
                 )
             }
         }

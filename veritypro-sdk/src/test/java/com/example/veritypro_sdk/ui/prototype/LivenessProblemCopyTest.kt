@@ -1,6 +1,5 @@
 package com.example.veritypro_sdk.ui.prototype
 
-import com.example.veritypro_sdk.services.MLV2Repository
 import com.example.veritypro_sdk.utils.VerityErrorCode
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -36,9 +35,4 @@ class LivenessProblemCopyTest {
         }
     }
 
-    @Test
-    fun `pad frames are no larger than twice what the server analyses`() {
-        // verity-doc-ml verify_burst shrinks every PAD frame to 320 px.
-        assertTrue(MLV2Repository.PAD_MAX_DIM in 320..640)
-    }
 }

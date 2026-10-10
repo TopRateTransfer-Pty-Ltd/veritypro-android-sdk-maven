@@ -60,7 +60,7 @@ import com.example.veritypro_sdk.utils.VerityMode
 import com.example.veritypro_sdk.utils.VerityOption
 import kotlinx.coroutines.launch
 
-internal enum class ProtoStage { Welcome, Connecting, ChooseId, CameraAccess, BeforeShoot, Capture, DocPreview, DocumentUpload, AddressEntry, SelfieIntro, LightingWarning, Liveness, LivenessFailed, AddressUpload, EddIncome, EddUpload, Submitting, AllComplete, Error }
+internal enum class ProtoStage { Welcome, Connecting, ChooseId, CameraAccess, BeforeShoot, Capture, DocPreview, RecaptureRequired, DocumentUpload, AddressEntry, SelfieIntro, LightingWarning, Liveness, LivenessFailed, AddressUpload, EddIncome, EddUpload, Submitting, AllComplete, Error }
 
 // Ordered active modules for this product (document → biometric → address → edd).
 // internal (not private) so the co-located [ClientFlowDriver] can reuse it as its start() computation.
@@ -91,7 +91,7 @@ internal fun stageForModule(module: String, serverEddAssessmentId: String? = nul
     else -> ProtoStage.ChooseId // DOCUMENT
 }
 
-// SDK document-type int (MLDocumentType.fromSdkType): 1=ID Card, 2=Passport, 3=Driver's Licence.
+// SDK document-type int: 1=ID Card, 2=Passport, 3=Driver's Licence.
 private fun protoDocTypeInt(name: String?): Int {
     val n = name?.lowercase() ?: ""
     return when {
@@ -245,24 +245,29 @@ fun ProtoVerificationScreen(
     var pendingStepData by remember { mutableStateOf<Map<String, Any?>?>(null) }
     var stage by remember { mutableStateOf(ProtoStage.Welcome) }
     var chosen by remember { mutableStateOf<CountryDocumentItem?>(null) }
+    // The side currently shown on the preview screen. Stills and clips live in
+    // vm.documentCapture (one CaptureAttemptStore attempt per document submission).
     var capturedPath by remember { mutableStateOf<String?>(null) }
-    var capturedPads by remember { mutableStateOf<List<android.graphics.Bitmap>>(emptyList()) }
+    var capturedAdvisory by remember { mutableStateOf(com.example.veritypro_sdk.capture.QualityAdvisory.UNKNOWN) }
     var sideIndex by remember { mutableStateOf(0) }
-    var frontPath by remember { mutableStateOf<String?>(null) }
-    var backPath by remember { mutableStateOf<String?>(null) }
-    var frontVideo by remember { mutableStateOf<String?>(null) }
-    var backVideo by remember { mutableStateOf<String?>(null) }
+    // Bumped to re-open the camera for the same side (e.g. a photo that could not be saved).
+    var captureEntry by remember { mutableStateOf(0) }
+    var captureNotice by remember { mutableStateOf<String?>(null) }
+    // The server answered RECAPTURE_REQUIRED: its reason, and (client mode) that the finished
+    // recapture goes straight back to Submitting because liveness is already done.
+    var recaptureReason by remember { mutableStateOf("") }
+    var resubmitAfterRecapture by remember { mutableStateOf(false) }
+    // Set when the document upload ends in a state the host must be told about specifically.
+    var uploadError by remember { mutableStateOf<com.example.veritypro_sdk.utils.VerityVerificationError?>(null) }
     var livenessId by remember { mutableStateOf<String?>(null) }
     // Customer-facing reason the last liveness attempt did not finish; shown by ProtoStage.LivenessFailed.
     var livenessProblem by remember { mutableStateOf("") }
     var moduleQueue by remember { mutableStateOf<List<String>>(emptyList()) }
     var moduleIndex by remember { mutableStateOf(0) }
     var completedModules by remember { mutableStateOf<List<String>>(emptyList()) }
-    // Cap the auto-retake loop: after this many consecutive failed attempts on a side, stop
-    // auto-returning to the camera and show a manual failure (so a persistently-failing capture
-    // — e.g. a document the server won't accept — can never loop forever).
+    // Manual retakes in this attempt; reported as captureAttempts in the security assessment.
+    // There is no auto-retake: the preview never sends the user back to the camera on its own.
     var retakeAttempts by remember { mutableStateOf(0) }
-    val maxAutoRetakes = 3
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
@@ -504,7 +509,14 @@ fun ProtoVerificationScreen(
             ProtoChooseIdScreen(
                 documents = docs,
                 onBack = { stage = ProtoStage.Welcome },
-                onPick = { chosen = it; sideIndex = 0; frontPath = null; backPath = null; retakeAttempts = 0; stage = ProtoStage.CameraAccess },
+                onPick = {
+                    chosen = it; sideIndex = 0; capturedPath = null; retakeAttempts = 0
+                    resubmitAfterRecapture = false; captureNotice = null
+                    // Picking a document always begins a NEW attempt: nothing from an earlier
+                    // document (stills or clips) can be submitted with this one.
+                    vm.documentCapture.startNewAttempt(it.documentType)
+                    stage = ProtoStage.CameraAccess
+                },
             )
         }
 
@@ -537,80 +549,125 @@ fun ProtoVerificationScreen(
         ProtoStage.Capture -> {
             val sides = protoSides(chosen?.documentType)
             val isBack = sides.getOrElse(sideIndex) { false }
-            ProtoDocumentCaptureScreen(
-                onMotionCollected = vm::recordCaptureMotion,
-                docLabel = chosen?.documentType ?: "Document",
-                sideLabel = if (isBack) "Back" else "Front",
-                frameAspect = protoFrameAspect(chosen?.documentType),
-                onCaptured = { path, pads, video ->
-                    if (isBack) { backPath = path; backVideo = video } else { frontPath = path; frontVideo = video }
-                    capturedPath = path
-                    capturedPads = pads
-                    stage = ProtoStage.DocPreview
-                },
-                onClose = { stage = ProtoStage.BeforeShoot },
-            )
+            val side = if (isBack) com.example.veritypro_sdk.capture.CaptureSide.BACK else com.example.veritypro_sdk.capture.CaptureSide.FRONT
+            // One tag per camera session for this side; the store refuses it once the attempt moves on.
+            val tag = remember(sideIndex, captureEntry, vm.documentCapture.attemptId) { vm.documentCapture.tagFor(side) }
+            androidx.compose.runtime.key(tag) {
+                ProtoDocumentCaptureScreen(
+                    onMotionCollected = vm::recordCaptureMotion,
+                    docLabel = chosen?.documentType ?: "Document",
+                    sideLabel = if (isBack) "Back" else "Front",
+                    tag = tag,
+                    frameAspect = protoFrameAspect(chosen?.documentType),
+                    notice = captureNotice,
+                    onCaptured = { raw ->
+                        scope.launch {
+                            val assembled = runCatching {
+                                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                                    com.example.veritypro_sdk.capture.SideCaptureAssembler.assemble(raw)
+                                }
+                            }
+                            val capture = assembled.getOrElse { e ->
+                                android.util.Log.e("ProtoVerification", "Could not read the captured photo: ${e.javaClass.simpleName}: ${e.message}", e)
+                                captureNotice = "That photo could not be saved. Please try again."
+                                captureEntry += 1
+                                return@launch
+                            }
+                            if (!vm.documentCapture.record(capture)) {
+                                // Belongs to an attempt the user has already abandoned.
+                                captureEntry += 1
+                                return@launch
+                            }
+                            android.util.Log.i(
+                                "ProtoVerification",
+                                "Recorded ${capture.side} attempt=${capture.attemptId} retake=${capture.retakeIndex} " +
+                                    "still=${capture.still.width}x${capture.still.height} video=${capture.video.status} " +
+                                    "reason=${capture.video.failureReason} advisory=${capture.qualityAdvisory}",
+                            )
+                            captureNotice = null
+                            capturedPath = capture.still.path
+                            capturedAdvisory = capture.qualityAdvisory
+                            stage = ProtoStage.DocPreview
+                        }
+                    },
+                    onClose = { captureNotice = null; stage = ProtoStage.BeforeShoot },
+                )
+            }
         }
 
         ProtoStage.DocPreview -> {
             val sides = protoSides(chosen?.documentType)
-            val isBack = sides.getOrElse(sideIndex) { false }
             ProtoDocumentPreviewScreen(
-                vm = vm,
                 imagePath = capturedPath ?: "",
-                docTypeInt = protoDocTypeInt(chosen?.documentType),
-                isBack = isBack,
-                padFrames = capturedPads,
-                autoRetake = retakeAttempts < maxAutoRetakes,
+                advisory = capturedAdvisory,
                 frameAspect = protoFrameAspect(chosen?.documentType),
                 onLooksGood = {
-                    retakeAttempts = 0
                     if (sideIndex < sides.lastIndex) {
                         // more sides to capture (e.g. the back of a licence / ID card)
                         sideIndex += 1
                         stage = ProtoStage.Capture
+                    } else if (serverDriven) {
+                        // SERVER-DRIVEN posts the document now (DocumentUpload).
+                        stage = ProtoStage.DocumentUpload
+                    } else if (resubmitAfterRecapture) {
+                        // CLIENT mode recapture the server asked for after liveness: post again now.
+                        stage = ProtoStage.Submitting
                     } else {
-                        vm.setCapturedDocumentPaths(front = frontPath, back = backPath, video = null)
-                        // SERVER-DRIVEN posts the document now (DocumentUpload). CLIENT mode posts it
-                        // once, after the selfie, at Submitting — so it goes straight to the next module.
-                        if (serverDriven) stage = ProtoStage.DocumentUpload else advanceModule()
+                        // CLIENT mode posts the document once, after the selfie, at Submitting.
+                        advanceModule()
                     }
                 },
                 onRetake = {
+                    // Same attempt, same side: the next shot replaces this side's still and clip.
                     retakeAttempts += 1
                     stage = ProtoStage.Capture
                 },
-                // Offered only when the ML says the document shown is not the
-                // type the customer picked — a rejection no retake can clear.
                 onChangeDocumentType = {
                     retakeAttempts = 0
                     sideIndex = 0
-                    frontPath = null
-                    backPath = null
                     capturedPath = null
+                    resubmitAfterRecapture = false
+                    vm.documentCapture.startNewAttempt(null)
                     stage = ProtoStage.ChooseId
                 },
             )
         }
+
+        ProtoStage.RecaptureRequired -> ProtoErrorScreen(
+            kicker = "PLEASE RETAKE",
+            title = "We need new photos\nof your document",
+            message = recaptureReason.ifBlank { "Your document photos could not be used. Please take them again." },
+            onRetry = { stage = ProtoStage.BeforeShoot },
+            onExit = onExit,
+        )
 
         ProtoStage.DocumentUpload -> {
             // SERVER-DRIVEN only (CLIENT mode never enters this stage): upload the document NOW, keyed
             // by the session's kycEngineSessionId (mirroring the web Orchestrator: update-kyc-verification
             // → completeStep(DOCUMENT)). The final Submitting stage must NOT re-post it.
             LaunchedEffect(Unit) {
-                docUploaded = protoSubmitVerification(
+                val outcome = protoSubmitVerification(
                     context = context,
                     vm = vm,
                     engineSessionId = engineSessionId(),
                     docTypeInt = protoDocTypeInt(chosen?.documentType),
-                    frontPath = frontPath,
-                    backPath = backPath,
-                    videoPath = frontVideo ?: backVideo,
                     livenessId = "", // liveness completes as its own server step, not here
                     livenessConfidence = null,
                     captureAttempts = retakeAttempts + 1,
                 )
-                if (docUploaded) {
+                docUploaded = outcome is com.example.veritypro_sdk.services.KycUploadOutcome.Submitted
+                if (outcome is com.example.veritypro_sdk.services.KycUploadOutcome.RecaptureRequired) {
+                    // Not accepted: capture again under a NEW attempt id. Nothing is completed.
+                    recaptureReason = outcome.reason
+                    vm.documentCapture.startNewAttempt(chosen?.documentType)
+                    sideIndex = 0; capturedPath = null; retakeAttempts = 0
+                    stage = ProtoStage.RecaptureRequired
+                } else if (outcome is com.example.veritypro_sdk.services.KycUploadOutcome.TechnicalUnavailable) {
+                    // Retried with the same attempt id and still unavailable: tell the host plainly.
+                    uploadError = technicalUnavailableError(outcome.reason)
+                    flowOk = false
+                    stage = ProtoStage.AllComplete
+                } else if (docUploaded) {
                     // Document evidence accepted → this session now has a portrait. Report its v2 id
                     // so the host can persist it as a valid prior session for a later returning-user
                     // EDD/BIOMETRIC step. Only now (not at start) — the document is actually complete.
@@ -933,17 +990,28 @@ fun ProtoVerificationScreen(
                 // compressed document clip, keyed to session + liveness IDs. Await the result directly
                 // so the screen always advances (no kycState race).
                 LaunchedEffect(Unit) {
-                    flowOk = protoSubmitVerification(
+                    val outcome = protoSubmitVerification(
                         context = context,
                         vm = vm,
                         docTypeInt = protoDocTypeInt(chosen?.documentType),
-                        frontPath = frontPath,
-                        backPath = backPath,
-                        videoPath = frontVideo ?: backVideo,
                         livenessId = livenessId ?: "",
                         livenessConfidence = null,
                         captureAttempts = retakeAttempts + 1,
                     )
+                    if (outcome is com.example.veritypro_sdk.services.KycUploadOutcome.RecaptureRequired) {
+                        // Not accepted: recapture under a NEW attempt, then come straight back here.
+                        recaptureReason = outcome.reason
+                        vm.documentCapture.startNewAttempt(chosen?.documentType)
+                        sideIndex = 0; capturedPath = null; retakeAttempts = 0
+                        resubmitAfterRecapture = true
+                        stage = ProtoStage.RecaptureRequired
+                        return@LaunchedEffect
+                    }
+                    resubmitAfterRecapture = false
+                    flowOk = outcome is com.example.veritypro_sdk.services.KycUploadOutcome.Submitted
+                    if (outcome is com.example.veritypro_sdk.services.KycUploadOutcome.TechnicalUnavailable) {
+                        uploadError = technicalUnavailableError(outcome.reason)
+                    }
                     if (flowOk) completedModules = (listOf("DOCUMENT") + completedModules).distinct()
                     terminalEddVerdict = pollEddVerdictIfAny(vm, options)
                     stage = ProtoStage.AllComplete
@@ -992,7 +1060,7 @@ fun ProtoVerificationScreen(
                             com.example.veritypro_sdk.utils.VerityResult(
                                 status = "FAILED", sessionId = engineSessionId().takeIf { it.isNotBlank() },
                                 completedSteps = completedModules, serverSessionId = driver.serverSessionId(),
-                                error = com.example.veritypro_sdk.utils.VerityVerificationError("UPLOAD_FAILED", "Verification could not be submitted."),
+                                error = uploadError ?: com.example.veritypro_sdk.utils.VerityVerificationError("UPLOAD_FAILED", "Verification could not be submitted."),
                             )
                     val result = baseResult.copy(
                         eddAssessmentId = (basicEddState as? Resource.Success)?.data?.assessmentId,
@@ -1168,3 +1236,14 @@ internal fun livenessProblemCopy(code: String): String = when (code) {
         "Your internet connection is too slow for the selfie check. Move to a stronger Wi-Fi or mobile signal, then try again."
     else -> "The selfie check didn't finish. Please try again."
 }
+
+/**
+ * The document upload hit 503 TECHNICAL_UNAVAILABLE on every bounded retry. Nothing was accepted;
+ * the host may retry the whole verification later.
+ */
+private fun technicalUnavailableError(reason: String) = com.example.veritypro_sdk.utils.VerityVerificationError(
+    code = com.example.veritypro_sdk.utils.VerityErrorCode.SERVER_UNAVAILABLE.name,
+    message = "The document service is temporarily unavailable. Nothing was submitted.",
+    recoverable = true,
+    recommendedAction = "Try the verification again later.",
+).also { android.util.Log.w("ProtoVerification", "Document upload TECHNICAL_UNAVAILABLE: $reason") }

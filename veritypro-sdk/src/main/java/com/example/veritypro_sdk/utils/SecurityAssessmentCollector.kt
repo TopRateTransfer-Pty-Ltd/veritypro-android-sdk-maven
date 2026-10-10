@@ -36,7 +36,6 @@ data class CaptureRuntimeData(
     // captureMetadata
     val captureAttempts: Int? = null,
     val captureDurationSeconds: Double? = null,
-    val antiSpoofBurstScore: Double? = null,
     val livenessConfidence: Double? = null,
     val facesDetected: Int? = null,
     val faceBoundingBox: FloatArray? = null,
@@ -189,7 +188,6 @@ object SecurityAssessmentCollector {
                 put("networkType", networkType)
                 putOpt("captureAttempts", runtimeData?.captureAttempts)
                 putOpt("captureDurationSeconds", runtimeData?.captureDurationSeconds)
-                putOpt("antiSpoofBurstScore", runtimeData?.antiSpoofBurstScore)
                 putOpt("livenessConfidence", runtimeData?.livenessConfidence)
                 putOpt("facesDetected", runtimeData?.facesDetected)
                 if (runtimeData?.faceBoundingBox != null) {
@@ -243,7 +241,6 @@ object SecurityAssessmentCollector {
                 hasGyro = hasGyro,
                 captureAttempts = runtimeData?.captureAttempts,
                 captureDurationSeconds = runtimeData?.captureDurationSeconds,
-                antiSpoofBurstScore = runtimeData?.antiSpoofBurstScore,
                 livenessConfidence = runtimeData?.livenessConfidence,
                 facesDetected = runtimeData?.facesDetected,
                 hasLocation = runtimeData?.latitude != null,
@@ -276,7 +273,7 @@ object SecurityAssessmentCollector {
 
     fun deviceAndBrowser(): String = "${Build.MANUFACTURER} ${Build.MODEL} - Android ${Build.VERSION.RELEASE}"
 
-    // ─── Risk scorer: 18 flags ───────────────────────────────────────────────────
+    // ─── Risk scorer: 17 flags ───────────────────────────────────────────────────
 
     private fun calculateFullRiskScore(
         rooted: Boolean,
@@ -291,7 +288,6 @@ object SecurityAssessmentCollector {
         hasGyro: Boolean,
         captureAttempts: Int?,
         captureDurationSeconds: Double?,
-        antiSpoofBurstScore: Double?,
         livenessConfidence: Double?,
         facesDetected: Int?,
         hasLocation: Boolean,
@@ -319,8 +315,6 @@ object SecurityAssessmentCollector {
         // Capture behavior
         if ((captureAttempts ?: 0) > 5) score += 0.10                       // excessive_capture_attempts
         if ((captureDurationSeconds ?: 999.0) < 2.0) score += 0.10         // capture_too_fast
-        if (antiSpoofBurstScore != null && antiSpoofBurstScore < 0.3)
-            score += 0.15                                                   // low_antispoof_score
 
         // Face biometrics
         if (livenessConfidence != null && livenessConfidence < 70.0)

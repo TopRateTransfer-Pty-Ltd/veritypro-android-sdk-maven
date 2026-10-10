@@ -3,8 +3,6 @@ package com.example.veritypro_sdk.utils
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
-import android.graphics.Bitmap
-import android.graphics.Matrix
 import android.graphics.Rect
 import android.os.Handler
 import android.os.Looper
@@ -40,8 +38,6 @@ import androidx.camera.core.FocusMeteringAction
 import androidx.camera.core.SurfaceOrientedMeteringPointFactory
 import androidx.camera.video.Recorder
 import androidx.camera.video.VideoCapture
-import java.util.concurrent.ExecutorService
-import java.util.concurrent.Executors
 import java.io.File
 import kotlin.math.min
 import kotlin.math.roundToInt
@@ -185,7 +181,6 @@ object CameraUtils {
         onCameraError: ((String) -> Unit)? = null,
         videoCapture: VideoCapture<Recorder>? = null,
         onVideoCaptureBound: ((Boolean) -> Unit)? = null,
-        frameCollector: ((Bitmap) -> Unit)? = null,
         useViewPort: Boolean = true
     ) {
         val cameraProviderFuture = ProcessCameraProvider.getInstance(context)
@@ -218,16 +213,6 @@ object CameraUtils {
                         context, previewView, cameraSelector, onFacesDetected
                     )
                     useCases.add(imageAnalyzer)
-                }
-
-                // PAD frame ring-buffer collector (iOS parity). When set, bind an ImageAnalysis
-                // that continuously delivers downscaled preview frames off-thread so the anti-spoof
-                // PAD frames already exist at shutter time — no per-tap previewView.bitmap polling.
-                // Only bound when there is NO VideoCapture, keeping the combination to the CameraX
-                // GUARANTEED Preview + ImageCapture + ImageAnalysis (3 use cases) on all hardware,
-                // which does NOT trigger the TCL T442M VideoCapture+ImageCapture quirk.
-                if (frameCollector != null && videoCapture == null && !useDetection) {
-                    useCases.add(createFrameCollectorAnalyzer(context, frameCollector))
                 }
 
                 // Add VideoCapture on ALL devices.
@@ -299,63 +284,19 @@ object CameraUtils {
                             )
                             onVideoCaptureBound?.invoke(false)
 
-                            // Dropping VideoCapture also drops the anti-spoof signal it was
-                            // providing. The PAD frame collector was skipped above PRECISELY
-                            // because VideoCapture was going to be bound — so without re-adding
-                            // it here the caller is left with neither signal, and a readiness
-                            // gate of the form (pads >= target || videoBound) can never become
-                            // true. Field case (TCL T442M, Sept 2026): the document capture
-                            // screen sat on "STARTING CAMERA…" with an inert shutter forever,
-                            // even though the preview was streaming normally.
-                            // Removing video puts us at Preview + ImageCapture + ImageAnalysis —
-                            // the CameraX GUARANTEED 3-use-case combination (see the comment on
-                            // the frameCollector bind above), and it does not involve
-                            // VideoCapture, so it cannot retrigger the quirk we just worked
-                            // around.
-                            val padAnalyzer =
-                                if (frameCollector != null && !useDetection)
-                                    createFrameCollectorAnalyzer(context, frameCollector)
-                                else null
-
-                            fun bindPhotoFirst(withPadAnalyzer: Boolean): Camera {
-                                val group = UseCaseGroup.Builder()
-                                    .apply { viewPort?.let { setViewPort(it) } }
-                                    .apply {
-                                        useCases.filter { it !== videoCapture }.forEach { addUseCase(it) }
-                                        if (withPadAnalyzer) padAnalyzer?.let { addUseCase(it) }
-                                    }
-                                    .build()
-                                cameraProvider.unbindAll()
-                                return cameraProvider.bindToLifecycle(lifecycleOwner, cameraSelector, group)
-                            }
-
-                            camera = bindPhotoFirst(withPadAnalyzer = padAnalyzer != null)
-
-                            // The document PHOTO remains the verification evidence, so if adding
-                            // the analyzer costs us JPEG resolution the analyzer loses, not the
-                            // photo. Verify rather than assume — this is the same collapse we are
-                            // already here to correct.
-                            var padAnalyzerBound = padAnalyzer != null
-                            if (padAnalyzerBound) {
-                                val withAnalyzer = imageCapture.resolutionInfo?.resolution
-                                val analyzerLongEdge =
-                                    withAnalyzer?.let { maxOf(it.width, it.height) } ?: 0
-                                if (analyzerLongEdge < 1280) {
-                                    Log.e(
-                                        TAG,
-                                        "IMAGE_QUALITY_GUARD: PAD analyzer collapsed the JPEG to " +
-                                            "$withAnalyzer — dropping the analyzer to protect photo quality. " +
-                                            "NO anti-spoof signal is available on this device."
-                                    )
-                                    camera = bindPhotoFirst(withPadAnalyzer = false)
-                                    padAnalyzerBound = false
-                                }
-                            }
+                            // Preview + ImageCapture only. The caller records the clip as
+                            // UNSUPPORTED for this shot; the photo is not degraded for it.
+                            val group = UseCaseGroup.Builder()
+                                .apply { viewPort?.let { setViewPort(it) } }
+                                .apply { useCases.filter { it !== videoCapture }.forEach { addUseCase(it) } }
+                                .build()
+                            cameraProvider.unbindAll()
+                            camera = cameraProvider.bindToLifecycle(lifecycleOwner, cameraSelector, group)
 
                             Log.i(
                                 TAG,
                                 "IMAGE_QUALITY_GUARD: rebound photo-first — JPEG now " +
-                                    "${imageCapture.resolutionInfo?.resolution}, padAnalyzer=$padAnalyzerBound"
+                                    "${imageCapture.resolutionInfo?.resolution}"
                             )
                         } else {
                             Log.i(TAG, "ImageCapture bound at ${boundRes} (video=${videoCapture != null})")
@@ -882,53 +823,6 @@ object CameraUtils {
         }
 
         return imageAnalyzer
-    }
-
-    // Single background thread for PAD frame conversion — keeps the main thread free.
-    private val frameCollectorExecutor: ExecutorService by lazy { Executors.newSingleThreadExecutor() }
-
-    /**
-     * ImageAnalysis that converts each latest preview frame to an upright, downscaled Bitmap and
-     * hands it to [frameCollector] on a background thread. STRATEGY_KEEP_ONLY_LATEST drops frames
-     * under load so this never backs up. This is the Android equivalent of the iOS
-     * AVCaptureVideoDataOutput ring buffer (ProtoCameraController): PAD frames are collected
-     * continuously during live preview, so the shutter tap can grab the last N instantly.
-     */
-    private fun createFrameCollectorAnalyzer(
-        context: Context,
-        frameCollector: (Bitmap) -> Unit
-    ): ImageAnalysis {
-        val analyzer = ImageAnalysis.Builder()
-            .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-            .build()
-        analyzer.setAnalyzer(frameCollectorExecutor) { proxy ->
-            try {
-                val raw = proxy.toBitmap()
-                val rotation = proxy.imageInfo.rotationDegrees
-                val upright = if (rotation != 0) {
-                    val m = Matrix().apply { postRotate(rotation.toFloat()) }
-                    Bitmap.createBitmap(raw, 0, 0, raw.width, raw.height, m, true).also {
-                        if (it !== raw) raw.recycle()
-                    }
-                } else raw
-                // Downscale to a 1024 long-edge (parity with iOS) — PAD distinctness needs pixels,
-                // not full resolution, and small frames keep the ring buffer memory low.
-                val longEdge = maxOf(upright.width, upright.height)
-                val scaled = if (longEdge > 1024) {
-                    val s = 1024f / longEdge
-                    Bitmap.createScaledBitmap(
-                        upright, (upright.width * s).toInt(), (upright.height * s).toInt(), true
-                    ).also { if (it !== upright) upright.recycle() }
-                } else upright
-                frameCollector(scaled)
-            } catch (e: Exception) {
-                // Non-fatal: a dropped PAD frame is fine; the ring keeps prior frames. Log, don't crash.
-                Log.w(TAG, "PAD frame collect failed (non-blocking): ${e.message}")
-            } finally {
-                proxy.close()
-            }
-        }
-        return analyzer
     }
 
     @OptIn(ExperimentalGetImage::class)
