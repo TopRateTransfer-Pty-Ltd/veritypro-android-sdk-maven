@@ -787,10 +787,18 @@ fun ProtoVerificationScreen(
                         pendingStepData = if (serverDriven) mapOf("AddressSessionId" to vm.getAddressSessionId()) else null
                         advanceModule(pendingStepData)
                     }
+                    is Resource.Error -> phase = "idle"
                     else -> {}
                 }
             }
-            ProtoUploadScreen(
+            // From the tap until the next screen, the customer sees what is happening — not the upload
+            // form with a small label. An error returns to the form with the reason.
+            if (phase == "submitting") ProtoProcessingScreen(
+                kicker = "ADDRESS",
+                title = "Submitting your\ndocument",
+                message = "Sending your proof of address securely…",
+                module = Proto.Brand,
+            ) else ProtoUploadScreen(
                 kicker = "ADDRESS",
                 title = "Proof of address",
                 subtitle = "Dated in the last 3 months, showing your name and the address you entered.",
@@ -858,10 +866,16 @@ fun ProtoVerificationScreen(
                 when (basicEddUpload) {
                     is Resource.Loading -> phase = "submitting"
                     is Resource.Success<*> -> if (phase == "submitting") advanceModule(pendingStepData)
+                    is Resource.Error -> phase = "idle"
                     else -> {}
                 }
             }
-            ProtoUploadScreen(
+            if (phase == "submitting") ProtoProcessingScreen(
+                kicker = "ENHANCED DUE DILIGENCE",
+                title = "Submitting your\ndocument",
+                message = "Sending your source-of-funds document securely…",
+                module = Proto.Indigo,
+            ) else ProtoUploadScreen(
                 kicker = "ENHANCED DUE DILIGENCE",
                 title = "Source of funds",
                 subtitle = "Upload an income document showing your source of funds.",
