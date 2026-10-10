@@ -213,11 +213,12 @@ fun ProtoDocumentCaptureScreen(
                     return
                 }
                 filePath = file.absolutePath; endedAtMs = at; finalizeError = error
-                if (stillPath == null) {
-                    // Finalised before any still exists: the clip ended on its own (duration or
-                    // size cap, encoder error). Kept as a fact; the resolver decides it is
-                    // ENDED_BEFORE_STILL because endedAt < shutterAt.
-                    Log.w("ProtoDocCapture", "Clip finalised before the still (error=$error)")
+                if (shutterAtMs == 0L) {
+                    // Finalised before the shutter was pressed: the clip ended on its own
+                    // (duration or size cap, encoder error). Kept as a fact; the resolver reports
+                    // it as ENDED_BEFORE_STILL. (SEQUENTIAL finalises after the shutter but before
+                    // the still by design — that is not this case.)
+                    Log.w("ProtoDocCapture", "Clip ended before the shutter (error=$error)")
                 }
                 videoDone = true; check()
             }
