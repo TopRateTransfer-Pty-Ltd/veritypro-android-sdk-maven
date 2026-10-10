@@ -32,6 +32,11 @@ interface VerityApiService {
     // 180 s = the server's 120 s upstream budget plus headroom for its own work and a
     // slow uplink. Do NOT convert this into a retry: the submit is not idempotent and
     // retrying it has already caused duplicate uploads once (same F-18 note).
+    // The one exception is a 503 TECHNICAL_UNAVAILABLE from a backend that implements
+    // veritypro.capture.v1: that request was NOT accepted, and the retry carries the same
+    // CaptureAttemptId (KycUploadResponseMapper.submitWithBoundedRetry).
+    //
+    // Returns the raw response so the capture contract fields can be read from any envelope.
     @Headers("${PerCallTimeoutInterceptor.TIMEOUT_HEADER}: 180")
     @POST("/kycintegration/kyc-verification/update-kyc-verification")
     @Multipart
@@ -49,8 +54,12 @@ interface VerityApiService {
         @Part("SecurityAssessmentJson") SecurityAssessmentJson: RequestBody? = null,
         @Part PortraitVideo: MultipartBody.Part? = null,
         @Part DocumentVideo: MultipartBody.Part? = null,
+        // veritypro.capture.v1 (additive, optional): back-side clip, attempt id, capture metadata.
+        @Part DocumentBackVideo: MultipartBody.Part? = null,
+        @Part("CaptureAttemptId") CaptureAttemptId: RequestBody? = null,
+        @Part("CaptureMetadataJson") CaptureMetadataJson: RequestBody? = null,
         @Header("x-api-key") apiKey: String
-    ): ApiResponse<String>
+    ): retrofit2.Response<okhttp3.ResponseBody>
 
 
     @POST("/kycintegration/kyc-verification/begin-liveness")
