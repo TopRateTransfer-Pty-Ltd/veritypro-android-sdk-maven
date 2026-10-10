@@ -154,12 +154,15 @@ fun ProtoLivenessScreen(
     region: String,
     credentials: BeginLivenessCredentials?,
     onComplete: () -> Unit,
-    onError: (String) -> Unit,
+    /** (code, detail): code is a VerityErrorCode name or [LIVENESS_USER_CANCELLED]; detail is for logs only. */
+    onError: (code: String, detail: String) -> Unit,
     onMotionCollected: (com.example.veritypro_sdk.utils.CaptureRuntimeData) -> Unit = {},
 ) {
     val credentialsProvider = remember(credentials) { credentials?.let { LivenessCredentialsProvider(it) } }
     if (credentialsProvider == null) {
-        LaunchedEffect(Unit) { onError("Couldn't start the liveness check. Please try again.") }
+        LaunchedEffect(Unit) {
+            onError(com.example.veritypro_sdk.utils.VerityErrorCode.UNKNOWN.name, "begin-liveness returned no AWS credentials")
+        }
         return
     }
     // Only the FIRST terminal callback counts. The AWS detector can emit a stray onError around
@@ -178,7 +181,19 @@ fun ProtoLivenessScreen(
                     if (!handled.value) { handled.value = true; stopMotion(); onComplete() }
                 },
                 onError = { ex ->
-                    if (!handled.value) { handled.value = true; stopMotion(); onError(ex.message ?: "Liveness check failed. Please try again.") }
+                    if (!handled.value) {
+                        handled.value = true
+                        stopMotion()
+                        if (ex is com.amplifyframework.ui.liveness.model.FaceLivenessDetectionException.UserCancelledException) {
+                            onError(LIVENESS_USER_CANCELLED, "user cancelled")
+                        } else {
+                            // Amplify wraps the real failure (WebSocket write timeout, signing, ...) in
+                            // ex.throwable; without the chain a device failure is undiagnosable.
+                            val detail = com.example.veritypro_sdk.describeLivenessError(ex)
+                            android.util.Log.e("VerityLiveness", "FaceLivenessDetector onError: $detail", ex.throwable)
+                            onError(com.example.veritypro_sdk.livenessErrorCode(ex), detail)
+                        }
+                    }
                 },
             )
         }
@@ -223,3 +238,6 @@ fun ProtoAllCompleteScreen(
         ProtoPrimaryButton("Done", onClick = onDone)
     }
 }
+
+/** [ProtoLivenessScreen] onError code when the customer backs out of the AWS check themselves. */
+internal const val LIVENESS_USER_CANCELLED = "LIVENESS_USER_CANCELLED"

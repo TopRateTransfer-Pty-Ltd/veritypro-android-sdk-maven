@@ -71,13 +71,17 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.example.veritypro_sdk.utils.CameraUtils
 import java.io.File
 
-/** Number of PAD frames captured/handed to capture-verify — matches the iOS ring snapshot of 5. */
-private const val PAD_TARGET = 5
+/**
+ * Number of PAD frames handed to capture-verify. The server analyses exactly three (first, middle,
+ * last — verity-doc-ml verify_burst) and needs at least three DISTINCT frames, so a 4th and 5th were
+ * uploaded and discarded. Must match iOS (ProtoDocumentCaptureScreen recentPadFrames).
+ */
+private const val PAD_TARGET = 3
 
 /**
  * How long the camera may stream without producing an anti-spoof signal before the screen
  * reports a camera error instead of "STARTING CAMERA…". Generous enough that a slow HAL
- * filling the 5-frame PAD ring is never mistaken for a failure.
+ * filling the PAD ring is never mistaken for a failure.
  */
 private const val SIGNAL_STALL_TIMEOUT_MS = 8_000L
 

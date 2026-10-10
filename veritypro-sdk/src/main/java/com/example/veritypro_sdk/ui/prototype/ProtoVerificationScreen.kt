@@ -60,7 +60,7 @@ import com.example.veritypro_sdk.utils.VerityMode
 import com.example.veritypro_sdk.utils.VerityOption
 import kotlinx.coroutines.launch
 
-internal enum class ProtoStage { Welcome, Connecting, ChooseId, CameraAccess, BeforeShoot, Capture, DocPreview, PairChecking, AddressEntry, SelfieIntro, LightingWarning, Liveness, AddressUpload, EddIncome, EddUpload, Submitting, AllComplete, Error }
+internal enum class ProtoStage { Welcome, Connecting, ChooseId, CameraAccess, BeforeShoot, Capture, DocPreview, DocumentUpload, AddressEntry, SelfieIntro, LightingWarning, Liveness, LivenessFailed, AddressUpload, EddIncome, EddUpload, Submitting, AllComplete, Error }
 
 // Ordered active modules for this product (document → biometric → address → edd).
 // internal (not private) so the co-located [ClientFlowDriver] can reuse it as its start() computation.
@@ -253,6 +253,8 @@ fun ProtoVerificationScreen(
     var frontVideo by remember { mutableStateOf<String?>(null) }
     var backVideo by remember { mutableStateOf<String?>(null) }
     var livenessId by remember { mutableStateOf<String?>(null) }
+    // Customer-facing reason the last liveness attempt did not finish; shown by ProtoStage.LivenessFailed.
+    var livenessProblem by remember { mutableStateOf("") }
     var moduleQueue by remember { mutableStateOf<List<String>>(emptyList()) }
     var moduleIndex by remember { mutableStateOf(0) }
     var completedModules by remember { mutableStateOf<List<String>>(emptyList()) }
@@ -569,8 +571,9 @@ fun ProtoVerificationScreen(
                         stage = ProtoStage.Capture
                     } else {
                         vm.setCapturedDocumentPaths(front = frontPath, back = backPath, video = null)
-                        // Cross-check front+back before leaving the document module.
-                        stage = ProtoStage.PairChecking
+                        // SERVER-DRIVEN posts the document now (DocumentUpload). CLIENT mode posts it
+                        // once, after the selfie, at Submitting — so it goes straight to the next module.
+                        if (serverDriven) stage = ProtoStage.DocumentUpload else advanceModule()
                     }
                 },
                 onRetake = {
@@ -590,57 +593,40 @@ fun ProtoVerificationScreen(
             )
         }
 
-        ProtoStage.PairChecking -> {
-            // Advisory pre-check only: run pair-check for its signal but ALWAYS proceed to submission.
-            // The authoritative update-kyc validates the document pair server-side; and the production
-            // doc-ml back-classifier can mis-read a licence BACK as FRONT, producing a false PAIR_RETRY —
-            // blocking on that would strand the user (and their captured evidence never submits).
+        ProtoStage.DocumentUpload -> {
+            // SERVER-DRIVEN only (CLIENT mode never enters this stage): upload the document NOW, keyed
+            // by the session's kycEngineSessionId (mirroring the web Orchestrator: update-kyc-verification
+            // → completeStep(DOCUMENT)). The final Submitting stage must NOT re-post it.
             LaunchedEffect(Unit) {
-                val docTypeStr = com.example.veritypro_sdk.services.MLDocumentType.fromSdkType(
-                    protoDocTypeInt(chosen?.documentType),
+                docUploaded = protoSubmitVerification(
+                    context = context,
+                    vm = vm,
+                    engineSessionId = engineSessionId(),
+                    docTypeInt = protoDocTypeInt(chosen?.documentType),
+                    frontPath = frontPath,
+                    backPath = backPath,
+                    videoPath = frontVideo ?: backVideo,
+                    livenessId = "", // liveness completes as its own server step, not here
+                    livenessConfidence = null,
+                    captureAttempts = retakeAttempts + 1,
                 )
-                com.example.veritypro_sdk.services.MLV2Repository().pairCheck(
-                    captureSessionId = engineSessionId().ifBlank { "proto-${protoDocTypeInt(chosen?.documentType)}" },
-                    docTypeExpected = docTypeStr,
-                )
-                // SERVER-DRIVEN: upload the document NOW, keyed by the session's kycEngineSessionId
-                // (mirroring the web Orchestrator: update-kyc-verification → completeStep(DOCUMENT)).
-                // The final Submitting stage must NOT re-post it. In CLIENT mode the document is posted
-                // once, later, at Submitting — unchanged.
-                if (serverDriven) {
-                    docUploaded = protoSubmitVerification(
-                        context = context,
-                        vm = vm,
-                        engineSessionId = engineSessionId(),
-                        docTypeInt = protoDocTypeInt(chosen?.documentType),
-                        frontPath = frontPath,
-                        backPath = backPath,
-                        videoPath = frontVideo ?: backVideo,
-                        livenessId = "", // liveness completes as its own server step, not here
-                        livenessConfidence = null,
-                        captureAttempts = retakeAttempts + 1,
-                    )
-                    if (docUploaded) {
-                        // Document evidence accepted → this session now has a portrait. Report its v2 id
-                        // so the host can persist it as a valid prior session for a later returning-user
-                        // EDD/BIOMETRIC step. Only now (not at start) — the document is actually complete.
-                        driver.serverSessionId()?.takeIf { it.isNotBlank() }?.let { onServerSessionEstablished(it) }
-                        advanceModule()
-                    } else {
-                        // Do NOT post /steps/DOCUMENT/complete when the evidence upload failed — that would
-                        // advance the backend flow with no accepted document. Surface the error instead.
-                        driverError = "We couldn't upload your document. Please try again."
-                        stage = ProtoStage.Error
-                    }
-                } else {
-                    // CLIENT mode is unchanged: the document posts later at Submitting; advance the queue.
+                if (docUploaded) {
+                    // Document evidence accepted → this session now has a portrait. Report its v2 id
+                    // so the host can persist it as a valid prior session for a later returning-user
+                    // EDD/BIOMETRIC step. Only now (not at start) — the document is actually complete.
+                    driver.serverSessionId()?.takeIf { it.isNotBlank() }?.let { onServerSessionEstablished(it) }
                     advanceModule()
+                } else {
+                    // Do NOT post /steps/DOCUMENT/complete when the evidence upload failed — that would
+                    // advance the backend flow with no accepted document. Surface the error instead.
+                    driverError = "We couldn't upload your document. Please try again."
+                    stage = ProtoStage.Error
                 }
             }
             ProtoProcessingScreen(
                 kicker = "DOCUMENT",
-                title = "Checking your\ndocument",
-                message = "Making sure the front and back match…",
+                title = "Submitting your\ndocument",
+                message = "Sending your document securely…",
                 module = Proto.Flamingo,
             )
         }
@@ -725,10 +711,10 @@ fun ProtoVerificationScreen(
                                 if (!ok) {
                                     // SERVER: never post /steps/BIOMETRIC/complete for a failed liveness
                                     // result — that would advance the flow with an unverified selfie.
-                                    // Go back to the selfie intro so the user can retry WITHOUT losing the
-                                    // captured document (ProtoStage.Error's onRetry reset the whole flow to
-                                    // Welcome and discarded the front/back images).
-                                    stage = ProtoStage.SelfieIntro
+                                    // Say so, then retry from the selfie intro WITHOUT losing the captured
+                                    // document (ProtoStage.Error's onRetry resets the whole flow to Welcome).
+                                    livenessProblem = "We couldn't confirm your selfie. Face the camera in good, even light and try again."
+                                    stage = ProtoStage.LivenessFailed
                                 } else {
                                     // CLIENT mode unchanged: advance regardless; the final submit carries
                                     // livenessApproved and the backend decisions on it.
@@ -736,7 +722,16 @@ fun ProtoVerificationScreen(
                                 }
                             }
                         },
-                        onError = { stage = ProtoStage.SelfieIntro },
+                        onError = { code, _ ->
+                            if (code == LIVENESS_USER_CANCELLED) {
+                                stage = ProtoStage.SelfieIntro
+                            } else {
+                                // Never bounce silently back to the selfie intro: the customer has just done
+                                // the challenge and needs to know why it has to be repeated.
+                                livenessProblem = livenessProblemCopy(code)
+                                stage = ProtoStage.LivenessFailed
+                            }
+                        },
                     )
                 }
             }
@@ -750,6 +745,15 @@ fun ProtoVerificationScreen(
             )
             else -> ProtoProcessingScreen("BIOMETRIC · LIVENESS", "Starting the\nliveness check", "One moment…", Proto.Teal)
         }
+
+        ProtoStage.LivenessFailed -> ProtoErrorScreen(
+            kicker = "BIOMETRIC",
+            title = "Selfie check didn't finish",
+            message = livenessProblem,
+            // The captured document stays in memory; only the selfie is repeated.
+            onRetry = { stage = ProtoStage.SelfieIntro },
+            onExit = onExit,
+        )
 
         ProtoStage.AddressEntry -> {
             // Capture the address locally. Create the service session only with proof ready.
@@ -783,10 +787,18 @@ fun ProtoVerificationScreen(
                         pendingStepData = if (serverDriven) mapOf("AddressSessionId" to vm.getAddressSessionId()) else null
                         advanceModule(pendingStepData)
                     }
+                    is Resource.Error -> phase = "idle"
                     else -> {}
                 }
             }
-            ProtoUploadScreen(
+            // From the tap until the next screen, the customer sees what is happening — not the upload
+            // form with a small label. An error returns to the form with the reason.
+            if (phase == "submitting") ProtoProcessingScreen(
+                kicker = "ADDRESS",
+                title = "Submitting your\ndocument",
+                message = "Sending your proof of address securely…",
+                module = Proto.Brand,
+            ) else ProtoUploadScreen(
                 kicker = "ADDRESS",
                 title = "Proof of address",
                 subtitle = "Dated in the last 3 months, showing your name and the address you entered.",
@@ -854,10 +866,16 @@ fun ProtoVerificationScreen(
                 when (basicEddUpload) {
                     is Resource.Loading -> phase = "submitting"
                     is Resource.Success<*> -> if (phase == "submitting") advanceModule(pendingStepData)
+                    is Resource.Error -> phase = "idle"
                     else -> {}
                 }
             }
-            ProtoUploadScreen(
+            if (phase == "submitting") ProtoProcessingScreen(
+                kicker = "ENHANCED DUE DILIGENCE",
+                title = "Submitting your\ndocument",
+                message = "Sending your source-of-funds document securely…",
+                module = Proto.Indigo,
+            ) else ProtoUploadScreen(
                 kicker = "ENHANCED DUE DILIGENCE",
                 title = "Source of funds",
                 subtitle = "Upload an income document showing your source of funds.",
@@ -1142,4 +1160,11 @@ private fun ProtoErrorScreen(
             textAlign = androidx.compose.ui.text.style.TextAlign.Center,
         )
     }
+}
+
+/** Plain-language reason for a liveness attempt that did not finish (never vendor or HTTP text). */
+internal fun livenessProblemCopy(code: String): String = when (code) {
+    com.example.veritypro_sdk.utils.VerityErrorCode.LIVENESS_NETWORK_SLOW.name ->
+        "Your internet connection is too slow for the selfie check. Move to a stronger Wi-Fi or mobile signal, then try again."
+    else -> "The selfie check didn't finish. Please try again."
 }

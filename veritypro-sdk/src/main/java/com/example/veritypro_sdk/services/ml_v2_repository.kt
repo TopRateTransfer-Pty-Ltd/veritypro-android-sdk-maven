@@ -29,8 +29,11 @@ class MLV2Repository {
         private const val PRIMARY_MAX_DIM = 1600
         private const val PRIMARY_JPEG_QUALITY = 90
 
-        /** PAD frames: smaller — enough for anti-spoof, cheap to upload. */
-        private const val PAD_MAX_DIM = 1024
+        /**
+         * PAD frames: the server shrinks every PAD frame to 320 px before anti-spoof (verity-doc-ml
+         * verify_burst), so 640 px keeps 2x headroom; 1024 px uploaded ~2.5x the bytes for nothing.
+         */
+        internal const val PAD_MAX_DIM = 640
         private const val PAD_JPEG_QUALITY = 80
 
         /** Contract minimum distinct PAD frames. */
