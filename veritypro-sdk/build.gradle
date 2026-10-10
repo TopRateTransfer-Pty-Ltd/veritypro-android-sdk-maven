@@ -114,6 +114,9 @@ dependencies {
 
     // Coil — cached async image loading for brand logo in welcome/intro screen
     implementation("io.coil-kt:coil-compose:2.6.0")
+    // SVG decoder for dashboard logos (they are uploaded as SVG; Coil's default decoders cannot
+    // read SVG, so the logo silently never painted). Keep the version in step with coil-compose.
+    implementation("io.coil-kt:coil-svg:2.6.0")
 
     // Compose (use BOM for version management; no individual versions)
     implementation platform('androidx.compose:compose-bom:2025.11.01')

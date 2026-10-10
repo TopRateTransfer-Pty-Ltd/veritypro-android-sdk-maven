@@ -32,8 +32,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.platform.LocalContext
 import coil.compose.AsyncImage
+import com.example.veritypro_sdk.ui.theme.BrandLogoLoader
 import com.example.veritypro_sdk.ui.theme.LocalVerityBrandConfig
+import com.example.veritypro_sdk.utils.VpBrandLogger
 
 /** One requirement row on the welcome screen — the set is dynamic per verification product. */
 data class ProtoModuleItem(val title: String, val subtitle: String, val color: Color, val circle: Boolean)
@@ -66,11 +69,19 @@ fun ProtoWelcomeScreen(
             // Brand logo: render integrator logo when provided, otherwise fall back to the
             // "VERITYPRO  •  SECURE" mono label. The logo sits in the dark hero so it is
             // visible on both light and dark backgrounds.
-            if (logoUrl != null) {
+            // A logo that cannot be fetched or decoded falls back to the label, so the hero is never
+            // left with an empty gap; the reason is logged without the URL.
+            var logoFailed by remember(logoUrl) { mutableStateOf(false) }
+            if (logoUrl != null && !logoFailed) {
                 AsyncImage(
                     model = logoUrl,
+                    imageLoader = BrandLogoLoader.imageLoader(LocalContext.current),
                     contentDescription = "Brand logo",
                     contentScale = ContentScale.Fit,
+                    onError = { state ->
+                        VpBrandLogger.warn("brandLogoUrl load failed (${state.result.throwable.javaClass.simpleName})")
+                        logoFailed = true
+                    },
                     modifier = Modifier.height(36.dp),
                 )
                 Spacer(Modifier.height(18.dp))
