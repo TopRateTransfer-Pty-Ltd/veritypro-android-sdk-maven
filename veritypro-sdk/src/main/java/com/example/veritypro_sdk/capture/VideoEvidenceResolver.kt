@@ -32,6 +32,16 @@ data class RecordingTimeline(
     /** Finalize error name (CameraX VideoRecordEvent.Finalize.error), null when none. */
     val finalizeError: String? = null,
     val bindFailureReason: String? = null,
+    /**
+     * LIMITED/LEGACY (SEQUENTIAL) capture: the shutter stops the clip and the still is taken after
+     * it, so the clip does not contain the still. Reported, not hidden (review #61).
+     */
+    val sequentialStillAfterClip: Boolean = false,
+    /**
+     * The shutter was pressed before this side's recording had been started. The side is delivered
+     * without a clip and no recording may start afterwards (review #61).
+     */
+    val shutterBeforeRecording: Boolean = false,
 )
 
 /** Raw output of one document camera session, before hashing and advisory. */
@@ -53,19 +63,24 @@ data class RawSideCapture(
 object VideoEvidenceResolver {
     const val MIME_MP4 = "video/mp4"
     const val REASON_NOT_RECORDING_AT_SHUTTER = "NOT_RECORDING_AT_SHUTTER"
+    /** RECORDED clip from the sequential path: real, but stopped before the still was taken. */
+    const val REASON_SEQUENTIAL_STILL_AFTER_CLIP = "SEQUENTIAL_STILL_AFTER_CLIP"
+    const val REASON_SHUTTER_BEFORE_RECORDING = "SHUTTER_BEFORE_RECORDING"
 
     fun resolve(
         t: RecordingTimeline,
         shutterAtMs: Long,
-        stillSavedAtMs: Long,
         fileSize: (String) -> Long = { File(it).let { f -> if (f.exists()) f.length() else 0L } },
         sha256: (String) -> String = { CaptureFiles.sha256(File(it)) },
     ): VideoEvidence {
-        val offset = t.startedAtMs?.let { stillSavedAtMs - it }
+        // Measured from the shutter press, never from the JPEG save: on the sequential path the save
+        // lands after the clip has already ended, which would place the still outside the clip.
+        val offset = t.startedAtMs?.let { shutterAtMs - it }
         fun failed(reason: String) = VideoEvidence(
             status = VideoStatus.FAILED, startedAtMs = t.startedAtMs, endedAtMs = t.endedAtMs,
             stillCapturedAtOffsetMs = offset, failureReason = reason,
         )
+        if (t.shutterBeforeRecording) return failed(REASON_SHUTTER_BEFORE_RECORDING)
         return when (t.binding) {
             VideoBinding.NOT_REQUESTED -> VideoEvidence(VideoStatus.NOT_REQUESTED)
             VideoBinding.PERMISSION_DENIED -> VideoEvidence(VideoStatus.PERMISSION_DENIED, failureReason = t.bindFailureReason)
@@ -90,8 +105,12 @@ object VideoEvidenceResolver {
                     stillCapturedAtOffsetMs = offset,
                     sha256 = sha256(t.filePath),
                     // A finalize error with a playable file (e.g. size limit reached after the
-                    // shutter) is still a real clip; the error is reported, not hidden.
-                    failureReason = t.finalizeError,
+                    // shutter) is still a real clip; the error is reported, not hidden. The
+                    // sequential marker says the still was taken after this clip stopped.
+                    failureReason = listOfNotNull(
+                        REASON_SEQUENTIAL_STILL_AFTER_CLIP.takeIf { t.sequentialStillAfterClip },
+                        t.finalizeError,
+                    ).joinToString("; ").ifEmpty { null },
                 )
             }
         }
@@ -108,7 +127,7 @@ object SideCaptureAssembler {
             raw.recording.filePath?.let { runCatching { File(it).delete() } }
             throw e
         }
-        val video = VideoEvidenceResolver.resolve(raw.recording, raw.shutterAtMs, raw.stillSavedAtMs)
+        val video = VideoEvidenceResolver.resolve(raw.recording, raw.shutterAtMs)
         if (video.status != VideoStatus.RECORDED) {
             // Never leave a clip on disk that we are not going to upload or account for.
             raw.recording.filePath?.let { runCatching { File(it).delete() } }

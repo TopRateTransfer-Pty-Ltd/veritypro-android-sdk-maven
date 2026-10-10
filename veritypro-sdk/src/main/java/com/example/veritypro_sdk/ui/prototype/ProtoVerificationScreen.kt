@@ -252,6 +252,8 @@ fun ProtoVerificationScreen(
     var sideIndex by remember { mutableStateOf(0) }
     // Bumped to re-open the camera for the same side (e.g. a photo that could not be saved).
     var captureEntry by remember { mutableStateOf(0) }
+    // A photo still saving/processing when the camera closes must not open "Check your photo".
+    val captureGate = remember { com.example.veritypro_sdk.capture.CaptureSessionGate() }
     var captureNotice by remember { mutableStateOf<String?>(null) }
     // The server answered RECAPTURE_REQUIRED: its reason, and (client mode) that the finished
     // recapture goes straight back to Submitting because liveness is already done.
@@ -553,6 +555,9 @@ fun ProtoVerificationScreen(
             // One tag per camera session for this side; the store refuses it once the attempt moves on.
             val tag = remember(sideIndex, captureEntry, vm.documentCapture.attemptId) { vm.documentCapture.tagFor(side) }
             androidx.compose.runtime.key(tag) {
+                val sessionToken = remember { captureGate.open() }
+                // Leaving the camera by any route ends this session; its in-flight result is dropped.
+                androidx.compose.runtime.DisposableEffect(Unit) { onDispose { captureGate.close(sessionToken) } }
                 ProtoDocumentCaptureScreen(
                     onMotionCollected = vm::recordCaptureMotion,
                     docLabel = chosen?.documentType ?: "Document",
@@ -561,11 +566,22 @@ fun ProtoVerificationScreen(
                     frameAspect = protoFrameAspect(chosen?.documentType),
                     notice = captureNotice,
                     onCaptured = { raw ->
+                        if (!captureGate.isCurrent(sessionToken)) {
+                            android.util.Log.w("ProtoVerification", "Camera was closed; discarding ${raw.tag.side} photo")
+                            captureGate.discard(raw)
+                            return@ProtoDocumentCaptureScreen
+                        }
                         scope.launch {
                             val assembled = runCatching {
                                 kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
                                     com.example.veritypro_sdk.capture.SideCaptureAssembler.assemble(raw)
                                 }
+                            }
+                            if (!captureGate.isCurrent(sessionToken)) {
+                                // Closed while the photo was being processed: never record it or navigate.
+                                android.util.Log.w("ProtoVerification", "Camera closed during processing; discarding ${raw.tag.side} photo")
+                                assembled.getOrNull()?.let { captureGate.discard(it) } ?: captureGate.discard(raw)
+                                return@launch
                             }
                             val capture = assembled.getOrElse { e ->
                                 android.util.Log.e("ProtoVerification", "Could not read the captured photo: ${e.javaClass.simpleName}: ${e.message}", e)
@@ -590,7 +606,11 @@ fun ProtoVerificationScreen(
                             stage = ProtoStage.DocPreview
                         }
                     },
-                    onClose = { captureNotice = null; stage = ProtoStage.BeforeShoot },
+                    onClose = {
+                        captureGate.close(sessionToken)
+                        captureNotice = null
+                        stage = ProtoStage.BeforeShoot
+                    },
                 )
             }
         }

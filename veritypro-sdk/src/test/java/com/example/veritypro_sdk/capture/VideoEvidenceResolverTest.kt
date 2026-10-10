@@ -2,11 +2,12 @@ package com.example.veritypro_sdk.capture
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class VideoEvidenceResolverTest {
-    private fun resolve(t: RecordingTimeline, shutter: Long = 5_000, saved: Long = 5_300, size: Long = 1_000) =
-        VideoEvidenceResolver.resolve(t, shutter, saved, fileSize = { size }, sha256 = { "h" })
+    private fun resolve(t: RecordingTimeline, shutter: Long = 5_000, size: Long = 1_000) =
+        VideoEvidenceResolver.resolve(t, shutter, fileSize = { size }, sha256 = { "h" })
 
     private val bound = RecordingTimeline(VideoBinding.BOUND, filePath = "c.mp4", startedAtMs = 1_000, endedAtMs = 5_600)
 
@@ -14,17 +15,42 @@ class VideoEvidenceResolverTest {
     fun `concurrent clip that brackets the still is RECORDED with offset and hash`() {
         val v = resolve(bound)
         assertEquals(VideoStatus.RECORDED, v.status)
-        assertEquals(4_300L, v.stillCapturedAtOffsetMs)
+        assertEquals("offset is shutter - clip start", 4_000L, v.stillCapturedAtOffsetMs)
         assertEquals("h", v.sha256)
         assertEquals("video/mp4", v.mimeType)
         assertNull(v.failureReason)
     }
 
     @Test
-    fun `sequential clip stopped by the shutter is RECORDED even though the still comes after it`() {
-        val v = resolve(bound.copy(endedAtMs = 5_050), shutter = 5_000, saved = 6_200)
+    fun `sequential clip stopped by the shutter is RECORDED and says the still came after it`() {
+        // Clip 1_000..5_050, shutter 5_000, JPEG saved ~6_200 (after the clip ended).
+        val v = resolve(bound.copy(endedAtMs = 5_050, sequentialStillAfterClip = true), shutter = 5_000)
+        assertEquals("the clip is real", VideoStatus.RECORDED, v.status)
+        assertEquals(VideoEvidenceResolver.REASON_SEQUENTIAL_STILL_AFTER_CLIP, v.failureReason)
+        assertEquals("offset from the shutter press, inside the clip", 4_000L, v.stillCapturedAtOffsetMs)
+        assertTrue(v.startedAtMs!! + v.stillCapturedAtOffsetMs!! <= v.endedAtMs!!)
+        assertEquals("h", v.sha256)
+    }
+
+    @Test
+    fun `sequential marker keeps a finalize error alongside it`() {
+        val v = resolve(bound.copy(endedAtMs = 5_050, sequentialStillAfterClip = true, finalizeError = "ERROR_X"))
         assertEquals(VideoStatus.RECORDED, v.status)
-        assertEquals(5_200L, v.stillCapturedAtOffsetMs)
+        assertEquals("SEQUENTIAL_STILL_AFTER_CLIP; ERROR_X", v.failureReason)
+    }
+
+    @Test
+    fun `shutter before recording is FAILED SHUTTER_BEFORE_RECORDING, whatever the binding says`() {
+        // Concurrent: binding not yet reported when the shutter fired.
+        val early = resolve(RecordingTimeline(VideoBinding.NOT_REQUESTED, shutterBeforeRecording = true))
+        assertEquals(VideoStatus.FAILED, early.status)
+        assertEquals(VideoEvidenceResolver.REASON_SHUTTER_BEFORE_RECORDING, early.failureReason)
+        assertNull(early.sha256); assertNull(early.path)
+        // Bound, but the clip had not been started; a late file must never be described.
+        val late = resolve(bound.copy(startedAtMs = 6_000, shutterBeforeRecording = true))
+        assertEquals(VideoStatus.FAILED, late.status)
+        assertEquals(VideoEvidenceResolver.REASON_SHUTTER_BEFORE_RECORDING, late.failureReason)
+        assertNull(late.sha256); assertNull(late.path)
     }
 
     @Test

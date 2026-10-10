@@ -7,7 +7,7 @@ plugins {
 }
 
 // Single source for the published version and BuildConfig.SDK_VERSION (CaptureMetadataJson sdk.version).
-def veritySdkVersion = "1.8.0"
+def veritySdkVersion = "1.9.0"
 
 android {
     namespace 'com.example.veritypro_sdk'
@@ -188,6 +188,9 @@ afterEvaluate {
                 // 1.7.0: eddAssessmentId (server-started Basic EDD: skip the income screen).
                 // 1.8.0: liveness failures explained and logged (onboarding + step-up, LIVENESS_NETWORK_SLOW);
                 //        3 PAD frames at 640 px.
+                // 1.8.1: SVG dashboard logos render (coil-svg) — sibling PR #62.
+                // 1.9.0: document capture with no server-side photo gate. BREAKING: public ML classes removed
+                //        (see CHANGELOG). Minor bump above 1.8.1 so the two releases never collide.
                 version = veritySdkVersion
             }
         }

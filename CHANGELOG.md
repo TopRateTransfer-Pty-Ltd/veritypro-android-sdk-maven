@@ -1,10 +1,12 @@
 # Changelog — VerityPro Android SDK (`com.example.veritypro:veritypro-sdk`)
 
-## Unreleased
+## 1.9.0 — Unreleased
 
-Document capture no longer calls DocAI. The version number is not bumped here; the release step
-does that. This release is a **source and binary breaking change** for any integrator that used the
-public ML classes listed below. No integrator in the VerityPro workspace uses them (the Flutter SDK
+Document capture no longer calls DocAI. Version **1.9.0** (minor bump above 1.8.1, the SVG-logo
+release in PR #62). `veritySdkVersion` in `veritypro-sdk/build.gradle` is the single source for the
+published Maven version and for `BuildConfig.SDK_VERSION`, which is what `CaptureMetadataJson`
+reports as `sdk.version`. This release is a **source and binary breaking change** for any integrator
+that used the public ML classes listed below. No integrator in the VerityPro workspace uses them (the Flutter SDK
 was searched); third-party use has not been checked.
 
 ### Removed (breaking)

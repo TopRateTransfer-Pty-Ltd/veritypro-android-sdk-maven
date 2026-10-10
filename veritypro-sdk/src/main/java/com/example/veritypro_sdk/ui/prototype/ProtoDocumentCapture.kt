@@ -169,6 +169,10 @@ fun ProtoDocumentCaptureScreen(
             var delivered = false
 
             var shutterAtMs = 0L
+            /** Shutter pressed before this shot's clip was started: no clip may start for it. */
+            var shutterBeforeRecording = false
+            /** Sequential path with a clip: the still is taken after the shutter stops the clip. */
+            var sequentialStillAfterClip = false
             var stillPath: String? = null
             var stillSavedAtMs = 0L
             /** Generation whose clip is being stopped so a fresh one can start for the next shot. */
@@ -179,6 +183,7 @@ fun ProtoDocumentCaptureScreen(
             fun timeline() = RecordingTimeline(
                 binding = binding, filePath = filePath, startedAtMs = startedAtMs, startFailure = startFailure,
                 endedAtMs = endedAtMs, finalizeError = finalizeError, bindFailureReason = bindFailureReason,
+                sequentialStillAfterClip = sequentialStillAfterClip, shutterBeforeRecording = shutterBeforeRecording,
             )
 
             /** Abandon the current pairing; in-flight callbacks from it are ignored from now on. */
@@ -188,7 +193,11 @@ fun ProtoDocumentCaptureScreen(
                 filePath = null; startedAtMs = null; startFailure = null
                 endedAtMs = null; finalizeError = null; videoDone = false; delivered = false
                 stillPath = null; shutterAtMs = 0L; stillSavedAtMs = 0L
+                shutterBeforeRecording = false; sequentialStillAfterClip = false
             }
+
+            /** A clip may start only for a shot that has not been taken or delivered yet. */
+            fun mayStartClip() = !delivered && !shutterBeforeRecording
 
             fun onStill(gen: Int, path: String, savedAt: Long) {
                 if (gen != generation) {
@@ -210,6 +219,13 @@ fun ProtoDocumentCaptureScreen(
                         restartWhenGenFinalizes = null
                         onRestartReady?.invoke()
                     }
+                    return
+                }
+                if (delivered || shutterBeforeRecording) {
+                    // This side was already delivered (or its shutter fired before recording), so
+                    // this clip is described nowhere and will never be uploaded: do not keep it.
+                    Log.w("ProtoDocCapture", "Deleting late clip for an already-delivered shot (gen $gen)")
+                    runCatching { file.delete() }
                     return
                 }
                 filePath = file.absolutePath; endedAtMs = at; finalizeError = error
@@ -257,6 +273,10 @@ fun ProtoDocumentCaptureScreen(
     }
 
     fun startClip() {
+        if (!coord.mayStartClip()) {
+            Log.w("ProtoDocCapture", "Not starting ${tag.side} clip: the shot was already taken (gen ${coord.generation})")
+            return
+        }
         coord.recordingRequested = true
         val gen = coord.generation
         videoRecorder.startRecording(
@@ -276,7 +296,9 @@ fun ProtoDocumentCaptureScreen(
     // Start this shot's clip once the camera streams with VideoCapture bound. Keyed on attemptGen
     // so a restart always re-runs even if the flags coalesce in one recomposition.
     LaunchedEffect(cameraReady, videoBound, attemptGen) {
-        if (cameraReady && videoBound && coord.binding == VideoBinding.BOUND && !coord.recordingRequested) {
+        if (cameraReady && videoBound && coord.binding == VideoBinding.BOUND && !coord.recordingRequested &&
+            !shootTriggered && coord.mayStartClip()
+        ) {
             Log.i("ProtoDocCapture", "Starting ${tag.side} clip (strategy=$strategy, tier=$videoTier, gen=${coord.generation})")
             startClip()
         }
@@ -378,6 +400,12 @@ fun ProtoDocumentCaptureScreen(
         if (shootTriggered) return
         shootTriggered = true
         coord.shutterAtMs = System.currentTimeMillis()
+        // Video is always requested on this screen; a binding still NOT_REQUESTED means the bind
+        // has not reported yet. Either way no clip is running, so this side has none and none may
+        // start later (reported FAILED / SHUTTER_BEFORE_RECORDING).
+        coord.shutterBeforeRecording = !stillOnly && !coord.recordingRequested &&
+            (coord.binding == VideoBinding.BOUND || coord.binding == VideoBinding.NOT_REQUESTED)
+        coord.sequentialStillAfterClip = sequential && !stillOnly && coord.recordingRequested
 
         if (!sequential || stillOnly) {
             // Concurrent: take the still WHILE the clip records; it is stopped after the JPEG saves.

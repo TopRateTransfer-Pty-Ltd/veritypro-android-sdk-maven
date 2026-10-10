@@ -103,4 +103,52 @@ class CaptureUploadPartsTest {
         assertTrue(thrown is StillChangedAfterCapture)
         assertEquals(CaptureSide.FRONT, (thrown as StillChangedAfterCapture).side)
     }
+
+    @Test
+    fun `a RECORDED clip that vanished is reported FAILED CLIP_FILE_MISSING with no hash and is not uploaded`() {
+        val store = CaptureAttemptStore(deleteFile = {})
+        val fv = tmp("fv")
+        record(store, CaptureSide.FRONT, tmp("f"), fv, VideoStatus.RECORDED)
+        assertTrue(fv.delete()) // the clip disappears before upload
+
+        val parts = buildCaptureUploadParts(store, 2, "1.9.0")
+
+        assertNull(parts.frontVideo)
+        val video = JSONObject(parts.metadataJson).getJSONArray("sides").getJSONObject(0).getJSONObject("video")
+        assertEquals("FAILED", video.getString("status"))
+        assertEquals(REASON_CLIP_FILE_MISSING, video.getString("failureReason"))
+        assertTrue("no sha256 for a clip that is not uploaded", video.isNull("sha256"))
+        assertTrue(video.isNull("mimeType"))
+    }
+
+    @Test
+    fun `an empty RECORDED clip is treated as missing`() {
+        val store = CaptureAttemptStore(deleteFile = {})
+        val bv = tmp("bv")
+        record(store, CaptureSide.FRONT, tmp("f"), tmp("fv"), VideoStatus.RECORDED)
+        record(store, CaptureSide.BACK, tmp("b"), bv, VideoStatus.RECORDED)
+        bv.writeBytes(ByteArray(0))
+
+        val parts = buildCaptureUploadParts(store, 3, "1.9.0")
+
+        assertNull(parts.backVideo)
+        assertTrue("the front clip is unaffected", parts.frontVideo != null)
+        val back = JSONObject(parts.metadataJson).getJSONArray("sides").getJSONObject(1).getJSONObject("video")
+        assertEquals(REASON_CLIP_FILE_MISSING, back.getString("failureReason"))
+    }
+
+    @Test
+    fun `a RECORDED clip whose bytes changed is refused like a still`() {
+        val store = CaptureAttemptStore(deleteFile = {})
+        val bv = tmp("bv")
+        record(store, CaptureSide.FRONT, tmp("f"), tmp("fv"), VideoStatus.RECORDED)
+        record(store, CaptureSide.BACK, tmp("b"), bv, VideoStatus.RECORDED)
+        bv.writeBytes(byteArrayOf(7, 7, 7, 7))
+
+        val thrown = runCatching { buildCaptureUploadParts(store, 3, "1.9.0") }.exceptionOrNull()
+
+        assertTrue(thrown is ClipChangedAfterCapture)
+        assertTrue(thrown is CaptureChangedAfterCapture)
+        assertEquals(CaptureSide.BACK, (thrown as ClipChangedAfterCapture).side)
+    }
 }

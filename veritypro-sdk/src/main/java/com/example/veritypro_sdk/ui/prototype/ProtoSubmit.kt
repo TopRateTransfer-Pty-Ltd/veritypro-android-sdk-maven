@@ -8,6 +8,7 @@ import com.example.veritypro_sdk.capture.CaptureFiles
 import com.example.veritypro_sdk.capture.CaptureMetadataBuilder
 import com.example.veritypro_sdk.capture.CaptureSide
 import com.example.veritypro_sdk.capture.SideCapture
+import com.example.veritypro_sdk.capture.VideoStatus
 import com.example.veritypro_sdk.services.KycUploadOutcome
 import com.example.veritypro_sdk.services.KycUploadResponseMapper
 import com.example.veritypro_sdk.services.VerificationRequestMultipart
@@ -38,9 +39,17 @@ internal data class CaptureUploadParts(
     val metadataJson: String,
 )
 
+/** A captured file's bytes no longer match the sha256 recorded at capture: refuse and retake. */
+internal open class CaptureChangedAfterCapture(val side: CaptureSide, what: String) :
+    IllegalStateException("$what $side changed after capture")
+
 /** A still's bytes no longer match the sha256 recorded at capture (review #61). */
-internal class StillChangedAfterCapture(val side: CaptureSide) :
-    IllegalStateException("Still $side changed after capture")
+internal class StillChangedAfterCapture(side: CaptureSide) : CaptureChangedAfterCapture(side, "Still")
+
+/** A RECORDED clip's bytes no longer match the sha256 recorded at capture (review #61). */
+internal class ClipChangedAfterCapture(side: CaptureSide) : CaptureChangedAfterCapture(side, "Clip")
+
+internal const val REASON_CLIP_FILE_MISSING = "CLIP_FILE_MISSING"
 
 internal fun buildCaptureUploadParts(
     store: CaptureAttemptStore,
@@ -56,7 +65,25 @@ internal fun buildCaptureUploadParts(
     sides.forEach { s ->
         if (hashFile(File(s.still.path)) != s.still.sha256) throw StillChangedAfterCapture(s.side)
     }
-    val verified: List<SideCapture> = sides
+    // Same for each RECORDED clip. A clip that vanished is reported as FAILED (no sha256, not
+    // uploaded) instead of claiming RECORDED evidence that never arrives; changed bytes are refused
+    // exactly like a still.
+    val verified: List<SideCapture> = sides.map { s ->
+        val v = s.video
+        if (v.status != VideoStatus.RECORDED) return@map s
+        val clip = v.path?.let(::File)
+        if (clip == null || !clip.exists() || clip.length() <= 0L) {
+            Log.w("ProtoSubmit", "RECORDED ${s.side} clip is missing on disk; reporting FAILED/$REASON_CLIP_FILE_MISSING")
+            return@map s.copy(
+                video = v.copy(
+                    status = VideoStatus.FAILED, path = null, mimeType = null, sha256 = null,
+                    failureReason = REASON_CLIP_FILE_MISSING,
+                ),
+            )
+        }
+        if (hashFile(clip) != v.sha256) throw ClipChangedAfterCapture(s.side)
+        s
+    }
     val metadata = CaptureMetadataBuilder.build(
         attemptId = store.attemptId,
         sdkVersion = sdkVersion,
@@ -64,12 +91,14 @@ internal fun buildCaptureUploadParts(
         sides = verified,
     )
     fun still(side: CaptureSide) = store.side(side)?.still?.path?.let { File(it).takeIf { f -> f.exists() && f.length() > 0 } }
+    // Clips come from the verified list, so an upload carries exactly what the metadata describes.
+    fun clip(side: CaptureSide) = verified.firstOrNull { it.side == side }?.video?.uploadableFile()
     return CaptureUploadParts(
         attemptId = store.attemptId,
         front = still(CaptureSide.FRONT),
         back = still(CaptureSide.BACK),
-        frontVideo = store.side(CaptureSide.FRONT)?.video?.uploadableFile(),
-        backVideo = store.side(CaptureSide.BACK)?.video?.uploadableFile(),
+        frontVideo = clip(CaptureSide.FRONT),
+        backVideo = clip(CaptureSide.BACK),
         metadataJson = metadata.toString(),
     )
 }
@@ -114,9 +143,10 @@ suspend fun protoSubmitVerification(
 
     val parts = try {
         withContext(Dispatchers.IO) { buildCaptureUploadParts(vm.documentCapture, docTypeInt, BuildConfig.SDK_VERSION) }
-    } catch (e: StillChangedAfterCapture) {
+    } catch (e: CaptureChangedAfterCapture) {
         Log.e("ProtoSubmit", "Refusing upload: ${e.message}", e)
-        return KycUploadOutcome.RecaptureRequired("Your document photo changed after it was taken. Please retake it.")
+        val what = if (e is ClipChangedAfterCapture) "video" else "photo"
+        return KycUploadOutcome.RecaptureRequired("Your document $what changed after it was taken. Please retake it.")
     } catch (e: Exception) {
         Log.e("ProtoSubmit", "Could not prepare the capture upload: ${e.javaClass.simpleName}: ${e.message}", e)
         return KycUploadOutcome.Failed("Your document photos could not be prepared. Please retake them.")
