@@ -54,6 +54,7 @@ import com.amplifyframework.core.Amplify
 import com.example.veritypro_sdk.services.CountryDocumentItem
 import com.example.veritypro_sdk.services.Resource
 import com.example.veritypro_sdk.services.BasicEddAssessmentCreated
+import com.example.veritypro_sdk.ui.verification.DOCUMENT_REQUIRED_BEFORE_LIVENESS
 import com.example.veritypro_sdk.ui.verification.VerityProViewModel
 import com.example.veritypro_sdk.utils.LightingCheck
 import com.example.veritypro_sdk.utils.VerityMode
@@ -812,14 +813,43 @@ fun ProtoVerificationScreen(
                     )
                 }
             }
-            is Resource.Error -> ProtoErrorScreen(
-                kicker = "BIOMETRIC",
-                title = "Couldn't start the check",
-                // Generic copy — never surface backend/vendor identifiers from the raw error.
-                message = "We couldn't start the liveness check. Please try again.",
-                onRetry = { stage = ProtoStage.SelfieIntro },
-                onExit = onExit,
-            )
+            is Resource.Error -> when (livenessStartRoute(bs, hasDocumentModule = moduleQueue.contains("DOCUMENT"))) {
+                // The server has no completed document for this session: the selfie cannot start until it has one.
+                // Not a failure, a missing step, so the copy says what comes next and the button goes there.
+                LivenessStartRoute.DocumentFirst -> ProtoErrorScreen(
+                    kicker = "ID DOCUMENT",
+                    kickerColor = Proto.Teal,
+                    title = "One step first",
+                    message = DOCUMENT_FIRST_COPY,
+                    primaryLabel = "Add my ID",
+                    onRetry = {
+                        moduleIndex = moduleQueue.indexOf("DOCUMENT")
+                        completedModules = completedModules - "DOCUMENT"
+                        stage = stageForModule("DOCUMENT", options.eddAssessmentId)
+                    },
+                    onExit = onExit,
+                )
+                // Same answer, but this run has no document step to go back to (a selfie-only run): the host
+                // has to start the ID step, so the only way on is out.
+                LivenessStartRoute.DocumentElsewhere -> ProtoErrorScreen(
+                    kicker = "ID DOCUMENT",
+                    kickerColor = Proto.Teal,
+                    title = "One step first",
+                    message = DOCUMENT_ELSEWHERE_COPY,
+                    primaryLabel = "OK",
+                    onRetry = onExit,
+                    onExit = onExit,
+                )
+                LivenessStartRoute.TryAgain -> ProtoErrorScreen(
+                    kicker = "BIOMETRIC",
+                    title = "Couldn't start the check",
+                    // 429 gets its own plain sentence (wait a few minutes); everything else stays generic —
+                    // never surface backend/vendor identifiers from the raw error.
+                    message = if (bs.httpStatus == 429) bs.message else "We couldn't start the liveness check. Please try again.",
+                    onRetry = { stage = ProtoStage.SelfieIntro },
+                    onExit = onExit,
+                )
+            }
             else -> ProtoProcessingScreen("BIOMETRIC · LIVENESS", "Starting the\nliveness check", "One moment…", Proto.Teal)
         }
 
@@ -1225,6 +1255,8 @@ private fun ProtoErrorScreen(
     message: String,
     onRetry: () -> Unit,
     onExit: () -> Unit,
+    kickerColor: Color = Proto.Danger,
+    primaryLabel: String = "Try again",
 ) {
     Column(
         Modifier.fillMaxSize().background(Proto.Canvas).padding(26.dp),
@@ -1232,7 +1264,7 @@ private fun ProtoErrorScreen(
     ) {
         BrutalBox(background = Color.White) {
             Column(Modifier.padding(20.dp)) {
-                MonoLabel(kicker, Proto.Danger)
+                MonoLabel(kicker, kickerColor)
                 Spacer(Modifier.height(10.dp))
                 Text(title, color = Proto.Ink, fontFamily = ProtoDisplay, fontSize = 26.sp, fontWeight = FontWeight.Black)
                 Spacer(Modifier.height(10.dp))
@@ -1240,7 +1272,7 @@ private fun ProtoErrorScreen(
             }
         }
         Spacer(Modifier.height(16.dp))
-        ProtoPrimaryButton("Try again", onClick = onRetry)
+        ProtoPrimaryButton(primaryLabel, onClick = onRetry)
         Spacer(Modifier.height(10.dp))
         Text(
             "Close", color = Proto.Sub, fontFamily = ProtoDisplay, fontSize = 14.sp,
@@ -1249,6 +1281,22 @@ private fun ProtoErrorScreen(
         )
     }
 }
+
+/** Where a begin-liveness error takes the customer. */
+internal enum class LivenessStartRoute { DocumentFirst, DocumentElsewhere, TryAgain }
+
+/**
+ * 409 document_required_before_liveness (KYC-Integration S6 gate) means the session has no completed document: asking
+ * again cannot help, the customer has to do the ID step. Decided on the status and the body code, never the text.
+ */
+internal fun livenessStartRoute(error: Resource.Error, hasDocumentModule: Boolean): LivenessStartRoute = when {
+    error.httpStatus != 409 || error.errorCode != DOCUMENT_REQUIRED_BEFORE_LIVENESS -> LivenessStartRoute.TryAgain
+    hasDocumentModule -> LivenessStartRoute.DocumentFirst
+    else -> LivenessStartRoute.DocumentElsewhere
+}
+
+internal const val DOCUMENT_FIRST_COPY = "We need a photo of your ID before the selfie. It only takes a minute."
+internal const val DOCUMENT_ELSEWHERE_COPY = "We need a photo of your ID before the selfie. Add your ID first, then come back to the selfie."
 
 /** Plain-language reason for a liveness attempt that did not finish (never vendor or HTTP text). */
 internal fun livenessProblemCopy(code: String): String = when (code) {

@@ -35,7 +35,10 @@ data class SdkBranding(
 
 sealed class Resource<out T> {
     data class Success<out T>(val data: T) : Resource<T>()
-    data class Error(val message: String) : Resource<Nothing>()
+    // httpStatus / errorCode: the server's HTTP status and its error.message code, when the failure was an HTTP
+    // answer. Decisions (retry, routing) are made on these, never on the message text, which is the server's own
+    // sentence for the customer.
+    data class Error(val message: String, val httpStatus: Int? = null, val errorCode: String? = null) : Resource<Nothing>()
     class Loading(val message:String) : Resource<Nothing>()
 
     data class CompletedSuccess<out T>(val data: T) : Resource<T>()
