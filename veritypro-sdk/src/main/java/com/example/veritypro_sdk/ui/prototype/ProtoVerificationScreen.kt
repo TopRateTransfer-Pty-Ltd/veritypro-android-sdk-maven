@@ -634,8 +634,14 @@ fun ProtoVerificationScreen(
                         // CLIENT mode recapture the server asked for after liveness: post again now.
                         stage = ProtoStage.Submitting
                     } else {
-                        // CLIENT mode posts the document once, after the selfie, at Submitting.
-                        advanceModule()
+                        // CLIENT mode uploads the document NOW, before liveness — mirroring the
+                        // SERVER-DRIVEN path (and the web Orchestrator). The backend S6 gate in
+                        // begin-liveness (fail-closed) returns 409 document_required_before_liveness
+                        // for a DOCUMENT session that has no stored document, which otherwise bounces
+                        // the UI back to "Add my ID" and loops forever. Posting at the DOCUMENT module
+                        // (DocumentUpload) satisfies the gate; the final Submitting stage must NOT
+                        // re-post it (gated on !docUploaded there).
+                        stage = ProtoStage.DocumentUpload
                     }
                 },
                 onRetake = {
@@ -663,9 +669,11 @@ fun ProtoVerificationScreen(
         )
 
         ProtoStage.DocumentUpload -> {
-            // SERVER-DRIVEN only (CLIENT mode never enters this stage): upload the document NOW, keyed
-            // by the session's kycEngineSessionId (mirroring the web Orchestrator: update-kyc-verification
-            // → completeStep(DOCUMENT)). The final Submitting stage must NOT re-post it.
+            // BOTH modes upload the document NOW, before liveness, keyed by the session's
+            // kycEngineSessionId (mirroring the web Orchestrator: update-kyc-verification →
+            // completeStep(DOCUMENT)). engineSessionId() resolves the server session in SERVER-DRIVEN
+            // mode and the client KYC session in CLIENT mode. The final Submitting stage must NOT
+            // re-post it (CLIENT: gated on !docUploaded; SERVER: already stepped past DOCUMENT).
             LaunchedEffect(Unit) {
                 val outcome = protoSubmitVerification(
                     context = context,
@@ -693,6 +701,10 @@ fun ProtoVerificationScreen(
                     // so the host can persist it as a valid prior session for a later returning-user
                     // EDD/BIOMETRIC step. Only now (not at start) — the document is actually complete.
                     driver.serverSessionId()?.takeIf { it.isNotBlank() }?.let { onServerSessionEstablished(it) }
+                    // CLIENT mode: advanceModule() intentionally does NOT record DOCUMENT in
+                    // completedModules (it historically posted at Submitting). Now that CLIENT uploads
+                    // here, record it so the host result reports DOCUMENT as completed.
+                    if (!serverDriven) completedModules = (completedModules + "DOCUMENT").distinct()
                     advanceModule()
                 } else {
                     // Do NOT post /steps/DOCUMENT/complete when the evidence upload failed — that would
@@ -1035,7 +1047,12 @@ fun ProtoVerificationScreen(
             // session id) and every step advanced via completeV2Step, so there is nothing left to post
             // — this stage only finalizes.
             val hasDocument = protoWants(options).document
-            if (hasDocument && !serverDriven) {
+            if (hasDocument && !serverDriven && (!docUploaded || resubmitAfterRecapture)) {
+                // CLIENT mode normally uploads the document at the DOCUMENT module (DocumentUpload,
+                // before liveness) to satisfy the backend S6 gate, so by the time we reach here the
+                // document is already stored (docUploaded) and this block is skipped. It still runs as
+                // a defensive re-post if the document was not uploaded, or on a post-liveness recapture
+                // the backend asked for (resubmitAfterRecapture), carrying the liveness id.
                 // Real backend submission: document + device + location + IP + security assessment +
                 // compressed document clip, keyed to session + liveness IDs. Await the result directly
                 // so the screen always advances (no kycState race).
@@ -1071,7 +1088,7 @@ fun ProtoVerificationScreen(
                 // address/EDD/biometric-only, or the whole server-driven flow).
                 LaunchedEffect(Unit) {
                     flowOk = when {
-                        hasDocument -> docUploaded // server-driven: document already posted at its module
+                        hasDocument -> docUploaded // document already posted at the DOCUMENT module (both modes)
                         protoWants(options).biometric -> livenessApproved
                         else -> true
                     }
