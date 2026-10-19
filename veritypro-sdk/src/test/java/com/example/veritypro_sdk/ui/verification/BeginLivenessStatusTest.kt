@@ -65,12 +65,12 @@ class BeginLivenessStatusTest {
     private fun serverAnswers(status: Int, statusMessage: String, code: String?) {
         val error = code?.let { ""","error":{"message":"$it"}""" } ?: ""
         val body = """{"statusCode":$status,"statusMessage":"$statusMessage","data":null$error}"""
-        coEvery { api.beginLiveness(any(), any()) } throws
+        coEvery { api.beginLiveness(any(), any(), any()) } throws
             HttpException(Response.error<BeginLivenessResponse>(status, body.toResponseBody("application/json".toMediaType())))
     }
 
     private fun serverAnswersEmpty(status: Int) {
-        coEvery { api.beginLiveness(any(), any()) } throws
+        coEvery { api.beginLiveness(any(), any(), any()) } throws
             HttpException(Response.error<BeginLivenessResponse>(status, "".toResponseBody("application/json".toMediaType())))
     }
 
@@ -81,7 +81,7 @@ class BeginLivenessStatusTest {
         viewModel.startBeginLiveness("engine-session", forceRetry = true)
         advanceUntilIdle()
 
-        coVerify(exactly = 1) { api.beginLiveness(any(), any()) }
+        coVerify(exactly = 1) { api.beginLiveness(any(), any(), any()) }
         val state = viewModel.beginLivenessState.value as Resource.Error
         assertEquals(LivenessStartRoute.DocumentFirst, livenessStartRoute(state, hasDocumentModule = true))
         assertEquals(LivenessStartRoute.DocumentElsewhere, livenessStartRoute(state, hasDocumentModule = false))
@@ -94,7 +94,7 @@ class BeginLivenessStatusTest {
         viewModel.startBeginLiveness("engine-session", forceRetry = true)
         advanceUntilIdle()
 
-        coVerify(exactly = 1) { api.beginLiveness(any(), any()) }
+        coVerify(exactly = 1) { api.beginLiveness(any(), any(), any()) }
         val state = viewModel.beginLivenessState.value as Resource.Error
         assertEquals("Too many liveness attempts. Please wait a few minutes and try again.", state.message)
         assertEquals(LivenessStartRoute.TryAgain, livenessStartRoute(state, hasDocumentModule = true))
@@ -107,7 +107,7 @@ class BeginLivenessStatusTest {
         viewModel.startBeginLiveness("engine-session", forceRetry = true)
         advanceUntilIdle()
 
-        coVerify(exactly = 3) { api.beginLiveness(any(), any()) }
+        coVerify(exactly = 3) { api.beginLiveness(any(), any(), any()) }
         val state = viewModel.beginLivenessState.value as Resource.Error
         assertEquals(LivenessStartRoute.TryAgain, livenessStartRoute(state, hasDocumentModule = true))
     }
@@ -119,7 +119,7 @@ class BeginLivenessStatusTest {
         viewModel.startBeginLiveness("engine-session", forceRetry = true)
         advanceUntilIdle()
 
-        coVerify(exactly = 1) { api.beginLiveness(any(), any()) }
+        coVerify(exactly = 1) { api.beginLiveness(any(), any(), any()) }
     }
 
     @Test
@@ -129,6 +129,22 @@ class BeginLivenessStatusTest {
         // The code alone, without the status (e.g. a 200-shaped body), does not route either.
         val noStatus = Resource.Error("x", httpStatus = null, errorCode = DOCUMENT_REQUIRED_BEFORE_LIVENESS)
         assertEquals(LivenessStartRoute.TryAgain, livenessStartRoute(noStatus, hasDocumentModule = true))
+    }
+
+    @Test
+    fun `begin-liveness sends the document capture attemptId so the backend pins the right attempt`() = runTest(testDispatcher) {
+        // A fresh store always carries a non-blank attempt id; begin-liveness must forward exactly it, so
+        // KYC-Integration resolves (SessionId, AttemptId) instead of an arbitrary row on the shared engine
+        // SessionId — the false document_required_before_liveness fix. Error path is enough to observe the call.
+        val sent = mutableListOf<String?>()
+        coEvery { api.beginLiveness(any(), any(), captureNullable(sent)) } throws
+            HttpException(Response.error<BeginLivenessResponse>(400, "".toResponseBody("application/json".toMediaType())))
+
+        viewModel.startBeginLiveness("engine-session", forceRetry = true)
+        advanceUntilIdle()
+
+        assertEquals(viewModel.documentCapture.attemptId, sent.single())
+        assertTrue("attemptId must be non-blank", !sent.single().isNullOrBlank())
     }
 
     @Test

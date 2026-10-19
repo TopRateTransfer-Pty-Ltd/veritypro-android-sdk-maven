@@ -89,10 +89,10 @@ class VerityProViewModelTest {
     }
     @Test fun `readiness assessment reaches repository without changing session binding`() = runTest(testDispatcher) {
         val evidence = "{\"SchemaVersion\":1}"
-        coEvery { mockRepository.beginLiveness("engine", any(), evidence) } returns Resource.Success(makeBeginLivenessData())
+        coEvery { mockRepository.beginLiveness("engine", any(), evidence, any()) } returns Resource.Success(makeBeginLivenessData())
         viewModel.startBeginLiveness("engine", securityAssessmentJson = evidence)
         advanceUntilIdle()
-        coVerify(exactly = 1) { mockRepository.beginLiveness("engine", any(), evidence) }
+        coVerify(exactly = 1) { mockRepository.beginLiveness("engine", any(), evidence, any()) }
     }
     @Test fun `proof upload failure retains created address session for retry`() = runTest(testDispatcher) {
         val options = com.example.veritypro_sdk.utils.VerityOption("test-key", "integration", "Test", "Subject", "2000-01-01", "subject", "AU", mode="ADDRESS")
@@ -127,10 +127,10 @@ class VerityProViewModelTest {
         val options = com.example.veritypro_sdk.utils.VerityOption("session-key", "integration", "Test", "Subject", "2000-01-01", "subject", "AU", mode="SERVER_DRIVEN", apiBaseUrl="https://gateway.test")
         every { mockRepository.configureBaseUrl("https://gateway.test") } just Runs
         viewModel.initializeSession(options, "engine-1")
-        coEvery { mockRepository.beginLiveness("engine-1", "session-key") } returns Resource.Success(makeBeginLivenessData())
+        coEvery { mockRepository.beginLiveness("engine-1", "session-key", any(), any()) } returns Resource.Success(makeBeginLivenessData())
         viewModel.startBeginLiveness("engine-1")
         advanceUntilIdle()
-        coVerify(exactly=1) { mockRepository.beginLiveness("engine-1", "session-key") }
+        coVerify(exactly=1) { mockRepository.beginLiveness("engine-1", "session-key", any(), any()) }
         assertEquals("engine-1", viewModel.getSessionId())
     }
 
@@ -292,7 +292,7 @@ class VerityProViewModelTest {
     @Test
     fun `startBeginLiveness succeeds on first attempt and sets all state flows`() = runTest(testDispatcher) {
         val data = makeBeginLivenessData()
-        coEvery { mockRepository.beginLiveness(any(), any()) } returns
+        coEvery { mockRepository.beginLiveness(any(), any(), any(), any()) } returns
                 Resource.Success(data)
 
         viewModel.startBeginLiveness("kyc-session-1")
@@ -310,7 +310,7 @@ class VerityProViewModelTest {
     @Test
     fun `startBeginLiveness sets awsSessionId from response data`() = runTest(testDispatcher) {
         val data = makeBeginLivenessData(awsSessionId = "custom-aws-session-xyz")
-        coEvery { mockRepository.beginLiveness(any(), any()) } returns
+        coEvery { mockRepository.beginLiveness(any(), any(), any(), any()) } returns
                 Resource.Success(data)
 
         viewModel.startBeginLiveness("kyc-session-2")
@@ -326,7 +326,7 @@ class VerityProViewModelTest {
     @Test
     fun `startBeginLiveness retries on error and eventually succeeds`() = runTest(testDispatcher) {
         val data = makeBeginLivenessData()
-        coEvery { mockRepository.beginLiveness(any(), any()) } returnsMany listOf(
+        coEvery { mockRepository.beginLiveness(any(), any(), any(), any()) } returnsMany listOf(
             Resource.Error("Network error"),
             Resource.Error("Server busy"),
             Resource.Success(data)
@@ -342,7 +342,7 @@ class VerityProViewModelTest {
 
     @Test
     fun `startBeginLiveness exhausts all retries and sets error state`() = runTest(testDispatcher) {
-        coEvery { mockRepository.beginLiveness(any(), any()) } returns
+        coEvery { mockRepository.beginLiveness(any(), any(), any(), any()) } returns
                 Resource.Error("Persistent failure")
 
         viewModel.startBeginLiveness("kyc-session-fail", maxRetries = 3)
@@ -372,7 +372,7 @@ class VerityProViewModelTest {
     fun `startBeginLiveness handles throwable during retry`() = runTest(testDispatcher) {
         val data = makeBeginLivenessData()
         var callCount = 0
-        coEvery { mockRepository.beginLiveness(any(), any()) } answers {
+        coEvery { mockRepository.beginLiveness(any(), any(), any(), any()) } answers {
             callCount++
             if (callCount == 1) throw RuntimeException("Connection refused")
             else Resource.Success(data)
@@ -394,7 +394,7 @@ class VerityProViewModelTest {
         val firstData = makeBeginLivenessData(awsSessionId = "first-session")
         val secondData = makeBeginLivenessData(awsSessionId = "second-session")
 
-        coEvery { mockRepository.beginLiveness(any(), any()) } returnsMany listOf(
+        coEvery { mockRepository.beginLiveness(any(), any(), any(), any()) } returnsMany listOf(
             Resource.Success(firstData),
             Resource.Success(secondData)
         )
@@ -417,7 +417,7 @@ class VerityProViewModelTest {
     @Test
     fun `startBeginLiveness skips when awsSessionId already set without forceRetry`() = runTest(testDispatcher) {
         val data = makeBeginLivenessData(awsSessionId = "existing-session")
-        coEvery { mockRepository.beginLiveness(any(), any()) } returns
+        coEvery { mockRepository.beginLiveness(any(), any(), any(), any()) } returns
                 Resource.Success(data)
 
         // First call establishes the session
@@ -449,7 +449,7 @@ class VerityProViewModelTest {
             expiration = "2025-06-15T10:30:00Z"
         )
         val data = makeBeginLivenessData(credentials = creds)
-        coEvery { mockRepository.beginLiveness(any(), any()) } returns
+        coEvery { mockRepository.beginLiveness(any(), any(), any(), any()) } returns
                 Resource.Success(data)
 
         viewModel.startBeginLiveness("kyc-session-creds")
@@ -466,7 +466,7 @@ class VerityProViewModelTest {
     @Test
     fun `startBeginLiveness extracts region from BeginLivenessData`() = runTest(testDispatcher) {
         val data = makeBeginLivenessData(region = "eu-west-1")
-        coEvery { mockRepository.beginLiveness(any(), any()) } returns
+        coEvery { mockRepository.beginLiveness(any(), any(), any(), any()) } returns
                 Resource.Success(data)
 
         viewModel.startBeginLiveness("kyc-session-region")
@@ -478,7 +478,7 @@ class VerityProViewModelTest {
     @Test
     fun `startBeginLiveness defaults region to us-east-1 when response region is null`() = runTest(testDispatcher) {
         val data = makeBeginLivenessData(region = null)
-        coEvery { mockRepository.beginLiveness(any(), any()) } returns
+        coEvery { mockRepository.beginLiveness(any(), any(), any(), any()) } returns
                 Resource.Success(data)
 
         viewModel.startBeginLiveness("kyc-session-null-region")
@@ -490,7 +490,7 @@ class VerityProViewModelTest {
     @Test
     fun `startBeginLiveness handles null credentials from BeginLivenessData`() = runTest(testDispatcher) {
         val data = makeBeginLivenessData(credentials = null)
-        coEvery { mockRepository.beginLiveness(any(), any()) } returns
+        coEvery { mockRepository.beginLiveness(any(), any(), any(), any()) } returns
                 Resource.Success(data)
 
         viewModel.startBeginLiveness("kyc-session-null-creds")
@@ -506,7 +506,7 @@ class VerityProViewModelTest {
     @Test
     fun `resetLivenessState clears awsSessionId`() = runTest(testDispatcher) {
         val data = makeBeginLivenessData()
-        coEvery { mockRepository.beginLiveness(any(), any()) } returns
+        coEvery { mockRepository.beginLiveness(any(), any(), any(), any()) } returns
                 Resource.Success(data)
 
         // Establish state first
@@ -523,7 +523,7 @@ class VerityProViewModelTest {
     @Test
     fun `resetLivenessState resets region to us-east-1`() = runTest(testDispatcher) {
         val data = makeBeginLivenessData(region = "eu-central-1")
-        coEvery { mockRepository.beginLiveness(any(), any()) } returns
+        coEvery { mockRepository.beginLiveness(any(), any(), any(), any()) } returns
                 Resource.Success(data)
 
         viewModel.startBeginLiveness("kyc-session-region-reset")
@@ -538,7 +538,7 @@ class VerityProViewModelTest {
     @Test
     fun `resetLivenessState clears credentials`() = runTest(testDispatcher) {
         val data = makeBeginLivenessData()
-        coEvery { mockRepository.beginLiveness(any(), any()) } returns
+        coEvery { mockRepository.beginLiveness(any(), any(), any(), any()) } returns
                 Resource.Success(data)
 
         viewModel.startBeginLiveness("kyc-session-creds-reset")
@@ -553,7 +553,7 @@ class VerityProViewModelTest {
     @Test
     fun `resetLivenessState resets beginLivenessState to Loading idle`() = runTest(testDispatcher) {
         val data = makeBeginLivenessData()
-        coEvery { mockRepository.beginLiveness(any(), any()) } returns
+        coEvery { mockRepository.beginLiveness(any(), any(), any(), any()) } returns
                 Resource.Success(data)
 
         viewModel.startBeginLiveness("kyc-session-begin-reset")

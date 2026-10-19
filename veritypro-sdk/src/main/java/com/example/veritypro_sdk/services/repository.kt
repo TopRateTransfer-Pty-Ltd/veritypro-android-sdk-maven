@@ -429,10 +429,10 @@ class ApiRepository {
         return Resource.Error("Liveness verification timed out after $maxAttempts attempts. Please try again.")
     }
 
-    suspend fun beginLiveness(sessionId: String, apiKey: String, securityAssessmentJson: String? = null): Resource<BeginLivenessData> {
+    suspend fun beginLiveness(sessionId: String, apiKey: String, securityAssessmentJson: String? = null, attemptId: String? = null): Resource<BeginLivenessData> {
         return try {
-            val resp = if (securityAssessmentJson == null) api.beginLiveness(sessionId, apiKey)
-                else api.beginLivenessWithAssessment(sessionId, apiKey, BeginLivenessAssessmentRequest(securityAssessmentJson))
+            val resp = if (securityAssessmentJson == null) api.beginLiveness(sessionId, apiKey, attemptId)
+                else api.beginLivenessWithAssessment(sessionId, apiKey, BeginLivenessAssessmentRequest(securityAssessmentJson), attemptId)
             Log.d("Verity", "beginLiveness response for session $sessionId")
 
             if ((resp.statusCode in 200..299) || resp.statusCode == 100) {

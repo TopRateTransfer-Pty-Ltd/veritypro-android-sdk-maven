@@ -62,10 +62,17 @@ interface VerityApiService {
     ): retrofit2.Response<okhttp3.ResponseBody>
 
 
+    // attemptId: the document capture attempt (veritypro.capture.v1) the selfie belongs to. Optional —
+    // Retrofit omits a null @Query, so older backends (and the pre-attemptId gateway) are unaffected. When
+    // sent, KYC-Integration pins the exact (SessionId, AttemptId) row instead of a FirstOrDefault over the
+    // engine SessionId (shared across every attempt), which otherwise resolves the wrong attempt on a
+    // resubmission and returns a FALSE document_required_before_liveness (409). See KycVerificationService
+    // .BeginLivenessSession step (1).
     @POST("/kycintegration/kyc-verification/begin-liveness")
     suspend fun beginLiveness(
         @Query("sessionId") sessionId: String,
         @Header("x-api-key") apiKey: String,
+        @Query("attemptId") attemptId: String? = null,
     ): BeginLivenessResponse
 
     @POST("/kycintegration/kyc-verification/begin-liveness")
@@ -73,6 +80,7 @@ interface VerityApiService {
         @Query("sessionId") sessionId: String,
         @Header("x-api-key") apiKey: String,
         @Body assessment: BeginLivenessAssessmentRequest,
+        @Query("attemptId") attemptId: String? = null,
     ): BeginLivenessResponse
 
     /** Step-up begin-liveness — authenticated by API key OR capability token bearer. Retrofit omits null headers. */

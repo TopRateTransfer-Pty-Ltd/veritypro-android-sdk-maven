@@ -520,7 +520,15 @@ class VerityProViewModel(
                 try {
                     Log.d("BeginLiveness", "Attempt ${attempt + 1}/$maxRetries for session $activeSessionId")
 
-                    val resp = repository.beginLiveness(activeSessionId, apiKey, securityAssessmentJson)
+                    // Pin the selfie to the document capture attempt it belongs to. This is the SAME
+                    // id submitted as CaptureAttemptId (ProtoSubmit -> VerificationRequestMultipart),
+                    // so KYC-Integration resolves the exact (SessionId, AttemptId) row rather than an
+                    // arbitrary attempt sharing the engine SessionId — the false-409 fix. Backend
+                    // degrades gracefully to latest-attempt resolution if it does not match.
+                    val resp = repository.beginLiveness(
+                        activeSessionId, apiKey, securityAssessmentJson,
+                        attemptId = documentCapture.attemptId.takeIf { it.isNotBlank() },
+                    )
                     when (resp) {
                         is Resource.Success -> {
                             _beginLivenessState.value = Resource.Success(resp.data)
