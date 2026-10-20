@@ -54,6 +54,7 @@ import com.amplifyframework.core.Amplify
 import com.example.veritypro_sdk.services.CountryDocumentItem
 import com.example.veritypro_sdk.services.Resource
 import com.example.veritypro_sdk.services.BasicEddAssessmentCreated
+import com.example.veritypro_sdk.ui.verification.DOCUMENT_REQUIRED_BEFORE_LIVENESS
 import com.example.veritypro_sdk.ui.verification.VerityProViewModel
 import com.example.veritypro_sdk.utils.LightingCheck
 import com.example.veritypro_sdk.utils.VerityMode
@@ -633,8 +634,14 @@ fun ProtoVerificationScreen(
                         // CLIENT mode recapture the server asked for after liveness: post again now.
                         stage = ProtoStage.Submitting
                     } else {
-                        // CLIENT mode posts the document once, after the selfie, at Submitting.
-                        advanceModule()
+                        // CLIENT mode uploads the document NOW, before liveness — mirroring the
+                        // SERVER-DRIVEN path (and the web Orchestrator). The backend S6 gate in
+                        // begin-liveness (fail-closed) returns 409 document_required_before_liveness
+                        // for a DOCUMENT session that has no stored document, which otherwise bounces
+                        // the UI back to "Add my ID" and loops forever. Posting at the DOCUMENT module
+                        // (DocumentUpload) satisfies the gate; the final Submitting stage must NOT
+                        // re-post it (gated on !docUploaded there).
+                        stage = ProtoStage.DocumentUpload
                     }
                 },
                 onRetake = {
@@ -662,9 +669,11 @@ fun ProtoVerificationScreen(
         )
 
         ProtoStage.DocumentUpload -> {
-            // SERVER-DRIVEN only (CLIENT mode never enters this stage): upload the document NOW, keyed
-            // by the session's kycEngineSessionId (mirroring the web Orchestrator: update-kyc-verification
-            // → completeStep(DOCUMENT)). The final Submitting stage must NOT re-post it.
+            // BOTH modes upload the document NOW, before liveness, keyed by the session's
+            // kycEngineSessionId (mirroring the web Orchestrator: update-kyc-verification →
+            // completeStep(DOCUMENT)). engineSessionId() resolves the server session in SERVER-DRIVEN
+            // mode and the client KYC session in CLIENT mode. The final Submitting stage must NOT
+            // re-post it (CLIENT: gated on !docUploaded; SERVER: already stepped past DOCUMENT).
             LaunchedEffect(Unit) {
                 val outcome = protoSubmitVerification(
                     context = context,
@@ -692,6 +701,10 @@ fun ProtoVerificationScreen(
                     // so the host can persist it as a valid prior session for a later returning-user
                     // EDD/BIOMETRIC step. Only now (not at start) — the document is actually complete.
                     driver.serverSessionId()?.takeIf { it.isNotBlank() }?.let { onServerSessionEstablished(it) }
+                    // CLIENT mode: advanceModule() intentionally does NOT record DOCUMENT in
+                    // completedModules (it historically posted at Submitting). Now that CLIENT uploads
+                    // here, record it so the host result reports DOCUMENT as completed.
+                    if (!serverDriven) completedModules = (completedModules + "DOCUMENT").distinct()
                     advanceModule()
                 } else {
                     // Do NOT post /steps/DOCUMENT/complete when the evidence upload failed — that would
@@ -812,14 +825,43 @@ fun ProtoVerificationScreen(
                     )
                 }
             }
-            is Resource.Error -> ProtoErrorScreen(
-                kicker = "BIOMETRIC",
-                title = "Couldn't start the check",
-                // Generic copy — never surface backend/vendor identifiers from the raw error.
-                message = "We couldn't start the liveness check. Please try again.",
-                onRetry = { stage = ProtoStage.SelfieIntro },
-                onExit = onExit,
-            )
+            is Resource.Error -> when (livenessStartRoute(bs, hasDocumentModule = moduleQueue.contains("DOCUMENT"))) {
+                // The server has no completed document for this session: the selfie cannot start until it has one.
+                // Not a failure, a missing step, so the copy says what comes next and the button goes there.
+                LivenessStartRoute.DocumentFirst -> ProtoErrorScreen(
+                    kicker = "ID DOCUMENT",
+                    kickerColor = Proto.Teal,
+                    title = "One step first",
+                    message = DOCUMENT_FIRST_COPY,
+                    primaryLabel = "Add my ID",
+                    onRetry = {
+                        moduleIndex = moduleQueue.indexOf("DOCUMENT")
+                        completedModules = completedModules - "DOCUMENT"
+                        stage = stageForModule("DOCUMENT", options.eddAssessmentId)
+                    },
+                    onExit = onExit,
+                )
+                // Same answer, but this run has no document step to go back to (a selfie-only run): the host
+                // has to start the ID step, so the only way on is out.
+                LivenessStartRoute.DocumentElsewhere -> ProtoErrorScreen(
+                    kicker = "ID DOCUMENT",
+                    kickerColor = Proto.Teal,
+                    title = "One step first",
+                    message = DOCUMENT_ELSEWHERE_COPY,
+                    primaryLabel = "OK",
+                    onRetry = onExit,
+                    onExit = onExit,
+                )
+                LivenessStartRoute.TryAgain -> ProtoErrorScreen(
+                    kicker = "BIOMETRIC",
+                    title = "Couldn't start the check",
+                    // 429 gets its own plain sentence (wait a few minutes); everything else stays generic —
+                    // never surface backend/vendor identifiers from the raw error.
+                    message = if (bs.httpStatus == 429) bs.message else "We couldn't start the liveness check. Please try again.",
+                    onRetry = { stage = ProtoStage.SelfieIntro },
+                    onExit = onExit,
+                )
+            }
             else -> ProtoProcessingScreen("BIOMETRIC · LIVENESS", "Starting the\nliveness check", "One moment…", Proto.Teal)
         }
 
@@ -1005,7 +1047,12 @@ fun ProtoVerificationScreen(
             // session id) and every step advanced via completeV2Step, so there is nothing left to post
             // — this stage only finalizes.
             val hasDocument = protoWants(options).document
-            if (hasDocument && !serverDriven) {
+            if (hasDocument && !serverDriven && (!docUploaded || resubmitAfterRecapture)) {
+                // CLIENT mode normally uploads the document at the DOCUMENT module (DocumentUpload,
+                // before liveness) to satisfy the backend S6 gate, so by the time we reach here the
+                // document is already stored (docUploaded) and this block is skipped. It still runs as
+                // a defensive re-post if the document was not uploaded, or on a post-liveness recapture
+                // the backend asked for (resubmitAfterRecapture), carrying the liveness id.
                 // Real backend submission: document + device + location + IP + security assessment +
                 // compressed document clip, keyed to session + liveness IDs. Await the result directly
                 // so the screen always advances (no kycState race).
@@ -1041,7 +1088,7 @@ fun ProtoVerificationScreen(
                 // address/EDD/biometric-only, or the whole server-driven flow).
                 LaunchedEffect(Unit) {
                     flowOk = when {
-                        hasDocument -> docUploaded // server-driven: document already posted at its module
+                        hasDocument -> docUploaded // document already posted at the DOCUMENT module (both modes)
                         protoWants(options).biometric -> livenessApproved
                         else -> true
                     }
@@ -1225,6 +1272,8 @@ private fun ProtoErrorScreen(
     message: String,
     onRetry: () -> Unit,
     onExit: () -> Unit,
+    kickerColor: Color = Proto.Danger,
+    primaryLabel: String = "Try again",
 ) {
     Column(
         Modifier.fillMaxSize().background(Proto.Canvas).padding(26.dp),
@@ -1232,7 +1281,7 @@ private fun ProtoErrorScreen(
     ) {
         BrutalBox(background = Color.White) {
             Column(Modifier.padding(20.dp)) {
-                MonoLabel(kicker, Proto.Danger)
+                MonoLabel(kicker, kickerColor)
                 Spacer(Modifier.height(10.dp))
                 Text(title, color = Proto.Ink, fontFamily = ProtoDisplay, fontSize = 26.sp, fontWeight = FontWeight.Black)
                 Spacer(Modifier.height(10.dp))
@@ -1240,7 +1289,7 @@ private fun ProtoErrorScreen(
             }
         }
         Spacer(Modifier.height(16.dp))
-        ProtoPrimaryButton("Try again", onClick = onRetry)
+        ProtoPrimaryButton(primaryLabel, onClick = onRetry)
         Spacer(Modifier.height(10.dp))
         Text(
             "Close", color = Proto.Sub, fontFamily = ProtoDisplay, fontSize = 14.sp,
@@ -1249,6 +1298,22 @@ private fun ProtoErrorScreen(
         )
     }
 }
+
+/** Where a begin-liveness error takes the customer. */
+internal enum class LivenessStartRoute { DocumentFirst, DocumentElsewhere, TryAgain }
+
+/**
+ * 409 document_required_before_liveness (KYC-Integration S6 gate) means the session has no completed document: asking
+ * again cannot help, the customer has to do the ID step. Decided on the status and the body code, never the text.
+ */
+internal fun livenessStartRoute(error: Resource.Error, hasDocumentModule: Boolean): LivenessStartRoute = when {
+    error.httpStatus != 409 || error.errorCode != DOCUMENT_REQUIRED_BEFORE_LIVENESS -> LivenessStartRoute.TryAgain
+    hasDocumentModule -> LivenessStartRoute.DocumentFirst
+    else -> LivenessStartRoute.DocumentElsewhere
+}
+
+internal const val DOCUMENT_FIRST_COPY = "We need a photo of your ID before the selfie. It only takes a minute."
+internal const val DOCUMENT_ELSEWHERE_COPY = "We need a photo of your ID before the selfie. Add your ID first, then come back to the selfie."
 
 /** Plain-language reason for a liveness attempt that did not finish (never vendor or HTTP text). */
 internal fun livenessProblemCopy(code: String): String = when (code) {

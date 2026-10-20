@@ -7,7 +7,9 @@ plugins {
 }
 
 // Single source for the published version and BuildConfig.SDK_VERSION (CaptureMetadataJson sdk.version).
-def veritySdkVersion = "1.9.0"
+// 1.9.2: CLIENT mode uploads the document before begin-liveness (via the DocumentUpload stage, like
+// SERVER-DRIVEN), killing the "Add my ID" loop against the backend S6 document-before-liveness gate.
+def veritySdkVersion = "1.9.2"
 
 android {
     namespace 'com.example.veritypro_sdk'

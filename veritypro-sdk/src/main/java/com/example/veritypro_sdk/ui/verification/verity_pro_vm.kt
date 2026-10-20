@@ -30,6 +30,15 @@ import com.example.veritypro_sdk.utils.CaptureRuntimeData
 import com.example.veritypro_sdk.utils.SecurityAssessmentCollector
 import com.example.veritypro_sdk.utils.withCurrentLocation
 
+/** begin-liveness 409: the session has no completed document yet (KYC-Integration S6 gate). */
+internal const val DOCUMENT_REQUIRED_BEFORE_LIVENESS = "document_required_before_liveness"
+
+/**
+ * A 4xx from begin-liveness is the server's answer, not a blip: asking again cannot change it, and each ask spends a
+ * liveness-per-session permit. 5xx (503 document_check_unavailable), network and unknown failures stay retryable.
+ */
+internal fun isFinalBeginLivenessError(error: Resource.Error): Boolean = error.httpStatus?.let { it in 400..499 } == true
+
 class VerityProViewModel(
     repository: ApiRepository? = null,
 ) : ViewModel() {
@@ -511,7 +520,15 @@ class VerityProViewModel(
                 try {
                     Log.d("BeginLiveness", "Attempt ${attempt + 1}/$maxRetries for session $activeSessionId")
 
-                    val resp = repository.beginLiveness(activeSessionId, apiKey, securityAssessmentJson)
+                    // Pin the selfie to the document capture attempt it belongs to. This is the SAME
+                    // id submitted as CaptureAttemptId (ProtoSubmit -> VerificationRequestMultipart),
+                    // so KYC-Integration resolves the exact (SessionId, AttemptId) row rather than an
+                    // arbitrary attempt sharing the engine SessionId — the false-409 fix. Backend
+                    // degrades gracefully to latest-attempt resolution if it does not match.
+                    val resp = repository.beginLiveness(
+                        activeSessionId, apiKey, securityAssessmentJson,
+                        attemptId = documentCapture.attemptId.takeIf { it.isNotBlank() },
+                    )
                     when (resp) {
                         is Resource.Success -> {
                             _beginLivenessState.value = Resource.Success(resp.data)
@@ -531,14 +548,15 @@ class VerityProViewModel(
                             // transient. Critically, a 429 (rate limit: liveness-per-session, 5 per
                             // 30 min) will NOT clear within the backoff window, and every retry burns
                             // another permit, deepening the lockout. Surface it and stop immediately.
-                            val msg = resp.message ?: ""
-                            if (Regex("HTTP 4\\d\\d").containsMatchIn(msg)) {
-                                val friendly = if (msg.contains("429")) {
+                            // Decided on the status code: the message is the server's own sentence and
+                            // never carries "HTTP 4xx", so matching the text never stopped a retry.
+                            if (isFinalBeginLivenessError(resp)) {
+                                val friendly = if (resp.httpStatus == 429) {
                                     "Too many liveness attempts. Please wait a few minutes and try again."
                                 } else {
-                                    msg
+                                    resp.message
                                 }
-                                _beginLivenessState.value = Resource.Error(friendly)
+                                _beginLivenessState.value = resp.copy(message = friendly)
                                 _awsSessionId.value = null
                                 _livenessCredentials.value = null
                                 return@launch

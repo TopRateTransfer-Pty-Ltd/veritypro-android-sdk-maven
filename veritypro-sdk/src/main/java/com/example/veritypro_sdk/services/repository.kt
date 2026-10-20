@@ -86,6 +86,21 @@ class ApiRepository {
     }
 
     /**
+     * The machine code of an APIResponse error body: { ..., "error": { "message": "document_required_before_liveness" } }.
+     * Null when the body is empty or not that shape. For decisions only; never shown to the customer.
+     */
+    internal fun parseErrorCode(errorBody: String?): String? {
+        if (errorBody.isNullOrBlank()) return null
+        return try {
+            val json = JSONObject(errorBody)
+            val errorObj = json.optJSONObject("error") ?: json.optJSONObject("Error") ?: return null
+            errorObj.optString("message", "").takeIf { it.isNotEmpty() && it != "null" }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    /**
      * Map an EDD 401/403 to what the CUSTOMER sees. The diagnosis (error_code, message) goes to
      * logcat for the integrator; the screen only ever shows a plain sentence. Owner rule
      * (2026-10-07): customers never see technical or back-end wording.
@@ -414,10 +429,10 @@ class ApiRepository {
         return Resource.Error("Liveness verification timed out after $maxAttempts attempts. Please try again.")
     }
 
-    suspend fun beginLiveness(sessionId: String, apiKey: String, securityAssessmentJson: String? = null): Resource<BeginLivenessData> {
+    suspend fun beginLiveness(sessionId: String, apiKey: String, securityAssessmentJson: String? = null, attemptId: String? = null): Resource<BeginLivenessData> {
         return try {
-            val resp = if (securityAssessmentJson == null) api.beginLiveness(sessionId, apiKey)
-                else api.beginLivenessWithAssessment(sessionId, apiKey, BeginLivenessAssessmentRequest(securityAssessmentJson))
+            val resp = if (securityAssessmentJson == null) api.beginLiveness(sessionId, apiKey, attemptId)
+                else api.beginLivenessWithAssessment(sessionId, apiKey, BeginLivenessAssessmentRequest(securityAssessmentJson), attemptId)
             Log.d("Verity", "beginLiveness response for session $sessionId")
 
             if ((resp.statusCode in 200..299) || resp.statusCode == 100) {
@@ -430,7 +445,8 @@ class ApiRepository {
                     Resource.Error("Missing aws_session_id in response")
                 }
             } else {
-                Resource.Error(resp.statusMessage ?: resp.error?.get("message") ?: "Unknown error")
+                Resource.Error(resp.statusMessage ?: resp.error?.get("message") ?: "Unknown error",
+                    httpStatus = resp.statusCode, errorCode = resp.error?.get("message"))
             }
         } catch (e: IOException) {
             Log.e("Verity", "beginLiveness network error: ${e.message}")
@@ -438,7 +454,7 @@ class ApiRepository {
         } catch (e: HttpException) {
             val body = e.response()?.errorBody()?.string()
             Log.e("Verity", "beginLiveness HTTP status=${e.code()}")
-            Resource.Error(parseHttpError(e.code(), body))
+            Resource.Error(parseHttpError(e.code(), body), httpStatus = e.code(), errorCode = parseErrorCode(body))
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
