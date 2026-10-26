@@ -14,6 +14,10 @@ Document capture cues, ported from the hosted verification page (Customer.Web #8
   document". The zoom is display only: the full photo is uploaded and the crop is not in metadata.
 - No framing gate: the Android shutter stays manual, as before (the hosted page's tolerant
   framing check has no Android counterpart to relax).
+- Found on a TCL T442M: the longer camera title ran under the flow's round exit button. The bar
+  now keeps clear of it and the title only wraps after the document name.
+- Found on a TCL T442M: "See full photo" on a portrait photo pushed "Zoom to document" and the
+  quality hint off screen. The photo now shrinks to the space left above the buttons.
 
 ## 1.9.0 — Unreleased
 

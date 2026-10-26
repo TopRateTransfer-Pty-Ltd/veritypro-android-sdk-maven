@@ -110,6 +110,18 @@ fun captureSideTitle(docLabel: String, sideLabel: String, sideNumber: Int, sideC
 }
 
 /**
+ * [captureSideTitle] for the camera bar, which is narrow: the only place it may wrap is after the
+ * document name, so a long title reads "DRIVER'S LICENSE ·" / "FRONT · 1 OF 2" rather than
+ * stranding the "2" on a line of its own.
+ */
+fun captureBarTitle(title: String): String {
+    val nbsp = " "
+    val i = title.indexOf(" · ")
+    if (i < 0) return title.replace(" ", nbsp)
+    return title.substring(0, i).replace(" ", nbsp) + "${nbsp}· " + title.substring(i + 3).replace(" ", nbsp)
+}
+
+/**
  * Screen 5 — live document capture (CameraX), rendered neo-brutalist.
  *
  * Produces one [RawSideCapture] for [tag]: the original JPEG plus a [RecordingTimeline] of this
@@ -564,18 +576,20 @@ fun ProtoDocumentCaptureScreen(
         }
 
         // Top bar — close + document · side mono label. The back side is yellow so the change of
-        // side is obvious at a glance (hosted page parity).
+        // side is obvious at a glance (hosted page parity). The end padding keeps the label clear
+        // of the flow's persistent exit button (48dp circle, 16dp from the edge) drawn over this bar;
+        // "DRIVER'S LICENSE · FRONT · 1 OF 2" otherwise runs underneath it.
         val back = tag.side == CaptureSide.BACK
         val barText = if (back) Proto.Ink else Color.White
         Row(
             Modifier.fillMaxWidth().background(if (back) Proto.GoldenFizz else Color(0xCC120037))
-                .padding(horizontal = 20.dp, vertical = 14.dp),
+                .padding(start = 20.dp, end = 76.dp, top = 14.dp, bottom = 14.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text("✕", color = barText, fontFamily = ProtoDisplay, fontSize = 20.sp,
                 fontWeight = FontWeight.Black, modifier = Modifier.protoClick(onClose))
             Spacer(Modifier.width(16.dp))
-            MonoLabel(captureSideTitle(docLabel, sideLabel, sideNumber, sideCount), barText, size = 12)
+            MonoLabel(captureBarTitle(captureSideTitle(docLabel, sideLabel, sideNumber, sideCount)), barText, size = 12)
         }
 
         // Bottom: guidance pill + shutter button — matches iOS layout.
@@ -676,13 +690,15 @@ fun ProtoDocumentPreviewScreen(
             Spacer(Modifier.height(8.dp))
             Text("Is everything clear and readable?", color = Proto.Sub, fontFamily = ProtoDisplay, fontSize = 15.sp)
             Spacer(Modifier.height(18.dp))
-            BrutalBox {
-                // The image keeps its intrinsic aspect (ContentScale.Fit) and the box height
-                // follows it: the zoomed document area, or the whole photo.
-                val imgAspect = if (shown != null && shown.height > 0) shown.width.toFloat() / shown.height.toFloat() else frameAspect
-                BoxWithConstraints(Modifier.fillMaxWidth()) {
-                    val imgHeight = maxWidth / imgAspect
-                    Box(Modifier.fillMaxWidth().height(imgHeight)) {
+            // The image keeps its intrinsic aspect (ContentScale.Fit): the zoomed document area, or the
+            // whole photo. It takes only the height left once the toggle, label and hint below are
+            // placed (weight, fill = false) — a portrait full photo at full width is taller than the
+            // screen and pushed "Zoom to document" and the quality hint out of view.
+            val imgAspect = if (shown != null && shown.height > 0) shown.width.toFloat() / shown.height.toFloat() else frameAspect
+            BoxWithConstraints(Modifier.fillMaxWidth().weight(1f, fill = false)) {
+                val imgHeight = minOf(maxWidth / imgAspect, maxHeight)
+                BrutalBox(Modifier.width(imgHeight * imgAspect).height(imgHeight)) {
+                    Box(Modifier.fillMaxSize()) {
                         if (shown != null) {
                             Image(
                                 bitmap = shown.asImageBitmap(),

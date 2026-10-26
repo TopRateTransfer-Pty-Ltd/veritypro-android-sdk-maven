@@ -30,4 +30,13 @@ class DocCueTextTest {
         assertEquals("DRIVER'S LICENCE · BACK · 2 OF 2", captureSideTitle("Driver's Licence", "Back", 2, 2))
         assertEquals("PASSPORT · FRONT", captureSideTitle("Passport", "Front", 1, 1))
     }
+
+    @Test
+    fun `camera bar title may only wrap after the document name`() {
+        val nb = ' '
+        assertEquals("DRIVER'S${nb}LICENCE$nb· FRONT$nb·${nb}1${nb}OF${nb}2",
+            captureBarTitle("DRIVER'S LICENCE · FRONT · 1 OF 2"))
+        assertEquals("PASSPORT$nb· FRONT", captureBarTitle("PASSPORT · FRONT"))
+        assertEquals("NO${nb}SEPARATOR", captureBarTitle("NO SEPARATOR"))
+    }
 }
