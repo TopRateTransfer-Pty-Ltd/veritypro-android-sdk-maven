@@ -9,6 +9,7 @@ import androidx.camera.core.ImageCaptureException
 import androidx.camera.view.PreviewView
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
@@ -17,6 +18,8 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.Text
@@ -34,14 +37,23 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.IntOffset
+import kotlin.math.roundToInt
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.example.veritypro_sdk.capture.CaptureSide
 import com.example.veritypro_sdk.capture.CaptureTag
+import com.example.veritypro_sdk.capture.CropRect
+import com.example.veritypro_sdk.capture.GuideGeometry
+import com.example.veritypro_sdk.capture.PreviewCrop
 import com.example.veritypro_sdk.capture.ExifOrientation
 import com.example.veritypro_sdk.capture.QualityAdvisory
 import com.example.veritypro_sdk.capture.RawSideCapture
@@ -80,6 +92,23 @@ private fun decodeUprightBitmap(path: String): Bitmap? {
     }
 }
 
+/** Space kept clear of the guide: top bar, and status + shutter at the bottom (hosted page values). */
+private val GUIDE_TOP_RESERVE = 76.dp
+private val GUIDE_BOTTOM_RESERVE = 190.dp
+private const val GHOST_ALPHA = 0.22f
+
+/** What the faint artwork inside the framing guide shows. */
+sealed class GuideGhost {
+    data class Card(val kind: CueCardKind, val back: Boolean) : GuideGhost()
+    object PassportPage : GuideGhost()
+}
+
+/** "DRIVER'S LICENCE · BACK · 2 OF 2"; a one-sided document has no count. */
+fun captureSideTitle(docLabel: String, sideLabel: String, sideNumber: Int, sideCount: Int): String {
+    val base = "${docLabel.uppercase()} · ${sideLabel.uppercase()}"
+    return if (sideCount > 1) "$base · $sideNumber OF $sideCount" else base
+}
+
 /**
  * Screen 5 — live document capture (CameraX), rendered neo-brutalist.
  *
@@ -102,6 +131,13 @@ fun ProtoDocumentCaptureScreen(
     frameAspect: Float = 1.586f,
     /** Shown above the guidance pill, e.g. after a photo could not be saved. */
     notice: String? = null,
+    /** Which side this is and how many the document has: "FRONT · 1 OF 2". One side shows no count. */
+    sideNumber: Int = 1,
+    sideCount: Int = 1,
+    /** Faint artwork inside the guide: the card side to photograph, or a passport photo page. */
+    ghost: GuideGhost? = null,
+    /** Where the guide sits on screen; the preview zooms to it (display only, never uploaded). */
+    onGuideMeasured: (GuideGeometry) -> Unit = {},
     onCaptured: (RawSideCapture) -> Unit,
     onClose: () -> Unit,
     onMotionCollected: (com.example.veritypro_sdk.utils.CaptureRuntimeData) -> Unit = {},
@@ -502,15 +538,44 @@ fun ProtoDocumentCaptureScreen(
             },
         )
 
-        // Top bar — close + document · side mono label.
+        // Framing guide + faint artwork of what belongs inside it, sized like the hosted page.
+        val density = LocalDensity.current
+        BoxWithConstraints(Modifier.fillMaxSize()) {
+            val geometry = with(density) {
+                val w = maxWidth.toPx()
+                val h = maxHeight.toPx()
+                GuideGeometry(w, h, PreviewCrop.guideRect(w, h, frameAspect, GUIDE_TOP_RESERVE.toPx(), GUIDE_BOTTOM_RESERVE.toPx()))
+            }
+            LaunchedEffect(geometry) { onGuideMeasured(geometry) }
+            val g = geometry.guide
+            Box(
+                Modifier
+                    .offset { IntOffset(g.x.roundToInt(), g.y.roundToInt()) }
+                    .size(with(density) { g.w.toDp() }, with(density) { g.h.toDp() })
+                    .border(3.dp, Color.White),
+                contentAlignment = Alignment.Center,
+            ) {
+                when (ghost) {
+                    is GuideGhost.Card -> CueCardArt(ghost.kind, ghost.back, Modifier.fillMaxWidth(0.82f), alpha = GHOST_ALPHA)
+                    GuideGhost.PassportPage -> CuePhotoPageArt(Modifier.fillMaxWidth(0.82f), alpha = GHOST_ALPHA)
+                    null -> Unit
+                }
+            }
+        }
+
+        // Top bar — close + document · side mono label. The back side is yellow so the change of
+        // side is obvious at a glance (hosted page parity).
+        val back = tag.side == CaptureSide.BACK
+        val barText = if (back) Proto.Ink else Color.White
         Row(
-            Modifier.fillMaxWidth().background(Color(0xCC120037)).padding(horizontal = 20.dp, vertical = 14.dp),
+            Modifier.fillMaxWidth().background(if (back) Proto.GoldenFizz else Color(0xCC120037))
+                .padding(horizontal = 20.dp, vertical = 14.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text("✕", color = Color.White, fontFamily = ProtoDisplay, fontSize = 20.sp,
+            Text("✕", color = barText, fontFamily = ProtoDisplay, fontSize = 20.sp,
                 fontWeight = FontWeight.Black, modifier = Modifier.protoClick(onClose))
             Spacer(Modifier.width(16.dp))
-            MonoLabel("${docLabel.uppercase()} · ${sideLabel.uppercase()}", Color.White, size = 12)
+            MonoLabel(captureSideTitle(docLabel, sideLabel, sideNumber, sideCount), barText, size = 12)
         }
 
         // Bottom: guidance pill + shutter button — matches iOS layout.
@@ -558,6 +623,24 @@ fun ProtoDocumentCaptureScreen(
 }
 
 /**
+ * The [crop] (fractions of [bmp]) as its own bitmap, for display only. Null when there is no crop,
+ * or it is (almost) the whole photo so zooming would show nothing new.
+ */
+private fun zoomedPreviewBitmap(bmp: Bitmap, crop: CropRect?): Bitmap? {
+    if (crop == null || crop.w * crop.h > 0.9f) return null
+    val x = (crop.x * bmp.width).roundToInt().coerceIn(0, bmp.width - 1)
+    val y = (crop.y * bmp.height).roundToInt().coerceIn(0, bmp.height - 1)
+    val w = (crop.w * bmp.width).roundToInt().coerceIn(1, bmp.width - x)
+    val h = (crop.h * bmp.height).roundToInt().coerceIn(1, bmp.height - y)
+    return try {
+        Bitmap.createBitmap(bmp, x, y, w, h)
+    } catch (e: Exception) {
+        Log.w("ProtoDocPreview", "Preview zoom unavailable, showing the full photo: ${e.javaClass.simpleName}: ${e.message}")
+        null
+    }
+}
+
+/**
  * Screen 6 — check your photo.
  *
  * No network call and no verdict. "Looks good" is enabled as soon as the still exists; "Retake" is
@@ -569,6 +652,8 @@ fun ProtoDocumentPreviewScreen(
     imagePath: String,
     advisory: QualityAdvisory,
     frameAspect: Float = 1.586f,
+    /** The framing guide at the shutter. The preview opens zoomed to it; the upload is the full photo. */
+    guide: GuideGeometry? = null,
     onLooksGood: () -> Unit,
     onRetake: () -> Unit,
     onChangeDocumentType: (() -> Unit)? = null,
@@ -576,6 +661,10 @@ fun ProtoDocumentPreviewScreen(
     val bmp = remember(imagePath) { decodeUprightBitmap(imagePath) }
     val stillExists = remember(imagePath) { File(imagePath).let { it.exists() && it.length() > 0 } }
     val hint = advisory.hint()
+    // Display-only zoom to what the customer framed, so the text is large enough to check.
+    val zoomBmp = remember(bmp, guide) { bmp?.let { zoomedPreviewBitmap(it, PreviewCrop.forStill(guide, it.width, it.height)) } }
+    var showFull by remember(imagePath) { mutableStateOf(false) }
+    val shown = if (zoomBmp != null && !showFull) zoomBmp else bmp
 
     Column(Modifier.fillMaxSize().background(Proto.Canvas)) {
         ProtoTopBar(step = null, onBack = onRetake)
@@ -588,15 +677,15 @@ fun ProtoDocumentPreviewScreen(
             Text("Is everything clear and readable?", color = Proto.Sub, fontFamily = ProtoDisplay, fontSize = 15.sp)
             Spacer(Modifier.height(18.dp))
             BrutalBox {
-                // The image keeps its intrinsic aspect (ContentScale.Fit): the whole captured
-                // document shows and the box height follows the photo.
-                val imgAspect = if (bmp != null && bmp.height > 0) bmp.width.toFloat() / bmp.height.toFloat() else frameAspect
+                // The image keeps its intrinsic aspect (ContentScale.Fit) and the box height
+                // follows it: the zoomed document area, or the whole photo.
+                val imgAspect = if (shown != null && shown.height > 0) shown.width.toFloat() / shown.height.toFloat() else frameAspect
                 BoxWithConstraints(Modifier.fillMaxWidth()) {
                     val imgHeight = maxWidth / imgAspect
                     Box(Modifier.fillMaxWidth().height(imgHeight)) {
-                        if (bmp != null) {
+                        if (shown != null) {
                             Image(
-                                bitmap = bmp.asImageBitmap(),
+                                bitmap = shown.asImageBitmap(),
                                 contentDescription = "Captured document",
                                 contentScale = ContentScale.Fit,
                                 modifier = Modifier.fillMaxSize(),
@@ -606,6 +695,14 @@ fun ProtoDocumentPreviewScreen(
                         }
                     }
                 }
+            }
+            if (zoomBmp != null) {
+                Text(
+                    if (showFull) "Zoom to document" else "See full photo",
+                    color = Proto.Ink, fontFamily = ProtoDisplay, fontSize = 14.sp, fontWeight = FontWeight.Bold,
+                    textDecoration = TextDecoration.Underline,
+                    modifier = Modifier.protoClick { showFull = !showFull }.padding(top = 12.dp, bottom = 4.dp).heightIn(min = 32.dp),
+                )
             }
             Spacer(Modifier.height(14.dp))
             MonoLabel(if (stillExists) "PHOTO CAPTURED" else "PHOTO NOT SAVED · PLEASE RETAKE", Proto.Ink, size = 11)

@@ -9,7 +9,10 @@ plugins {
 // Single source for the published version and BuildConfig.SDK_VERSION (CaptureMetadataJson sdk.version).
 // 1.9.2: CLIENT mode uploads the document before begin-liveness (via the DocumentUpload stage, like
 // SERVER-DRIVEN), killing the "Add my ID" loop against the backend S6 document-before-liveness gate.
-def veritySdkVersion = "1.9.2"
+// 1.9.3: capture cues from the hosted page: flip / open-your-passport screens, side count and a
+// yellow back-side bar on the camera, framing guide with faint artwork, and "Check your photo"
+// zoomed to the framed document (display only; the full photo is still uploaded).
+def veritySdkVersion = "1.9.3"
 
 android {
     namespace 'com.example.veritypro_sdk'

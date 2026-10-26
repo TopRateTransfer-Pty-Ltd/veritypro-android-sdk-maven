@@ -85,6 +85,8 @@ fun ProtoCameraAccessScreen(
 fun ProtoBeforeShootScreen(
     docLabel: String,
     sideLabel: String,
+    /** Licence / ID card: say up front that the back comes after the front. */
+    twoSided: Boolean = false,
     onOpenCamera: () -> Unit,
     onSkip: () -> Unit,
     onBack: () -> Unit = {},
@@ -109,6 +111,13 @@ fun ProtoBeforeShootScreen(
                 "Four things decide whether your photo passes first time.",
                 color = Proto.Sub, fontFamily = ProtoDisplay, fontSize = 15.sp,
             )
+            if (twoSided) {
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "We'll take the front first, then ask you to turn it over for the back.",
+                    color = Proto.Sub, fontFamily = ProtoDisplay, fontSize = 15.sp,
+                )
+            }
             Spacer(Modifier.height(20.dp))
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 tips.forEachIndexed { i, tip ->
