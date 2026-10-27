@@ -61,7 +61,7 @@ import com.example.veritypro_sdk.utils.VerityMode
 import com.example.veritypro_sdk.utils.VerityOption
 import kotlinx.coroutines.launch
 
-internal enum class ProtoStage { Welcome, Connecting, ChooseId, CameraAccess, BeforeShoot, DocCue, Capture, DocPreview, RecaptureRequired, DocumentUpload, AddressEntry, SelfieIntro, LightingWarning, Liveness, LivenessFailed, AddressUpload, EddIncome, EddUpload, Submitting, AllComplete, Error }
+internal enum class ProtoStage { Welcome, Connecting, ChooseId, CameraAccess, BeforeShoot, DocCue, Capture, DocPreview, RecaptureRequired, DocumentUpload, AddressEntry, SelfieIntro, LightingWarning, Liveness, LivenessFailed, LivenessRejected, AddressUpload, EddIncome, EddUpload, Submitting, AllComplete, Error }
 
 // Ordered active modules for this product (document → biometric → address → edd).
 // internal (not private) so the co-located [ClientFlowDriver] can reuse it as its start() computation.
@@ -828,12 +828,19 @@ fun ProtoVerificationScreen(
                             livenessId = bs.data.id ?: aws
                             vm.verifyLivenessResult(livenessId ?: aws) { ok ->
                                 livenessApproved = ok
-                                if (!ok) {
+                                if (!ok && vm.livenessScanRejected) {
+                                    // The scan was scored and failed. The backend has declined this
+                                    // attempt on it, so a second scan here would be taken against a
+                                    // decided attempt (prod 2026-10-27: four scans inside one attempt).
+                                    livenessProblem = "This verification attempt has ended because the selfie check was not successful. You can start a new verification from the app."
+                                    stage = ProtoStage.LivenessRejected
+                                } else if (!ok) {
                                     // SERVER: never post /steps/BIOMETRIC/complete for a failed liveness
                                     // result — that would advance the flow with an unverified selfie.
                                     // Say so, then retry from the selfie intro WITHOUT losing the captured
                                     // document (ProtoStage.Error's onRetry resets the whole flow to Welcome).
-                                    livenessProblem = "We couldn't confirm your selfie. Face the camera in good, even light and try again."
+                                    // The scan did not finish (no score), so it may be repeated.
+                                    livenessProblem = "We couldn't finish your selfie check. Face the camera in good, even light and try again."
                                     stage = ProtoStage.LivenessFailed
                                 } else {
                                     // CLIENT mode unchanged: advance regardless; the final submit carries
@@ -899,9 +906,36 @@ fun ProtoVerificationScreen(
             kicker = "BIOMETRIC",
             title = "Selfie check didn't finish",
             message = livenessProblem,
-            // The captured document stays in memory; only the selfie is repeated.
+            // The scan did not finish (camera error, connection drop, expiry, timeout): no score exists,
+            // so the selfie may be repeated. The captured document stays in memory.
             onRetry = { stage = ProtoStage.SelfieIntro },
             onExit = onExit,
+        )
+
+        // The scan ran and was scored as failed: the backend declines this attempt (ADR-0001: one
+        // document + one face scan per attempt). No in-attempt retry; a new attempt starts from the host
+        // app, within its 5-per-24h limit.
+        ProtoStage.LivenessRejected -> ProtoErrorScreen(
+            kicker = "BIOMETRIC",
+            title = "We couldn't verify your selfie",
+            message = livenessProblem,
+            onRetry = null,
+            primaryLabel = "Done",
+            onExit = {
+                onTypedResult(
+                    com.example.veritypro_sdk.utils.VerityResult(
+                        status = "FAILED", sessionId = engineSessionId().takeIf { it.isNotBlank() },
+                        completedSteps = completedModules, serverSessionId = driver.serverSessionId(),
+                        error = com.example.veritypro_sdk.utils.VerityVerificationError(
+                            "LIVENESS_FAILED", "The face scan was completed but did not pass. This attempt has ended.",
+                            recoverable = false, recommendedAction = "Start a new verification attempt.",
+                        ),
+                        addressSessionId = vm.getAddressSessionId().takeIf { it.isNotBlank() },
+                    )
+                )
+                onResult(false)
+                onExit()
+            },
         )
 
         ProtoStage.AddressEntry -> {
@@ -1300,7 +1334,8 @@ private fun ProtoErrorScreen(
     kicker: String,
     title: String,
     message: String,
-    onRetry: () -> Unit,
+    /** null: no retry inside this attempt — the only button is [primaryLabel], which exits. */
+    onRetry: (() -> Unit)?,
     onExit: () -> Unit,
     kickerColor: Color = Proto.Danger,
     primaryLabel: String = "Try again",
@@ -1319,13 +1354,17 @@ private fun ProtoErrorScreen(
             }
         }
         Spacer(Modifier.height(16.dp))
-        ProtoPrimaryButton(primaryLabel, onClick = onRetry)
-        Spacer(Modifier.height(10.dp))
-        Text(
-            "Close", color = Proto.Sub, fontFamily = ProtoDisplay, fontSize = 14.sp,
-            fontWeight = FontWeight.Bold, modifier = Modifier.fillMaxWidth().protoClick(onExit).padding(12.dp),
-            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-        )
+        if (onRetry == null) {
+            ProtoPrimaryButton(primaryLabel, onClick = onExit)
+        } else {
+            ProtoPrimaryButton(primaryLabel, onClick = onRetry)
+            Spacer(Modifier.height(10.dp))
+            Text(
+                "Close", color = Proto.Sub, fontFamily = ProtoDisplay, fontSize = 14.sp,
+                fontWeight = FontWeight.Bold, modifier = Modifier.fillMaxWidth().protoClick(onExit).padding(12.dp),
+                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+            )
+        }
     }
 }
 

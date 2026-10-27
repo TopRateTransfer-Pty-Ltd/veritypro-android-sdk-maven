@@ -98,6 +98,11 @@ class VerityProViewModel(
     private val _livenessVerificationState = MutableStateFlow(LivenessVerificationState.Idle)
     val livenessVerificationState: StateFlow<LivenessVerificationState> = _livenessVerificationState
 
+    /** True when the last liveness poll ended because the scan was SCORED and failed (engine FAILED),
+     *  as opposed to not finishing. The backend declines the attempt on a scored failure. */
+    var livenessScanRejected: Boolean = false
+        private set
+
     // ========================================================================
     // CAPTURED DOCUMENT STORAGE — survives screen rotation
     // ========================================================================
@@ -461,6 +466,7 @@ class VerityProViewModel(
         _beginLivenessState.value = Resource.Loading("idle")
         _livenessResultState.value = Resource.Loading("idle")
         _livenessVerificationState.value = LivenessVerificationState.Idle
+        livenessScanRejected = false
     }
 
     /**
@@ -474,6 +480,7 @@ class VerityProViewModel(
         viewModelScope.launch {
             _livenessVerificationState.value = LivenessVerificationState.Polling
             _livenessResultState.value = Resource.Loading("Verifying liveness result...")
+            livenessScanRejected = false
 
             val result = repository.pollLivenessResult(livenessId, apiKey)
             _livenessResultState.value = result
@@ -487,6 +494,7 @@ class VerityProViewModel(
                 }
                 is Resource.Error -> {
                     Log.e("Verity", "Liveness verification failed: ${result.message}")
+                    livenessScanRejected = result.errorCode == ApiRepository.LIVENESS_SCAN_FAILED
                     _livenessVerificationState.value = LivenessVerificationState.Failed
                     onResult(false)
                 }
