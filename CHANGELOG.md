@@ -1,5 +1,16 @@
 # Changelog — VerityPro Android SDK (`com.example.veritypro:veritypro-sdk`)
 
+## 1.9.4 — Unreleased
+
+- **A failed face scan ends the attempt** (#71). When liveness returns a scored failure, the flow
+  finishes with "Done" only; there is no "Try again" inside the same attempt. Retry is kept only for
+  a scan that never finished (camera/network/timeout). The backend allows 5 attempts per customer
+  per 24 h (KYC #514).
+- **Document photos are smaller** (#72). Stills over 2560 px on the long edge are downscaled to
+  2560 px at JPEG quality 90 before upload, with EXIF rotation baked in. The sha256 in the capture
+  metadata is computed after resizing. TCL T442M, 2026-10-27: passport still 2.3 MB → 0.77 MB, read
+  and tamper-checked normally by the engine. A still that cannot be resized fails the side (retake).
+
 ## 1.9.3 — Unreleased
 
 Document capture cues, ported from the hosted verification page (Customer.Web #838, #840).
