@@ -1,5 +1,24 @@
 # Changelog — VerityPro Android SDK (`com.example.veritypro:veritypro-sdk`)
 
+## 1.9.3 — Unreleased
+
+Document capture cues, ported from the hosted verification page (Customer.Web #838, #840).
+
+- After the front of a licence or ID card is accepted, a short screen shows the card turning over
+  ("Now turn your licence over"), with "I'm ready" or an automatic continue after 3.4 s.
+- Before a passport photo, a screen shows the booklet opening to the photo page.
+- Camera: the title counts sides ("FRONT · 1 OF 2" / "BACK · 2 OF 2"), the back side has a yellow
+  top bar, and a framing guide with faint artwork of the side to photograph is drawn.
+- "Before you shoot" says the back comes after the front for two-sided documents.
+- "Check your photo" opens zoomed to the framed document, with "See full photo" / "Zoom to
+  document". The zoom is display only: the full photo is uploaded and the crop is not in metadata.
+- No framing gate: the Android shutter stays manual, as before (the hosted page's tolerant
+  framing check has no Android counterpart to relax).
+- Found on a TCL T442M: the longer camera title ran under the flow's round exit button. The bar
+  now keeps clear of it and the title only wraps after the document name.
+- Found on a TCL T442M: "See full photo" on a portrait photo pushed "Zoom to document" and the
+  quality hint off screen. The photo now shrinks to the space left above the buttons.
+
 ## 1.9.0 — Unreleased
 
 Document capture no longer calls DocAI. Version **1.9.0** (minor bump above 1.8.1, the SVG-logo

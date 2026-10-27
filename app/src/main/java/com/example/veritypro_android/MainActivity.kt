@@ -184,7 +184,8 @@ fun VerityProDemoApp() {
         val products = listOf(
             "Document only" to listOf("DOCUMENT"),
             "Document + Selfie" to listOf("DOCUMENT", "BIOMETRIC"),
-            "Biometric only (step-up)" to listOf("BIOMETRIC"),
+            // Liveness-only retired on the backend (KYC #454/#459): hidden from the demo.
+            // "Biometric only (step-up)" to listOf("BIOMETRIC"),
             "Address" to listOf("ADDRESS"),
             "EDD" to listOf("EDD"),
             "Combined (all)" to listOf("DOCUMENT", "BIOMETRIC", "ADDRESS", "EDD"),

@@ -61,7 +61,7 @@ import com.example.veritypro_sdk.utils.VerityMode
 import com.example.veritypro_sdk.utils.VerityOption
 import kotlinx.coroutines.launch
 
-internal enum class ProtoStage { Welcome, Connecting, ChooseId, CameraAccess, BeforeShoot, Capture, DocPreview, RecaptureRequired, DocumentUpload, AddressEntry, SelfieIntro, LightingWarning, Liveness, LivenessFailed, AddressUpload, EddIncome, EddUpload, Submitting, AllComplete, Error }
+internal enum class ProtoStage { Welcome, Connecting, ChooseId, CameraAccess, BeforeShoot, DocCue, Capture, DocPreview, RecaptureRequired, DocumentUpload, AddressEntry, SelfieIntro, LightingWarning, Liveness, LivenessFailed, AddressUpload, EddIncome, EddUpload, Submitting, AllComplete, Error }
 
 // Ordered active modules for this product (document → biometric → address → edd).
 // internal (not private) so the co-located [ClientFlowDriver] can reuse it as its start() computation.
@@ -251,6 +251,10 @@ fun ProtoVerificationScreen(
     var capturedPath by remember { mutableStateOf<String?>(null) }
     var capturedAdvisory by remember { mutableStateOf(com.example.veritypro_sdk.capture.QualityAdvisory.UNKNOWN) }
     var sideIndex by remember { mutableStateOf(0) }
+    // The flip / open-your-passport cue shown before the camera opens (ProtoStage.DocCue).
+    var docCue by remember { mutableStateOf(DocCueKind.FLIP) }
+    // Where the framing guide sat at the shutter; "Check your photo" zooms to it (display only).
+    var guideGeometry by remember { mutableStateOf<com.example.veritypro_sdk.capture.GuideGeometry?>(null) }
     // Bumped to re-open the camera for the same side (e.g. a photo that could not be saved).
     var captureEntry by remember { mutableStateOf(0) }
     // A photo still saving/processing when the camera closes must not open "Check your photo".
@@ -541,12 +545,30 @@ fun ProtoVerificationScreen(
             onBack = { stage = ProtoStage.ChooseId },
         )
 
-        ProtoStage.BeforeShoot -> ProtoBeforeShootScreen(
-            docLabel = chosen?.documentType ?: "Document",
-            sideLabel = "Front",
-            onOpenCamera = { stage = ProtoStage.Capture },
-            onSkip = { stage = ProtoStage.Capture },
-            onBack = { stage = ProtoStage.CameraAccess },
+        ProtoStage.BeforeShoot -> {
+            // A passport opens on its photo page first; cards go straight to the camera.
+            val openCamera = {
+                if (sideIndex == 0 && protoDocTypeInt(chosen?.documentType) == 2) {
+                    docCue = DocCueKind.PASSPORT
+                    stage = ProtoStage.DocCue
+                } else {
+                    stage = ProtoStage.Capture
+                }
+            }
+            ProtoBeforeShootScreen(
+                docLabel = chosen?.documentType ?: "Document",
+                sideLabel = if (sideIndex > 0) "Back" else "Front",
+                twoSided = protoSides(chosen?.documentType).size > 1,
+                onOpenCamera = openCamera,
+                onSkip = openCamera,
+                onBack = { stage = ProtoStage.CameraAccess },
+            )
+        }
+
+        ProtoStage.DocCue -> ProtoDocCueScreen(
+            kind = docCue,
+            docLabel = chosen?.documentType,
+            onReady = { if (stage == ProtoStage.DocCue) stage = ProtoStage.Capture },
         )
 
         ProtoStage.Capture -> {
@@ -566,6 +588,11 @@ fun ProtoVerificationScreen(
                     tag = tag,
                     frameAspect = protoFrameAspect(chosen?.documentType),
                     notice = captureNotice,
+                    sideNumber = sideIndex + 1,
+                    sideCount = sides.size,
+                    ghost = if (protoDocTypeInt(chosen?.documentType) == 2) GuideGhost.PassportPage
+                        else GuideGhost.Card(cueCardKind(chosen?.documentType), back = isBack),
+                    onGuideMeasured = { guideGeometry = it },
                     onCaptured = { raw ->
                         if (!captureGate.isCurrent(sessionToken)) {
                             android.util.Log.w("ProtoVerification", "Camera was closed; discarding ${raw.tag.side} photo")
@@ -622,11 +649,14 @@ fun ProtoVerificationScreen(
                 imagePath = capturedPath ?: "",
                 advisory = capturedAdvisory,
                 frameAspect = protoFrameAspect(chosen?.documentType),
+                guide = guideGeometry,
                 onLooksGood = {
                     if (sideIndex < sides.lastIndex) {
-                        // more sides to capture (e.g. the back of a licence / ID card)
+                        // more sides to capture (e.g. the back of a licence / ID card): show the
+                        // card turning over first so the customer knows the next photo is the back.
                         sideIndex += 1
-                        stage = ProtoStage.Capture
+                        docCue = DocCueKind.FLIP
+                        stage = ProtoStage.DocCue
                     } else if (serverDriven) {
                         // SERVER-DRIVEN posts the document now (DocumentUpload).
                         stage = ProtoStage.DocumentUpload
