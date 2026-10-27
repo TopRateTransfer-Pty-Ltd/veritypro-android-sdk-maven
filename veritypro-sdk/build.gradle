@@ -12,7 +12,9 @@ plugins {
 // 1.9.3: capture cues from the hosted page: flip / open-your-passport screens, side count and a
 // yellow back-side bar on the camera, framing guide with faint artwork, and "Check your photo"
 // zoomed to the framed document (display only; the full photo is still uploaded).
-def veritySdkVersion = "1.9.3"
+// 1.9.4: a scored-failed face scan ends the attempt (no in-attempt retry, #71); document stills are
+// downscaled to 2560 px long edge at JPEG q90 before upload (#72).
+def veritySdkVersion = "1.9.4"
 
 android {
     namespace 'com.example.veritypro_sdk'
