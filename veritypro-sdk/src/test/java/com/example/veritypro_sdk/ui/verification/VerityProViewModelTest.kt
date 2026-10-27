@@ -257,6 +257,28 @@ class VerityProViewModelTest {
     }
 
     @Test
+    fun `verifyLivenessResult marks a scored failed scan as rejected`() = runTest(testDispatcher) {
+        coEvery { mockRepository.pollLivenessResult(any(), any()) } returns
+                Resource.Error("Liveness check failed: FAILED", errorCode = ApiRepository.LIVENESS_SCAN_FAILED)
+
+        viewModel.verifyLivenessResult("aws-session-scored") { }
+        advanceUntilIdle()
+
+        assertTrue("A scored FAILED scan ends the attempt", viewModel.livenessScanRejected)
+    }
+
+    @Test
+    fun `verifyLivenessResult does not mark an unfinished scan as rejected`() = runTest(testDispatcher) {
+        coEvery { mockRepository.pollLivenessResult(any(), any()) } returns
+                Resource.Error("Liveness verification timed out after 12 attempts. Please try again.")
+
+        viewModel.verifyLivenessResult("aws-session-unfinished") { }
+        advanceUntilIdle()
+
+        assertTrue("An unfinished scan may be retried", !viewModel.livenessScanRejected)
+    }
+
+    @Test
     fun `verifyLivenessResult sets livenessResultState to Error on failure`() = runTest(testDispatcher) {
         coEvery { mockRepository.pollLivenessResult(any(), any()) } returns
                 Resource.Error("Timed out")

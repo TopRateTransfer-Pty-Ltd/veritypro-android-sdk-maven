@@ -336,6 +336,11 @@ class ApiRepository {
         }
     }
 
+    companion object {
+        /** [Resource.Error.errorCode] when the liveness scan was scored and failed (engine status FAILED). */
+        const val LIVENESS_SCAN_FAILED = "liveness_scan_failed"
+    }
+
     suspend fun getLivenessResult(livenessId: String, apiKey: String): Resource<LivenessResultResponse> {
         return try {
             val url = "/kycintegration/kyc-verification/liveness-result/$livenessId"
@@ -345,6 +350,10 @@ class ApiRepository {
             when (resp.status.uppercase()) {
                 "SUCCEEDED" -> Resource.Success(resp)
                 "PENDING", "CREATED", "IN_PROGRESS" -> Resource.Loading("Liveness still processing: ${resp.status}")
+                // The scan ran and was SCORED below the threshold. The backend declines the attempt on
+                // this (KYC KycHelper ValidateResponse), so callers must not offer another scan in it.
+                "FAILED" -> Resource.Error("Liveness check failed: ${resp.status}", errorCode = LIVENESS_SCAN_FAILED)
+                // No score (EXPIRED, or a status this SDK does not know): the scan did not finish.
                 else -> Resource.Error("Liveness check failed: ${resp.status}")
             }
         } catch (e: IOException) {
