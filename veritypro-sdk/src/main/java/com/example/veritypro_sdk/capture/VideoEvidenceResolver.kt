@@ -121,6 +121,8 @@ object VideoEvidenceResolver {
 object SideCaptureAssembler {
     fun assemble(raw: RawSideCapture): SideCapture {
         val still = try {
+            // Size first: describeStill hashes the file, and that hash must cover the uploaded bytes.
+            StillUploadSizer.fitForUpload(raw.stillPath)
             CaptureFiles.describeStill(raw.stillPath, raw.stillSavedAtMs)
         } catch (e: Exception) {
             // The side is lost; its clip will never be uploaded, so it must not stay on disk (review #61).
