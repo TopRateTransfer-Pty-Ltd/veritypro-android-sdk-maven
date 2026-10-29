@@ -24,9 +24,26 @@ enum class VerityVideoModule(val tag: String) {
 /**
  * Recording quality tier selected by device hardware level.
  * SD — Camera2 LIMITED: 480p, 800 kbps, 8 MiB cap, 90 s max.
- * HD — Camera2 FULL / LEVEL_3: 720p, 30 MiB cap, 3 min max.
+ * HD — Camera2 FULL / LEVEL_3: 720p, 700 kbps, 15 MiB cap, 3 min max (the iOS SDK's policy:
+ *      VideoRecorder.swift targetBitrate 700_000, 1280 px long edge, maxRecordedFileSize 15 MiB, 180 s).
+ *
+ * HD used to set no bitrate and a 30 MiB cap. CameraX then encoded 720p at its default
+ * (several Mbit/s), so a document clip of a few dozen seconds passed the KYC engine's 20 MB
+ * per-file limit (MAX_UPLOAD_MB, kyc_gateway app/api/upload.py:674) and the whole upload was
+ * rejected with 413 "document_video exceeds 20MB" (prod 2026-10-28/29); every Android 413 came
+ * from this SDK (okhttp UA). Big clips also made the multipart body 20-55 MB, which slow mobile
+ * links cut off mid-upload (400 "Unexpected end of request content", 408, 499). And the cap was
+ * reached after roughly half a minute, so a customer who took longer than that to press the
+ * shutter got ENDED_BEFORE_STILL ([com.example.veritypro_sdk.capture.VideoEvidenceResolver]).
  */
-enum class DocumentVideoTier { SD, HD }
+enum class DocumentVideoTier(
+    val targetBitRate: Int,
+    val maxFileSizeBytes: Long,
+    val maxDurationMs: Long,
+) {
+    SD(800_000, 8L * 1024 * 1024, TimeUnit.SECONDS.toMillis(90)),
+    HD(700_000, 15L * 1024 * 1024, TimeUnit.MINUTES.toMillis(3)),
+}
 
 class VerityVideoRecorder(private val context: Context) {
 
@@ -43,13 +60,13 @@ class VerityVideoRecorder(private val context: Context) {
                 FallbackStrategy.lowerQualityOrHigherThan(Quality.HD)
             )
         }
-        val recorderBuilder = Recorder.Builder().setQualitySelector(qualitySelector)
-        if (tier == DocumentVideoTier.SD) {
-            // Target 800 kbps for SD: a 60-second recording produces ~6 MB, well within
-            // the 8 MiB cap and adds ~6s upload time on a typical AU 4G connection.
-            recorderBuilder.setTargetVideoEncodingBitRate(800_000)
-        }
-        return VideoCapture.withOutput(recorderBuilder.build())
+        // Every tier sets its bitrate: without one CameraX picks the quality's default, which is
+        // what made HD clips outgrow the engine's per-file limit (see [DocumentVideoTier]).
+        val recorder = Recorder.Builder()
+            .setQualitySelector(qualitySelector)
+            .setTargetVideoEncodingBitRate(tier.targetBitRate)
+            .build()
+        return VideoCapture.withOutput(recorder)
     }
 
     /**
@@ -72,14 +89,8 @@ class VerityVideoRecorder(private val context: Context) {
         tier: DocumentVideoTier = DocumentVideoTier.HD,
         listener: Listener,
     ) {
-        val maxFileSizeBytes = when (tier) {
-            DocumentVideoTier.SD -> 8L * 1024 * 1024   // 8 MiB
-            DocumentVideoTier.HD -> 30L * 1024 * 1024  // 30 MiB
-        }
-        val maxDurationMs = when (tier) {
-            DocumentVideoTier.SD -> TimeUnit.SECONDS.toMillis(90)
-            DocumentVideoTier.HD -> TimeUnit.MINUTES.toMillis(3)
-        }
+        val maxFileSizeBytes = tier.maxFileSizeBytes
+        val maxDurationMs = tier.maxDurationMs
 
         val fileName = "verity_${module.tag}_${sessionId}_${System.currentTimeMillis()}.mp4"
         val file = File(context.cacheDir, fileName)
