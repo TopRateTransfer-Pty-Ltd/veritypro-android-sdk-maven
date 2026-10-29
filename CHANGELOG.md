@@ -1,5 +1,16 @@
 # Changelog — VerityPro Android SDK (`com.example.veritypro:veritypro-sdk`)
 
+## 1.9.5 — Unreleased
+
+- **HD document video at 700 kbps / 15 MiB** (#74), the iOS SDK policy. The HD tier (Camera2 FULL /
+  LEVEL_3) set no bitrate and a 30 MiB cap, so CameraX encoded 720p at its default (several Mbit/s):
+  clips passed the KYC engine's 20 MB per-file limit (413 "document_video exceeds 20MB", prod
+  2026-10-28/29), and 20-55 MB multipart bodies were cut off on slow links (400/408/499). Every tier
+  now sets its bitrate; SD is unchanged (800 kbps / 8 MiB / 90 s). The size cap finalizes a valid MP4
+  (`ERROR_FILE_SIZE_LIMIT_REACHED`, reported in the capture, not hidden). TCL T442M (Camera2 LIMITED,
+  so SD tier), 2026-10-30: 10.3 s clip 633 KB at 490 kbps, uploaded 202 on staging. The HD tier has
+  not been run on a FULL / LEVEL_3 device.
+
 ## 1.9.4 — Unreleased
 
 - **A failed face scan ends the attempt** (#71). When liveness returns a scored failure, the flow

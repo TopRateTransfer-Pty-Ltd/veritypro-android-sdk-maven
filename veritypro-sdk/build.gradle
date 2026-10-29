@@ -14,7 +14,9 @@ plugins {
 // zoomed to the framed document (display only; the full photo is still uploaded).
 // 1.9.4: a scored-failed face scan ends the attempt (no in-attempt retry, #71); document stills are
 // downscaled to 2560 px long edge at JPEG q90 before upload (#72).
-def veritySdkVersion = "1.9.4"
+// 1.9.5: HD document video at 700 kbps / 15 MiB (the iOS policy); HD set no bitrate and a 30 MiB cap,
+// so clips passed the KYC engine's 20 MB per-file limit (413) (#74).
+def veritySdkVersion = "1.9.5"
 
 android {
     namespace 'com.example.veritypro_sdk'
