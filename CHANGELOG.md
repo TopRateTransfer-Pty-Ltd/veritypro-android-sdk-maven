@@ -1,5 +1,13 @@
 # Changelog — VerityPro Android SDK (`com.example.veritypro:veritypro-sdk`)
 
+## 1.9.6 — Unreleased
+
+- **Capture metadata sends `guideCrop` per side.** This is where the framing guide sat at the shutter,
+  plus a 6% margin, as fractions of the upright uploaded still. It uses the same mapping as the
+  "Check your photo" zoom. KYC engine #262 cuts the document page from it, but only when the stored
+  bytes match `image.sha256`. Reviewers then see a cropped front and back for passports, licences
+  and ID cards. The field is absent when the guide was not measured. Not yet run on a device.
+
 ## 1.9.5 — Unreleased
 
 - **HD document video at 700 kbps / 15 MiB** (#74), the iOS SDK policy. The HD tier (Camera2 FULL /

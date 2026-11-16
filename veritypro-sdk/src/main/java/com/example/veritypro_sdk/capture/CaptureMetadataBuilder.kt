@@ -47,6 +47,10 @@ object CaptureMetadataBuilder {
             put("mimeType", s.still.mimeType)
             put("sha256", s.still.sha256)
         })
+        s.guideCrop?.let { g ->
+            put("guideCrop", JSONObject().put("x", g.x.toDouble()).put("y", g.y.toDouble())
+                .put("w", g.w.toDouble()).put("h", g.h.toDouble()))
+        }
         put("video", JSONObject().apply {
             val v = s.video
             put("status", v.status.name)

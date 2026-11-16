@@ -119,7 +119,8 @@ object VideoEvidenceResolver {
 
 /** Builds the stored [SideCapture]: hashes the still and clip and runs the advisory. Does file I/O. */
 object SideCaptureAssembler {
-    fun assemble(raw: RawSideCapture): SideCapture {
+    /** [guide] is the framing guide at the shutter; it becomes [SideCapture.guideCrop]. */
+    fun assemble(raw: RawSideCapture, guide: GuideGeometry? = null): SideCapture {
         val still = try {
             // Size first: describeStill hashes the file, and that hash must cover the uploaded bytes.
             StillUploadSizer.fitForUpload(raw.stillPath)
@@ -135,6 +136,8 @@ object SideCaptureAssembler {
             raw.recording.filePath?.let { runCatching { File(it).delete() } }
         }
         val advisory = ImageQualityAdvisor.assessFile(raw.stillPath)
-        return SideCapture(raw.tag, raw.captureSource, still, video, advisory)
+        // Measured on the upright still whose hash is uploaded (describeStill runs after sizing).
+        val guideCrop = PreviewCrop.forStill(guide, still.width, still.height)
+        return SideCapture(raw.tag, raw.captureSource, still, video, advisory, guideCrop)
     }
 }

@@ -148,7 +148,7 @@ fun ProtoDocumentCaptureScreen(
     sideCount: Int = 1,
     /** Faint artwork inside the guide: the card side to photograph, or a passport photo page. */
     ghost: GuideGhost? = null,
-    /** Where the guide sits on screen; the preview zooms to it (display only, never uploaded). */
+    /** Where the guide sits on screen; the preview zooms to it and it is sent as guideCrop. */
     onGuideMeasured: (GuideGeometry) -> Unit = {},
     onCaptured: (RawSideCapture) -> Unit,
     onClose: () -> Unit,

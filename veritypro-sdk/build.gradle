@@ -16,7 +16,9 @@ plugins {
 // downscaled to 2560 px long edge at JPEG q90 before upload (#72).
 // 1.9.5: HD document video at 700 kbps / 15 MiB (the iOS policy); HD set no bitrate and a 30 MiB cap,
 // so clips passed the KYC engine's 20 MB per-file limit (413) (#74).
-def veritySdkVersion = "1.9.5"
+// 1.9.6: capture metadata sends guideCrop per side (the framing guide on the uploaded still), so the
+// KYC engine cuts the document page, front and back, for reviewers.
+def veritySdkVersion = "1.9.6"
 
 android {
     namespace 'com.example.veritypro_sdk'
