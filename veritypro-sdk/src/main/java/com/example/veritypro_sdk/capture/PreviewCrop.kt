@@ -13,10 +13,10 @@ data class CropRect(val x: Float, val y: Float, val w: Float, val h: Float)
 data class GuideGeometry(val viewW: Float, val viewH: Float, val guide: CropRect)
 
 /**
- * Display-only zoom for "Check your photo", ported from the hosted page (DocumentCapture.tsx
- * guidePreviewCrop / framingCheck.ts guideRect + coverMapping). The uploaded still is never cropped
- * and the crop is never put in capture metadata: it only decides which part of the photo the
- * preview shows first, so the customer can read the document text.
+ * The framing guide mapped onto the still, ported from the hosted page (DocumentCapture.tsx
+ * guidePreviewCrop / framingCheck.ts guideRect + coverMapping). It decides which part of the photo
+ * "Check your photo" shows first, and it is sent as `guideCrop` in the capture metadata so the
+ * engine can cut the document page for reviewers. The uploaded still itself is never cropped.
  */
 object PreviewCrop {
     /** Margin around the guide in the preview zoom, as a fraction of the guide size. */

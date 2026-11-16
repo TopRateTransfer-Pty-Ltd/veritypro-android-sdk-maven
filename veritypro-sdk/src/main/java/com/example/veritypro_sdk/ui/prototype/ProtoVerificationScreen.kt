@@ -599,10 +599,12 @@ fun ProtoVerificationScreen(
                             captureGate.discard(raw)
                             return@ProtoDocumentCaptureScreen
                         }
+                        // The guide as it stood at this shutter, before the next side re-measures it.
+                        val guideAtShutter = guideGeometry
                         scope.launch {
                             val assembled = runCatching {
                                 kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                                    com.example.veritypro_sdk.capture.SideCaptureAssembler.assemble(raw)
+                                    com.example.veritypro_sdk.capture.SideCaptureAssembler.assemble(raw, guideAtShutter)
                                 }
                             }
                             if (!captureGate.isCurrent(sessionToken)) {

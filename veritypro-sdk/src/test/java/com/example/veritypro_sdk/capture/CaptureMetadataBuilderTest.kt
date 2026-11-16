@@ -63,6 +63,34 @@ class CaptureMetadataBuilderTest {
     }
 
     @Test
+    fun `every document type sends guideCrop on every side it captured`() {
+        // Coverage (owner 2026-11-16): passport front, licence and ID card front + back.
+        val box = CropRect(0.1f, 0.3f, 0.8f, 0.4f)
+        for ((docType, sides) in listOf(
+            "PASSPORT" to listOf(front),
+            "DRIVERS_LICENSE" to listOf(front, back),
+            "NATIONAL_ID" to listOf(front, back),
+        )) {
+            val withBox = sides.map { it.copy(guideCrop = box) }
+            val json = JSONObject(CaptureMetadataBuilder.build("att-1", "1.9.6", docType, withBox).toString())
+            val out = json.getJSONArray("sides")
+            assertEquals(sides.size, out.length())
+            for (i in 0 until out.length()) {
+                val g = out.getJSONObject(i).getJSONObject("guideCrop")
+                assertEquals(0.1, g.getDouble("x"), 1e-6); assertEquals(0.3, g.getDouble("y"), 1e-6)
+                assertEquals(0.8, g.getDouble("w"), 1e-6); assertEquals(0.4, g.getDouble("h"), 1e-6)
+            }
+        }
+    }
+
+    @Test
+    fun `a side whose guide was not measured sends no guideCrop`() {
+        val json = JSONObject(CaptureMetadataBuilder.build("att-1", "1.9.6", "NATIONAL_ID", listOf(front, back)).toString())
+        val out = json.getJSONArray("sides")
+        for (i in 0 until out.length()) assertTrue(!out.getJSONObject(i).has("guideCrop"))
+    }
+
+    @Test
     fun `a side from another attempt cannot be described under this attempt id`() {
         val foreign = back.copy(tag = CaptureTag("att-OLD", CaptureSide.BACK, 0))
         assertThrows(IllegalArgumentException::class.java) {

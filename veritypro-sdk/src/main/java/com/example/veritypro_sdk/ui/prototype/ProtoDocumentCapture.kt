@@ -148,7 +148,7 @@ fun ProtoDocumentCaptureScreen(
     sideCount: Int = 1,
     /** Faint artwork inside the guide: the card side to photograph, or a passport photo page. */
     ghost: GuideGhost? = null,
-    /** Where the guide sits on screen; the preview zooms to it (display only, never uploaded). */
+    /** Where the guide sits on screen; the preview zooms to it and it is sent as guideCrop. */
     onGuideMeasured: (GuideGeometry) -> Unit = {},
     onCaptured: (RawSideCapture) -> Unit,
     onClose: () -> Unit,
@@ -221,6 +221,8 @@ fun ProtoDocumentCaptureScreen(
             var shutterBeforeRecording = false
             /** Sequential path with a clip: the still is taken after the shutter stops the clip. */
             var sequentialStillAfterClip = false
+            /** Sequential path rebound for the still with a non-1x recommended zoom (see RawSideCapture). */
+            var stillZoomedAfterFraming = false
             var stillPath: String? = null
             var stillSavedAtMs = 0L
             /** Generation whose clip is being stopped so a fresh one can start for the next shot. */
@@ -242,6 +244,7 @@ fun ProtoDocumentCaptureScreen(
                 endedAtMs = null; finalizeError = null; videoDone = false; delivered = false
                 stillPath = null; shutterAtMs = 0L; stillSavedAtMs = 0L
                 shutterBeforeRecording = false; sequentialStillAfterClip = false
+                stillZoomedAfterFraming = false
             }
 
             /** A clip may start only for a shot that has not been taken or delivered yet. */
@@ -303,7 +306,7 @@ fun ProtoDocumentCaptureScreen(
                 delivered = true
                 val raw = RawSideCapture(
                     tag = tag, stillPath = path, shutterAtMs = shutterAtMs, stillSavedAtMs = stillSavedAtMs,
-                    recording = timeline(),
+                    recording = timeline(), stillMatchesFraming = !stillZoomedAfterFraming,
                 )
                 Log.i(
                     "ProtoDocCapture",
@@ -480,7 +483,11 @@ fun ProtoDocumentCaptureScreen(
             context, lifecycleOwner, pv, imageCapture,
             videoCapture = null,
             useViewPort = false,
-            onCameraReady = { capturePhoto(videoAlreadyStopped = true) },
+            onCameraReady = { report ->
+                // Framing ran at 1x; this bind requests report.recommendedZoom without awaiting it.
+                coord.stillZoomedAfterFraming = kotlin.math.abs(report.recommendedZoom - 1f) > 0.01f
+                capturePhoto(videoAlreadyStopped = true)
+            },
             onCameraError = { msg ->
                 Log.e("ProtoDocCapture", "Sequential phase 2 bind failed: $msg")
                 restartPhaseOneAfterFailure()

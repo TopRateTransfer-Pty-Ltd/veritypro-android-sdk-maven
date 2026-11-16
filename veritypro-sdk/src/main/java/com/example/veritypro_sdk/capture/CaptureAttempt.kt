@@ -71,6 +71,12 @@ data class SideCapture(
     val still: StillCapture,
     val video: VideoEvidence,
     val qualityAdvisory: QualityAdvisory = QualityAdvisory.UNKNOWN,
+    /**
+     * Where the framing guide sat at the shutter, plus [PreviewCrop.MARGIN], as fractions of the
+     * upright still (`guideCrop` in the contract). The engine cuts the document page from it for
+     * reviewers, only when the stored bytes match [StillCapture.sha256]. Null when not measured.
+     */
+    val guideCrop: CropRect? = null,
 ) {
     val side: CaptureSide get() = tag.side
     val attemptId: String get() = tag.attemptId
