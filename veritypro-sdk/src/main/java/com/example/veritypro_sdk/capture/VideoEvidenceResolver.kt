@@ -54,6 +54,13 @@ data class RawSideCapture(
     val stillSavedAtMs: Long,
     val recording: RecordingTimeline,
     val captureSource: CaptureSource = CaptureSource.MANUAL,
+    /**
+     * False when the still may show a different field of view from the preview the customer framed
+     * in: the SEQUENTIAL path rebinds for the still and requests the recommended zoom (up to 3x on
+     * fixed-focus cameras) without waiting for it, while framing ran at 1x. The guide cannot be
+     * mapped onto such a still, so no guideCrop is sent (code review #76).
+     */
+    val stillMatchesFraming: Boolean = true,
 )
 
 /**
@@ -137,7 +144,11 @@ object SideCaptureAssembler {
         }
         val advisory = ImageQualityAdvisor.assessFile(raw.stillPath)
         // Measured on the upright still whose hash is uploaded (describeStill runs after sizing).
-        val guideCrop = PreviewCrop.forStill(guide, still.width, still.height)
+        val guideCrop = guideCropFor(raw, guide, still.width, still.height)
         return SideCapture(raw.tag, raw.captureSource, still, video, advisory, guideCrop)
     }
+
+    /** The guide mapped onto the upright still, or null when unmeasured or the framing does not match. */
+    fun guideCropFor(raw: RawSideCapture, guide: GuideGeometry?, width: Int, height: Int): CropRect? =
+        if (raw.stillMatchesFraming) PreviewCrop.forStill(guide, width, height) else null
 }
