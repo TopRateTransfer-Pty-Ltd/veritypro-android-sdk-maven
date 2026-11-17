@@ -44,6 +44,10 @@ enum class VerityErrorCode {
     RATE_LIMITED,
     SERVER_UNAVAILABLE,
     PROCESSING_TIMEOUT,
+    /** This customer already has a verification being decided; a new one cannot start until it finishes. */
+    ATTEMPT_IN_PROGRESS,
+    /** This customer's earlier verification is with a reviewer; a new one cannot start until it is decided. */
+    ATTEMPT_UNDER_REVIEW,
     UNKNOWN;
 
     companion object {

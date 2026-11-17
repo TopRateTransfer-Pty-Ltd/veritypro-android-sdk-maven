@@ -33,6 +33,12 @@ import com.example.veritypro_sdk.utils.withCurrentLocation
 /** begin-liveness 409: the session has no completed document yet (KYC-Integration S6 gate). */
 internal const val DOCUMENT_REQUIRED_BEFORE_LIVENESS = "document_required_before_liveness"
 
+/** add-kyc-verification 409: the customer's earlier verification was submitted and is still being decided. */
+internal const val ATTEMPT_IN_PROGRESS = "attempt_in_progress"
+
+/** add-kyc-verification 409: the customer's earlier verification is with a reviewer. */
+internal const val ATTEMPT_UNDER_REVIEW = "attempt_under_review"
+
 /**
  * A 4xx from begin-liveness is the server's answer, not a blip: asking again cannot change it, and each ask spends a
  * liveness-per-session permit. 5xx (503 document_check_unavailable), network and unknown failures stay retryable.
