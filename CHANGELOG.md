@@ -1,5 +1,20 @@
 # Changelog — VerityPro Android SDK (`com.example.veritypro:veritypro-sdk`)
 
+## 1.9.7 — Unreleased
+
+- **"Verification already in progress" screen.** When the customer already has a verification open,
+  `add-kyc-verification` answers 409 `attempt_in_progress` or `attempt_under_review`. The client-mode
+  flow showed "COULDN'T START" with a Try again that could only fail again. It now shows "Verification
+  already in progress" or "We're checking your details", with Done only, and returns a typed FAILED
+  result with `ATTEMPT_IN_PROGRESS` / `ATTEMPT_UNDER_REVIEW` (`recoverable = false`). Server-driven
+  mode never gets this 409. Unit-tested; not yet seen live on a device.
+- **One begin-liveness in flight.** A repeated begin-liveness got the same pending AWS session with
+  fresh credentials; the face detector was keyed on the credentials, restarted, and opened a second
+  stream, which AWS rejects ("Liveness session is in progress"). Older requests are cancelled, a late
+  answer never replaces the current session, and the detector is keyed on the AWS session id.
+- **The sequential still keeps the 1x zoom the user framed at**, so the guide crop can be mapped onto
+  it. The zoom actually bound is measured; an unknown zoom sends no `guideCrop`.
+
 ## 1.9.6 — Unreleased
 
 - **Capture metadata sends `guideCrop` per side.** This is where the framing guide sat at the shutter,
