@@ -33,6 +33,12 @@ import com.example.veritypro_sdk.utils.withCurrentLocation
 /** begin-liveness 409: the session has no completed document yet (KYC-Integration S6 gate). */
 internal const val DOCUMENT_REQUIRED_BEFORE_LIVENESS = "document_required_before_liveness"
 
+/** add-kyc-verification 409: the customer's earlier verification was submitted and is still being decided. */
+internal const val ATTEMPT_IN_PROGRESS = "attempt_in_progress"
+
+/** add-kyc-verification 409: the customer's earlier verification is with a reviewer. */
+internal const val ATTEMPT_UNDER_REVIEW = "attempt_under_review"
+
 /**
  * A 4xx from begin-liveness is the server's answer, not a blip: asking again cannot change it, and each ask spends a
  * liveness-per-session permit. 5xx (503 document_check_unavailable), network and unknown failures stay retryable.
@@ -49,13 +55,20 @@ class VerityProViewModel(
     fun recordCaptureMotion(data: CaptureRuntimeData) { captureRuntime = data }
 
     fun startBeginLivenessWithAssessment(sessionId: String, context: android.content.Context) {
-        viewModelScope.launch {
+        beginLivenessJob?.cancel()
+        beginLivenessJob = viewModelScope.launch {
             _beginLivenessState.value = Resource.Loading("Starting liveness")
             captureRuntime = captureRuntime.withCurrentLocation(context)
             val assessment = SecurityAssessmentCollector.collectJson(context, captureRuntime)
-            startBeginLiveness(sessionId, forceRetry = true, securityAssessmentJson = assessment)
+            runBeginLiveness(sessionId, maxRetries = 3, securityAssessmentJson = assessment)
         }
     }
+
+    /**
+     * The one begin-liveness request allowed in flight. A newer start supersedes the older one, so a
+     * late answer to a superseded request can never replace the session a running face scan is using.
+     */
+    private var beginLivenessJob: kotlinx.coroutines.Job? = null
     // DEPRECATED: storedOptions was used for client-side session refresh when
     // liveness returned HTTP 400.  Backend Phases 1-2 now handle session refresh
     // server-side (new session + document migration).  Kept as null for safety
@@ -516,7 +529,14 @@ class VerityProViewModel(
     fun startBeginLiveness(sessionId: String, forceRetry: Boolean = false, maxRetries: Int = 3, securityAssessmentJson: String? = null) {
         if (!forceRetry && _awsSessionId.value != null && _awsSessionId.value!!.isNotBlank()) return
 
-        viewModelScope.launch {
+        beginLivenessJob?.cancel()
+        beginLivenessJob = viewModelScope.launch {
+            runBeginLiveness(sessionId, maxRetries, securityAssessmentJson)
+        }
+    }
+
+    private suspend fun runBeginLiveness(sessionId: String, maxRetries: Int, securityAssessmentJson: String?) {
+        run {
             _beginLivenessState.value = Resource.Loading("Starting liveness")
             _livenessVerificationState.value = LivenessVerificationState.Idle
 
@@ -547,7 +567,7 @@ class VerityProViewModel(
                             Log.d("BeginLiveness", "Success: awsSession=${resp.data.awsSessionId}, " +
                                     "region=${_livenessRegion.value}, " +
                                     "credentials=${resp.data.credentials != null}")
-                            return@launch // Success — exit retry loop
+                            return // Success — exit retry loop
                         }
                         is Resource.Error -> {
                             lastError = resp.message
@@ -567,7 +587,7 @@ class VerityProViewModel(
                                 _beginLivenessState.value = resp.copy(message = friendly)
                                 _awsSessionId.value = null
                                 _livenessCredentials.value = null
-                                return@launch
+                                return
                             }
                             // Transient (network / 5xx) — retry with backoff below.
                         }
@@ -577,6 +597,8 @@ class VerityProViewModel(
                         }
                     }
                 } catch (t: Throwable) {
+                    // Superseded by a newer start: stop here, never write this request's outcome.
+                    if (t is kotlinx.coroutines.CancellationException) throw t
                     lastError = t.message ?: "Unexpected error"
                     Log.e("BeginLiveness", "Attempt ${attempt + 1} threw: ${t.message}")
                 }

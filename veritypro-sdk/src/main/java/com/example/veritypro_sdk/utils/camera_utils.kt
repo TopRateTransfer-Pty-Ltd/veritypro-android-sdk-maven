@@ -159,8 +159,12 @@ object CameraUtils {
                     .requireLensFacing(CameraSelector.LENS_FACING_BACK)
                     .build()
                 provider.unbindAll()
-                provider.bindToLifecycle(lifecycleOwner, selector, preview, videoCapture)
-                Log.i(TAG, "bindVideoRecording: Preview + VideoCapture bound (record-first phase)")
+                val cam = provider.bindToLifecycle(lifecycleOwner, selector, preview, videoCapture)
+                Log.i(
+                    TAG,
+                    "bindVideoRecording: Preview + VideoCapture bound (record-first phase, " +
+                        "zoom=${cam.cameraInfo.zoomState.value?.zoomRatio})",
+                )
                 onReady?.invoke()
             } catch (e: Exception) {
                 Log.e(TAG, "bindVideoRecording failed: ${e.message}", e)
@@ -181,7 +185,8 @@ object CameraUtils {
         onCameraError: ((String) -> Unit)? = null,
         videoCapture: VideoCapture<Recorder>? = null,
         onVideoCaptureBound: ((Boolean) -> Unit)? = null,
-        useViewPort: Boolean = true
+        useViewPort: Boolean = true,
+        applyZoom: Boolean = true
     ) {
         val cameraProviderFuture = ProcessCameraProvider.getInstance(context)
 
@@ -307,8 +312,9 @@ object CameraUtils {
                         currentCamera = camera
                         torchEnabled = false
 
-                        // Apply recommended zoom
-                        applyRecommendedZoom(camera, capabilityReport)
+                        // Apply recommended zoom — unless the caller already framed the shot at
+                        // another zoom (sequential still: the user lined up the guide at 1x).
+                        if (applyZoom) applyRecommendedZoom(camera, capabilityReport)
 
                         // Apply industry-standard document capture settings:
                         // center focus/AE/AWB metering + exposure compensation
@@ -670,6 +676,9 @@ object CameraUtils {
     fun isTorchAvailable(): Boolean {
         return currentCamera?.cameraInfo?.hasFlashUnit() ?: false
     }
+
+    /** The zoom ratio the bound camera reports right now, or null when no camera is bound. */
+    fun currentZoomRatio(): Float? = currentCamera?.cameraInfo?.zoomState?.value?.zoomRatio
 
     /**
      * Get current torch state as TorchState object

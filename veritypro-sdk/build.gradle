@@ -18,7 +18,9 @@ plugins {
 // so clips passed the KYC engine's 20 MB per-file limit (413) (#74).
 // 1.9.6: capture metadata sends guideCrop per side (the framing guide on the uploaded still), so the
 // KYC engine cuts the document page, front and back, for reviewers.
-def veritySdkVersion = "1.9.6"
+// 1.9.7: "verification already in progress" screen for the add-kyc 409; one begin-liveness in flight
+// (AWS "Liveness session is in progress"); the sequential still keeps the 1x zoom the user framed at.
+def veritySdkVersion = "1.9.7"
 
 android {
     namespace 'com.example.veritypro_sdk'

@@ -330,6 +330,24 @@ class VerityProViewModelTest {
     }
 
     @Test
+    fun `a newer begin-liveness supersedes an older one whose answer arrives later`() = runTest(testDispatcher) {
+        // The older request is slow; its late answer must never replace the newer session.
+        coEvery { mockRepository.beginLiveness("slow", any(), any(), any()) } coAnswers {
+            kotlinx.coroutines.delay(5_000)
+            Resource.Success(makeBeginLivenessData(awsSessionId = "aws-stale"))
+        }
+        coEvery { mockRepository.beginLiveness("fast", any(), any(), any()) } returns
+                Resource.Success(makeBeginLivenessData(awsSessionId = "aws-current"))
+
+        viewModel.startBeginLiveness("slow", forceRetry = true)
+        viewModel.startBeginLiveness("fast", forceRetry = true)
+        advanceUntilIdle()
+
+        assertEquals("aws-current", viewModel.awsSessionId.value)
+        assertEquals("aws-current", (viewModel.beginLivenessState.value as Resource.Success).data.awsSessionId)
+    }
+
+    @Test
     fun `startBeginLiveness sets awsSessionId from response data`() = runTest(testDispatcher) {
         val data = makeBeginLivenessData(awsSessionId = "custom-aws-session-xyz")
         coEvery { mockRepository.beginLiveness(any(), any(), any(), any()) } returns

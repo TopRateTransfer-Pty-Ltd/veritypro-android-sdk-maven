@@ -158,7 +158,11 @@ fun ProtoLivenessScreen(
     onError: (code: String, detail: String) -> Unit,
     onMotionCollected: (com.example.veritypro_sdk.utils.CaptureRuntimeData) -> Unit = {},
 ) {
-    val credentialsProvider = remember(credentials) { credentials?.let { LivenessCredentialsProvider(it) } }
+    // Keyed on the AWS session, NOT the credentials object. The detector restarts whenever its
+    // credentialsProvider changes, and the backend hands the same pending AWS session back to a
+    // repeated begin-liveness with fresh credentials. Re-keying on those reopened a second stream on a
+    // session already streaming, which AWS rejects ("Liveness session is in progress", TCL 2026-11-17).
+    val credentialsProvider = remember(awsSessionId) { credentials?.let { LivenessCredentialsProvider(it) } }
     if (credentialsProvider == null) {
         LaunchedEffect(Unit) {
             onError(com.example.veritypro_sdk.utils.VerityErrorCode.UNKNOWN.name, "begin-liveness returned no AWS credentials")

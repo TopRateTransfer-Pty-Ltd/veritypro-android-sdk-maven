@@ -483,9 +483,14 @@ fun ProtoDocumentCaptureScreen(
             context, lifecycleOwner, pv, imageCapture,
             videoCapture = null,
             useViewPort = false,
-            onCameraReady = { report ->
-                // Framing ran at 1x; this bind requests report.recommendedZoom without awaiting it.
-                coord.stillZoomedAfterFraming = kotlin.math.abs(report.recommendedZoom - 1f) > 0.01f
+            // The user framed the guide during phase 1 at 1x. Zooming now would cut the still
+            // tighter than what they lined up, and the guide crop could no longer be mapped.
+            applyZoom = false,
+            onCameraReady = { _ ->
+                // Measured, not assumed: an unknown zoom counts as "does not match".
+                val zoom = CameraUtils.currentZoomRatio()
+                coord.stillZoomedAfterFraming = zoom == null || kotlin.math.abs(zoom - 1f) > 0.01f
+                Log.i("ProtoDocCapture", "Sequential still zoom=$zoom matchesFraming=${!coord.stillZoomedAfterFraming}")
                 capturePhoto(videoAlreadyStopped = true)
             },
             onCameraError = { msg ->

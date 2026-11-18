@@ -54,6 +54,8 @@ import com.amplifyframework.core.Amplify
 import com.example.veritypro_sdk.services.CountryDocumentItem
 import com.example.veritypro_sdk.services.Resource
 import com.example.veritypro_sdk.services.BasicEddAssessmentCreated
+import com.example.veritypro_sdk.ui.verification.ATTEMPT_IN_PROGRESS
+import com.example.veritypro_sdk.ui.verification.ATTEMPT_UNDER_REVIEW
 import com.example.veritypro_sdk.ui.verification.DOCUMENT_REQUIRED_BEFORE_LIVENESS
 import com.example.veritypro_sdk.ui.verification.VerityProViewModel
 import com.example.veritypro_sdk.utils.LightingCheck
@@ -497,13 +499,30 @@ fun ProtoVerificationScreen(
                 kicker = "SECURE SESSION",
                 title = "Setting up your\nverification",
                 message = "Connecting to VerityPro…",
-            ) else ProtoErrorScreen(
-                kicker = "COULDN'T START",
-                title = "Something went wrong",
-                message = s.message,
-                onRetry = { stage = ProtoStage.Welcome },
-                onExit = onExit,
-            )
+            ) else when (val open = openAttemptOf(s)) {
+                // Not a failure: this customer's earlier verification is still being decided. Retrying
+                // can never succeed while it is open, so there is no retry, only a way out.
+                null -> ProtoErrorScreen(
+                    kicker = "COULDN'T START",
+                    title = "Something went wrong",
+                    message = s.message,
+                    onRetry = { stage = ProtoStage.Welcome },
+                    onExit = onExit,
+                )
+                else -> ProtoErrorScreen(
+                    kicker = open.kicker,
+                    kickerColor = Proto.Teal,
+                    title = open.title,
+                    message = open.message,
+                    onRetry = null,
+                    primaryLabel = "Done",
+                    onExit = {
+                        onTypedResult(open.result())
+                        onResult(false)
+                        onExit()
+                    },
+                )
+            }
             else -> ProtoProcessingScreen(
                 kicker = "SECURE SESSION",
                 title = "Setting up your\nverification",
@@ -1381,6 +1400,53 @@ internal fun livenessStartRoute(error: Resource.Error, hasDocumentModule: Boolea
     error.httpStatus != 409 || error.errorCode != DOCUMENT_REQUIRED_BEFORE_LIVENESS -> LivenessStartRoute.TryAgain
     hasDocumentModule -> LivenessStartRoute.DocumentFirst
     else -> LivenessStartRoute.DocumentElsewhere
+}
+
+/**
+ * add-kyc-verification answered 409 because this customer already has a verification open
+ * (KycVerificationService one-live-attempt rule). Decided on the status and the body code, never the text.
+ */
+internal enum class OpenAttempt(
+    val kicker: String,
+    val title: String,
+    val message: String,
+    private val code: com.example.veritypro_sdk.utils.VerityErrorCode,
+    private val detail: String,
+) {
+    InProgress(
+        kicker = "ALREADY STARTED",
+        title = "Verification already in progress",
+        message = "You've already sent us a verification and we're still checking it. " +
+            "You can't start a new one until that check is finished. You don't need to do anything else right now.",
+        code = com.example.veritypro_sdk.utils.VerityErrorCode.ATTEMPT_IN_PROGRESS,
+        detail = "This customer already has a verification being decided. A new one cannot start until it finishes.",
+    ),
+    UnderReview(
+        kicker = "IN REVIEW",
+        title = "We're checking your details",
+        message = "Your verification is with our review team. " +
+            "You can't start a new one while it's being reviewed. You don't need to do anything else right now.",
+        code = com.example.veritypro_sdk.utils.VerityErrorCode.ATTEMPT_UNDER_REVIEW,
+        detail = "This customer's earlier verification is with a reviewer. A new one cannot start until it is decided.",
+    );
+
+    /** What the host app is told: this run did not start, and why. The open verification's result arrives by webhook. */
+    fun result() = com.example.veritypro_sdk.utils.VerityResult(
+        status = com.example.veritypro_sdk.utils.VerityOutcome.FAILED.name,
+        error = com.example.veritypro_sdk.utils.VerityVerificationError(
+            code = code.name,
+            message = detail,
+            recoverable = false,
+            recommendedAction = "Wait for the open verification's result (webhook) before starting a new one.",
+        ),
+    )
+}
+
+internal fun openAttemptOf(error: Resource.Error): OpenAttempt? = when {
+    error.httpStatus != 409 -> null
+    error.errorCode == ATTEMPT_UNDER_REVIEW -> OpenAttempt.UnderReview
+    error.errorCode == ATTEMPT_IN_PROGRESS -> OpenAttempt.InProgress
+    else -> null
 }
 
 internal const val DOCUMENT_FIRST_COPY = "We need a photo of your ID before the selfie. It only takes a minute."

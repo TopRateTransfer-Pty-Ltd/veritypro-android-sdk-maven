@@ -128,7 +128,9 @@ class ApiRepository {
             val errorBody = e.response()?.errorBody()?.string()
             val errorMessage = parseHttpError(e.code(), errorBody)
             Log.e("Verity", "createKyc HTTP status=${e.code()}")
-            Resource.Error(errorMessage)
+            // Status + code let the flow tell "this customer already has a verification open" (409
+            // attempt_in_progress / attempt_under_review) apart from a real failure.
+            Resource.Error(errorMessage, httpStatus = e.code(), errorCode = parseErrorCode(errorBody))
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
